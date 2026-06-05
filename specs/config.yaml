@@ -1,0 +1,9 @@
+
+init:
+  range_min: -1
+  range_max: 1
+
+parameters:
+  n_layers: 4
+  dim_embedding: 128
+  dim_key: 32
