@@ -67,10 +67,18 @@ def ingest_raw_corpus(
     raw_dir: Path | str,
     processed_dir: Path | str,
     artifact_name: str = "train",
+    validation_fraction: float = 0.0,
+    validation_artifact_name: str = "val",
 ) -> TokenizedCorpus:
     raw_corpus = read_raw_corpus(raw_dir)
     tokenized = tokenize_raw_corpus(raw_corpus)
-    save_tokenized_corpus(tokenized, processed_dir, artifact_name)
+    save_tokenized_corpus(
+        tokenized,
+        processed_dir,
+        artifact_name,
+        validation_fraction=validation_fraction,
+        validation_artifact_name=validation_artifact_name,
+    )
     return tokenized
 
 
@@ -78,18 +86,49 @@ def save_tokenized_corpus(
     tokenized: TokenizedCorpus,
     processed_dir: Path | str,
     artifact_name: str,
+    validation_fraction: float = 0.0,
+    validation_artifact_name: str = "val",
 ) -> None:
+    if validation_fraction < 0 or validation_fraction >= 1:
+        raise ValueError("validation_fraction must be in the range [0.0, 1.0)")
+
     processed_path = Path(processed_dir)
     processed_path.mkdir(parents=True, exist_ok=True)
 
+    train_token_ids, validation_token_ids = _split_train_validation(
+        tokenized.token_ids,
+        validation_fraction,
+    )
     token_path = processed_path / f"{artifact_name}_tokens.pt"
     vocab_path = processed_path / f"{artifact_name}_vocab.json"
-    torch.save(torch.tensor(tokenized.token_ids, dtype=torch.long), token_path)
+    torch.save(torch.tensor(train_token_ids, dtype=torch.long), token_path)
+    if validation_token_ids:
+        validation_token_path = processed_path / f"{validation_artifact_name}_tokens.pt"
+        torch.save(
+            torch.tensor(validation_token_ids, dtype=torch.long),
+            validation_token_path,
+        )
+
     vocab_payload = {
         "id_to_char": list(tokenized.tokenizer.id_to_char),
         "source_paths": [str(path) for path in tokenized.source_paths],
+        "train_tokens": len(train_token_ids),
+        "validation_tokens": len(validation_token_ids),
     }
     vocab_path.write_text(
         json.dumps(vocab_payload, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+
+
+def _split_train_validation(
+    token_ids: list[int],
+    validation_fraction: float,
+) -> tuple[list[int], list[int]]:
+    if validation_fraction == 0 or len(token_ids) < 2:
+        return list(token_ids), []
+
+    validation_count = int(len(token_ids) * validation_fraction)
+    validation_count = max(1, min(validation_count, len(token_ids) - 1))
+    split_index = len(token_ids) - validation_count
+    return list(token_ids[:split_index]), list(token_ids[split_index:])

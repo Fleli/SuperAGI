@@ -41,6 +41,28 @@ class CorpusIngestionTests(unittest.TestCase):
         self.assertEqual(saved_vocab["id_to_char"], ["a", "b"])
         self.assertEqual(artifact.tokenizer.decode(artifact.token_ids), "aba")
 
+    def test_ingest_writes_fixed_validation_split(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            raw_dir = root / "raw"
+            processed_dir = root / "processed"
+            raw_dir.mkdir()
+            (raw_dir / "sample.txt").write_text("aaaabbbbcc", encoding="utf-8")
+
+            ingest_raw_corpus(
+                raw_dir,
+                processed_dir,
+                artifact_name="train",
+                validation_fraction=0.3,
+            )
+
+            train_tokens = torch.load(processed_dir / "train_tokens.pt")
+            validation_tokens = torch.load(processed_dir / "val_tokens.pt")
+
+        self.assertEqual(len(train_tokens), 7)
+        self.assertEqual(len(validation_tokens), 3)
+        self.assertEqual(train_tokens.tolist() + validation_tokens.tolist(), [0, 0, 0, 0, 1, 1, 1, 1, 2, 2])
+
 
 if __name__ == "__main__":
     unittest.main()

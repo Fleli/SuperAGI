@@ -2,6 +2,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
+
+import requests
 
 from superagi.ingestion.builders.c4 import build_c4_corpus
 from superagi.ingestion.builders.common import (
@@ -12,6 +15,7 @@ from superagi.ingestion.builders.common import (
     write_raw_document,
 )
 from superagi.ingestion.builders.wikipedia import (
+    MediaWikiClient,
     WikipediaArticle,
     WikipediaSearchResult,
     build_wikipedia_corpus,
@@ -39,6 +43,65 @@ class FakeWikipediaClient:
             title=title,
             url=f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}",
             text=f"{title}\n\nCore article text.",
+        )
+
+
+class FakeRateLimitResponse:
+    def __init__(
+        self,
+        status_code: int,
+        payload: dict | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self._payload = payload or {}
+        self.headers = headers or {}
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(
+                f"{self.status_code} test error",
+                response=self,
+            )
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class FakeSession:
+    def __init__(self, responses: list[FakeRateLimitResponse]) -> None:
+        self.headers = {}
+        self.responses = list(responses)
+
+    def get(self, *args, **kwargs) -> FakeRateLimitResponse:
+        if not self.responses:
+            raise AssertionError("no fake response configured")
+        return self.responses.pop(0)
+
+
+class FailingArticleClient:
+    def search(self, query: str, limit: int) -> list[WikipediaSearchResult]:
+        return [
+            WikipediaSearchResult(
+                page_id=1,
+                title="Rate Limited",
+                url="https://en.wikipedia.org/wiki/Rate_Limited",
+            ),
+            WikipediaSearchResult(
+                page_id=2,
+                title="Usable",
+                url="https://en.wikipedia.org/wiki/Usable",
+            ),
+        ]
+
+    def fetch_article(self, title: str) -> WikipediaArticle:
+        if title == "Rate Limited":
+            raise requests.HTTPError("429 test error")
+        return WikipediaArticle(
+            page_id=2,
+            title=title,
+            url=f"https://en.wikipedia.org/wiki/{title}",
+            text="Usable article body.",
         )
 
 
@@ -111,6 +174,64 @@ class WikipediaBuilderTests(unittest.TestCase):
         self.assertEqual(metadata["documents"][0]["title"], "Ada Lovelace")
         self.assertEqual(metadata["documents"][0]["page_id"], 1)
         self.assertIn("Core article text.", document_texts[0])
+
+    def test_mediawiki_client_sets_wikimedia_user_agent_headers(self) -> None:
+        user_agent = "SuperAGI-learning-corpus-builder/0.1 (mailto:test@example.com)"
+        session = FakeSession(responses=[])
+
+        MediaWikiClient(session=session, user_agent=user_agent)
+
+        self.assertEqual(session.headers["User-Agent"], user_agent)
+        self.assertEqual(session.headers["Api-User-Agent"], user_agent)
+
+    def test_mediawiki_client_retries_after_rate_limit(self) -> None:
+        payload = {
+            "query": {
+                "search": [
+                    {
+                        "pageid": 1,
+                        "title": "Machine learning",
+                    }
+                ]
+            }
+        }
+        session = FakeSession(
+            responses=[
+                FakeRateLimitResponse(
+                    status_code=429,
+                    headers={"Retry-After": "2"},
+                ),
+                FakeRateLimitResponse(status_code=200, payload=payload),
+            ]
+        )
+        sleep = Mock()
+        client = MediaWikiClient(
+            session=session,
+            sleep=sleep,
+            request_delay_seconds=0.0,
+            max_retries=1,
+        )
+
+        results = client.search("machine learning", 1)
+
+        self.assertEqual(results[0].title, "Machine learning")
+        sleep.assert_called_once_with(2.0)
+
+    def test_build_wikipedia_corpus_skips_failed_article_fetches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            result = build_wikipedia_corpus(
+                queries=["test"],
+                raw_root=Path(tmp_dir),
+                max_articles_per_query=2,
+                min_chars=1,
+                client=FailingArticleClient(),
+            )
+
+            metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result.documents_written, 1)
+        self.assertEqual(metadata["documents"][0]["title"], "Usable")
+        self.assertEqual(metadata["skipped_documents"][0]["title"], "Rate Limited")
 
 
 class C4BuilderTests(unittest.TestCase):

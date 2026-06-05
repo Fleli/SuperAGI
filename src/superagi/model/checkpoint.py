@@ -20,7 +20,19 @@ class LoadedCheckpoint:
     tokenizer: CharTokenizer
     vocab: dict[str, list[str]]
     losses: list[float]
+    metrics: list[dict[str, Any]]
     metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class TrainingState:
+    model: TransformerLM
+    config: TransformerConfig
+    vocab: dict[str, list[str]]
+    previous_losses: list[float]
+    previous_metrics: list[dict[str, Any]]
+    metadata: dict[str, Any]
+    resumed_from: Path | None
 
 
 def save_checkpoint(
@@ -29,6 +41,7 @@ def save_checkpoint(
     model: TransformerLM,
     vocab: dict[str, Iterable[str]],
     losses: Iterable[float] | None = None,
+    metrics: Iterable[dict[str, Any]] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> Path:
     checkpoint_path = Path(path)
@@ -40,11 +53,49 @@ def save_checkpoint(
             "model_config": asdict(model.config),
             "vocab": _normalize_vocab(vocab),
             "losses": list(losses or []),
+            "metrics": list(metrics or []),
             "metadata": dict(metadata or {}),
         },
         checkpoint_path,
     )
     return checkpoint_path
+
+
+def prepare_model_for_training(
+    *,
+    vocab: dict[str, Iterable[str]],
+    config: TransformerConfig,
+    resume_path: Path | str | None = None,
+) -> TrainingState:
+    normalized_vocab = _normalize_vocab(vocab)
+    if resume_path is None or str(resume_path) == "":
+        _validate_config_vocab_size(config, normalized_vocab)
+        return TrainingState(
+            model=TransformerLM(config),
+            config=config,
+            vocab=normalized_vocab,
+            previous_losses=[],
+            previous_metrics=[],
+            metadata={},
+            resumed_from=None,
+        )
+
+    checkpoint_path = Path(resume_path)
+    checkpoint = load_checkpoint(checkpoint_path)
+    if checkpoint.vocab != normalized_vocab:
+        raise ValueError(
+            "checkpoint vocab does not match processed vocab; "
+            "resume with the same tokenizer vocabulary or train from scratch"
+        )
+    return TrainingState(
+        model=checkpoint.model,
+        config=checkpoint.config,
+        vocab=checkpoint.vocab,
+        previous_losses=checkpoint.losses,
+        previous_metrics=checkpoint.metrics,
+        metadata=checkpoint.metadata,
+        resumed_from=checkpoint_path,
+    )
 
 
 def load_checkpoint(
@@ -69,6 +120,7 @@ def load_checkpoint(
         tokenizer=_tokenizer_from_vocab(vocab),
         vocab=vocab,
         losses=list(payload.get("losses", [])),
+        metrics=list(payload.get("metrics", [])),
         metadata=dict(payload.get("metadata", {})),
     )
 
@@ -119,6 +171,14 @@ def _normalize_vocab(vocab: dict[str, Iterable[str]]) -> dict[str, list[str]]:
     if len(set(id_to_char)) != len(id_to_char):
         raise ValueError("vocab id_to_char entries must be unique")
     return {"id_to_char": id_to_char}
+
+
+def _validate_config_vocab_size(
+    config: TransformerConfig,
+    vocab: dict[str, list[str]],
+) -> None:
+    if config.vocab_size != len(vocab["id_to_char"]):
+        raise ValueError("config vocab_size must match vocab size")
 
 
 def _required_mapping(payload: dict[str, Any], key: str) -> dict[str, Any]:
