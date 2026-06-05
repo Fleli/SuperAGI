@@ -21,6 +21,20 @@ WIKI_USER_AGENT := SuperAGI-learning-corpus-builder/0.1 (local learning project;
 C4_MAX := 100
 C4_MIN_CHARS := 500
 
+TRAIN_4090_RAW_DIR := data/raw/c4-4090-night
+TRAIN_4090_C4_MAX := 50000
+TRAIN_4090_C4_MIN_CHARS := 1000
+TRAIN_4090_STEPS := 50000
+TRAIN_4090_BATCH := 64
+TRAIN_4090_DEVICE := cuda
+TRAIN_4090_EVAL_INTERVAL := 1000
+TRAIN_4090_VAL_BATCHES := 20
+TRAIN_4090_CHECKPOINT_INTERVAL := 1000
+TRAIN_4090_PROMPT := In machine learning,
+TRAIN_4090_NEW_TOKENS := 500
+TRAIN_4090_TEMPERATURE := 0.6
+TRAIN_4090_TOP_K := 30
+
 BATCH := 32
 LR := 3e-4
 STEPS := 1000
@@ -37,7 +51,7 @@ VAL_BATCHES := 10
 METRICS := $(CHECKPOINT_DIR)/metrics.jsonl
 CHECKPOINT_INTERVAL := 1000
 
-.PHONY: help setup data-dirs test wiki c4 ingest train params train-export-run std-train export-model generate run-model smoke-train clean-generated
+.PHONY: help setup data-dirs test wiki c4 ingest train params train-export-run train-4090 std-train export-model generate run-model smoke-train clean-generated
 
 help:
 	@echo "SuperAGI pipeline targets"
@@ -58,6 +72,7 @@ help:
 	@echo "  make train STEPS=100 BATCH=16"
 	@echo "  make train RESUME=data/checkpoints/latest.pt STEPS=1000 CHECKPOINT_INTERVAL=1000"
 	@echo "  make train-export-run RESUME=data/checkpoints/latest.pt STEPS=1000 PROMPT=\"Attention is\""
+	@echo "  make train-4090        Fetch C4, rebuild artifacts, and start the RTX 4090 night run"
 	@echo "  make run-model CHECKPOINT=data/checkpoints/best.pt PROMPT=\"The\""
 	@echo "  make std-train         Resume latest, train 5k steps, export, sample"
 	@echo "  make export-model      Validate/copy latest checkpoint to a portable .pt file"
@@ -328,6 +343,31 @@ train-export-run:
 	@printf '==> [pipeline] Export finished; generating sample\n'
 	$(MAKE) run-model CHECKPOINT="$(MODEL_OUT)"
 	@printf '==> [pipeline] Finished train/export/run\n'
+
+train-4090:
+	@printf '==> [train-4090] Fetching night-run C4 corpus\n'
+	$(MAKE) c4 \
+		RAW_DIR="$(TRAIN_4090_RAW_DIR)" \
+		C4_MAX="$(TRAIN_4090_C4_MAX)" \
+		C4_MIN_CHARS="$(TRAIN_4090_C4_MIN_CHARS)"
+	@printf '==> [train-4090] Clearing generated processed artifacts and checkpoints\n'
+	$(MAKE) clean-generated
+	@printf '==> [train-4090] Ingesting night-run corpus\n'
+	$(MAKE) ingest RAW_DIR="$(TRAIN_4090_RAW_DIR)"
+	@printf '==> [train-4090] Starting fresh RTX 4090 night run\n'
+	$(MAKE) train-export-run \
+		RESUME= \
+		STEPS="$(TRAIN_4090_STEPS)" \
+		BATCH="$(TRAIN_4090_BATCH)" \
+		DEVICE="$(TRAIN_4090_DEVICE)" \
+		EVAL_INTERVAL="$(TRAIN_4090_EVAL_INTERVAL)" \
+		VAL_BATCHES="$(TRAIN_4090_VAL_BATCHES)" \
+		CHECKPOINT_INTERVAL="$(TRAIN_4090_CHECKPOINT_INTERVAL)" \
+		PROMPT="$(TRAIN_4090_PROMPT)" \
+		NEW_TOKENS="$(TRAIN_4090_NEW_TOKENS)" \
+		TEMPERATURE="$(TRAIN_4090_TEMPERATURE)" \
+		TOP_K="$(TRAIN_4090_TOP_K)"
+	@printf '==> [train-4090] Finished RTX 4090 night run\n'
 
 std-train:
 	$(MAKE) train-export-run \

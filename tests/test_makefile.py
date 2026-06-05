@@ -44,6 +44,27 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("NEW_TOKENS=300", contents)
         self.assertIn("TEMPERATURE=0.6", contents)
 
+    def test_train_4090_fetches_ingests_and_starts_night_run(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("train-4090", contents)
+        self.assertIn("make train-4090", contents)
+        self.assertIn("TRAIN_4090_RAW_DIR := data/raw/c4-4090-night", contents)
+        self.assertIn("TRAIN_4090_C4_MAX := 50000", contents)
+        self.assertIn("TRAIN_4090_C4_MIN_CHARS := 1000", contents)
+        self.assertIn("TRAIN_4090_STEPS := 50000", contents)
+        self.assertIn("TRAIN_4090_BATCH := 64", contents)
+        self.assertIn("TRAIN_4090_DEVICE := cuda", contents)
+        self.assertIn("$(MAKE) c4 \\", contents)
+        self.assertIn('RAW_DIR="$(TRAIN_4090_RAW_DIR)"', contents)
+        self.assertIn("$(MAKE) clean-generated", contents)
+        self.assertIn('$(MAKE) ingest RAW_DIR="$(TRAIN_4090_RAW_DIR)"', contents)
+        self.assertIn("$(MAKE) train-export-run", contents)
+        self.assertIn('RESUME=', contents)
+        self.assertIn('PROMPT="$(TRAIN_4090_PROMPT)"', contents)
+        self.assertIn('TOP_K="$(TRAIN_4090_TOP_K)"', contents)
+
     def test_validation_metrics_are_wired_into_ingest_and_train(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
         contents = makefile.read_text(encoding="utf-8")

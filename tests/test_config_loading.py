@@ -6,6 +6,20 @@ from superagi.initialization.read_config import load_project_config
 
 
 class ConfigLoadingTests(unittest.TestCase):
+    def test_default_config_is_sized_for_4090_night_run(self) -> None:
+        config = load_project_config()
+        transformer_config = config.to_transformer_config(vocab_size=100)
+
+        self.assertEqual(config.parameters.n_layers, 8)
+        self.assertEqual(config.parameters.dim_embedding, 256)
+        self.assertEqual(config.parameters.dim_key, 32)
+        self.assertEqual(config.parameters.ctx_window, 512)
+        self.assertEqual(config.parameters.n_heads, 8)
+        self.assertEqual(transformer_config.context_length, 512)
+        self.assertEqual(transformer_config.dim_embedding, 256)
+        self.assertEqual(transformer_config.n_layers, 8)
+        self.assertEqual(transformer_config.n_heads, 8)
+
     def test_loads_model_config_from_yaml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "config.yaml"

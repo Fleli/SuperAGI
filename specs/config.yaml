@@ -4,7 +4,7 @@ init:
   range_max: 1
 
 parameters:
-  n_layers: 6
-  dim_embedding: 192
+  n_layers: 8
+  dim_embedding: 256
   dim_key: 32
-  ctx_window: 256
+  ctx_window: 512
