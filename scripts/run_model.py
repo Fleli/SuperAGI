@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from superagi.model.checkpoint import generate_from_checkpoint  # noqa: E402
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Generate text from a SuperAGI checkpoint.")
+    parser.add_argument(
+        "--checkpoint",
+        default="data/checkpoints/latest.pt",
+        help="Path to a portable model checkpoint.",
+    )
+    parser.add_argument("--prompt", required=True, help="Prompt text to continue.")
+    parser.add_argument(
+        "--new-tokens",
+        type=int,
+        default=100,
+        help="Number of new tokens to generate.",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=1.0,
+        help="Sampling temperature.",
+    )
+    parser.add_argument(
+        "--device",
+        default="auto",
+        help="Torch device to run on: auto, cpu, cuda, or mps.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional random seed for reproducible sampling.",
+    )
+    args = parser.parse_args(argv)
+
+    generated = generate_from_checkpoint(
+        args.checkpoint,
+        prompt=args.prompt,
+        max_new_tokens=args.new_tokens,
+        temperature=args.temperature,
+        device=args.device,
+        seed=args.seed,
+    )
+    print(generated)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
