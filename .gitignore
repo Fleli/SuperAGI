@@ -1,3 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+data/processed/*
+!data/processed/.gitkeep
+data/checkpoints/*
+!data/checkpoints/.gitkeep

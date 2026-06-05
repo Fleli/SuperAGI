@@ -1,2 +1,4 @@
+datasets
 numpy
+requests
 torch>=2.12
