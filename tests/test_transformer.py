@@ -2,10 +2,16 @@ import unittest
 
 import torch
 
+from superagi.model.inference.attend import CausalSelfAttention
+from superagi.model.inference.percept import FeedForward
 from superagi.model.transformer import TransformerConfig, TransformerLM
 
 
 class TransformerLMTests(unittest.TestCase):
+    def test_attention_and_perception_modules_live_directly_under_inference(self) -> None:
+        self.assertEqual(CausalSelfAttention.__name__, "CausalSelfAttention")
+        self.assertEqual(FeedForward.__name__, "FeedForward")
+
     def test_forward_returns_logits_and_loss(self) -> None:
         config = TransformerConfig(
             vocab_size=11,

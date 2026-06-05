@@ -7,8 +7,8 @@ from torch import nn
 from torch.nn import functional as F
 
 from superagi.model.embedding import TokenAndPositionEmbedding
-from superagi.model.inference.attention.attend import CausalSelfAttention
-from superagi.model.inference.perception.percept import FeedForward
+from superagi.model.inference.attend import CausalSelfAttention
+from superagi.model.inference.percept import FeedForward
 
 
 @dataclass(frozen=True)
