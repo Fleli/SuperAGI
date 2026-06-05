@@ -1,6 +1,6 @@
 import unittest
 
-from superagi.tokenize.tokenizer import CharTokenizer
+from superagi.ingestion.tokenizer import CharTokenizer
 
 
 class CharTokenizerTests(unittest.TestCase):
