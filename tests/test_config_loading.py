@@ -10,14 +10,14 @@ class ConfigLoadingTests(unittest.TestCase):
         config = load_project_config()
         transformer_config = config.to_transformer_config(vocab_size=100)
 
-        self.assertEqual(config.parameters.n_layers, 8)
-        self.assertEqual(config.parameters.dim_embedding, 256)
-        self.assertEqual(config.parameters.dim_key, 32)
+        self.assertEqual(config.parameters.n_layers, 12)
+        self.assertEqual(config.parameters.dim_embedding, 512)
+        self.assertEqual(config.parameters.dim_key, 64)
         self.assertEqual(config.parameters.ctx_window, 512)
         self.assertEqual(config.parameters.n_heads, 8)
         self.assertEqual(transformer_config.context_length, 512)
-        self.assertEqual(transformer_config.dim_embedding, 256)
-        self.assertEqual(transformer_config.n_layers, 8)
+        self.assertEqual(transformer_config.dim_embedding, 512)
+        self.assertEqual(transformer_config.n_layers, 12)
         self.assertEqual(transformer_config.n_heads, 8)
 
     def test_loads_model_config_from_yaml(self) -> None:
