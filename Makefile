@@ -28,6 +28,8 @@ DEVICE := auto
 PROMPT := The
 NEW_TOKENS := 100
 TEMPERATURE := 1.0
+TOP_K := 0
+STREAM := 1
 VALIDATION_FRACTION := 0.1
 VAL_TOKENS := $(PROCESSED_DIR)/val_tokens.pt
 EVAL_INTERVAL := 500
@@ -59,7 +61,8 @@ help:
 	@echo "  make run-model CHECKPOINT=data/checkpoints/best.pt PROMPT=\"The\""
 	@echo "  make std-train         Resume latest, train 5k steps, export, sample"
 	@echo "  make export-model      Validate/copy latest checkpoint to a portable .pt file"
-	@echo "  make run-model PROMPT=\"The\" NEW_TOKENS=100"
+	@echo "  make run-model PROMPT=\"The\" NEW_TOKENS=100 TOP_K=50"
+	@echo "  make run-model STREAM=0 PROMPT=\"The\" NEW_TOKENS=100"
 	@echo "  make generate PROMPT=\"The\" NEW_TOKENS=100"
 	@echo ""
 	@echo "Cleanup:"
@@ -364,6 +367,8 @@ run-model: setup
 		--prompt "$(PROMPT)" \
 		--new-tokens "$(NEW_TOKENS)" \
 		--temperature "$(TEMPERATURE)" \
+		--top-k "$(TOP_K)" \
+		--stream "$(STREAM)" \
 		--device "$(DEVICE)"
 	@printf '==> [run-model] Finished generating sample text\n'
 

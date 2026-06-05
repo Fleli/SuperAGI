@@ -66,6 +66,61 @@ class TransformerLMTests(unittest.TestCase):
         self.assertEqual(generated.shape, (1, 6))
         self.assertTrue(torch.all((generated >= 0) & (generated < config.vocab_size)))
 
+    def test_generate_with_top_k_only_samples_from_top_logits(self) -> None:
+        class FixedLogitModel(TransformerLM):
+            def __init__(self) -> None:
+                super().__init__(
+                    TransformerConfig(
+                        vocab_size=5,
+                        context_length=4,
+                        dim_embedding=8,
+                        n_layers=1,
+                        n_heads=2,
+                        dropout=0.0,
+                    )
+                )
+
+            def forward(self, input_ids, target_ids=None):
+                batch_size, sequence_length = input_ids.shape
+                logits = torch.zeros(batch_size, sequence_length, self.config.vocab_size)
+                logits[..., 0] = 10.0
+                logits[..., 1] = 9.0
+                logits[..., 2] = 8.0
+                logits[..., 3] = 7.0
+                logits[..., 4] = 6.0
+                return logits, None
+
+        torch.manual_seed(0)
+        model = FixedLogitModel()
+        input_ids = torch.tensor([[1, 2, 3]])
+
+        generated = model.generate(input_ids, max_new_tokens=20, top_k=2)
+        new_tokens = generated[0, 3:]
+
+        self.assertTrue(set(new_tokens.tolist()).issubset({0, 1}))
+
+    def test_generate_calls_on_token_for_each_new_token(self) -> None:
+        torch.manual_seed(0)
+        config = TransformerConfig(
+            vocab_size=5,
+            context_length=4,
+            dim_embedding=8,
+            n_layers=1,
+            n_heads=2,
+            dropout=0.0,
+        )
+        model = TransformerLM(config)
+        input_ids = torch.tensor([[1, 2, 3]])
+        streamed_tokens: list[int] = []
+
+        generated = model.generate(
+            input_ids,
+            max_new_tokens=3,
+            on_token=streamed_tokens.append,
+        )
+
+        self.assertEqual(streamed_tokens, generated[0, -3:].tolist())
+
 
 if __name__ == "__main__":
     unittest.main()

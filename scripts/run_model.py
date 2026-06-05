@@ -12,6 +12,15 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from superagi.model.checkpoint import generate_from_checkpoint  # noqa: E402
 
 
+def _parse_bool(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise argparse.ArgumentTypeError("expected one of: 1, 0, true, false, yes, no")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate text from a SuperAGI checkpoint.")
     parser.add_argument(
@@ -33,6 +42,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Sampling temperature.",
     )
     parser.add_argument(
+        "--top-k",
+        type=int,
+        default=0,
+        help="Limit sampling to the k most likely next tokens; 0 disables it.",
+    )
+    parser.add_argument(
+        "--stream",
+        type=_parse_bool,
+        default=True,
+        help="Print generated token text as it is sampled; use 0 to disable.",
+    )
+    parser.add_argument(
         "--device",
         default="auto",
         help="Torch device to run on: auto, cpu, cuda, or mps.",
@@ -44,16 +65,33 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional random seed for reproducible sampling.",
     )
     args = parser.parse_args(argv)
+    if args.top_k < 0:
+        parser.error("--top-k must be non-negative")
 
-    generated = generate_from_checkpoint(
-        args.checkpoint,
-        prompt=args.prompt,
-        max_new_tokens=args.new_tokens,
-        temperature=args.temperature,
-        device=args.device,
-        seed=args.seed,
-    )
-    print(generated)
+    if args.stream:
+        print(args.prompt, end="", flush=True)
+        generate_from_checkpoint(
+            args.checkpoint,
+            prompt=args.prompt,
+            max_new_tokens=args.new_tokens,
+            temperature=args.temperature,
+            top_k=args.top_k or None,
+            on_text=lambda text: print(text, end="", flush=True),
+            device=args.device,
+            seed=args.seed,
+        )
+        print()
+    else:
+        generated = generate_from_checkpoint(
+            args.checkpoint,
+            prompt=args.prompt,
+            max_new_tokens=args.new_tokens,
+            temperature=args.temperature,
+            top_k=args.top_k or None,
+            device=args.device,
+            seed=args.seed,
+        )
+        print(generated)
     return 0
 
 

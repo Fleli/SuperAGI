@@ -15,6 +15,20 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("$(MAKE) export-model", contents)
         self.assertIn('$(MAKE) run-model CHECKPOINT="$(MODEL_OUT)"', contents)
 
+    def test_run_model_target_wires_top_k_sampling(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("TOP_K :=", contents)
+        self.assertIn('--top-k "$(TOP_K)"', contents)
+
+    def test_run_model_target_streams_by_default(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("STREAM := 1", contents)
+        self.assertIn('--stream "$(STREAM)"', contents)
+
     def test_std_train_prefills_standard_training_command(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
         contents = makefile.read_text(encoding="utf-8")

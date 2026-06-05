@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 import torch
 from torch import nn
@@ -109,11 +110,15 @@ class TransformerLM(nn.Module):
         input_ids: torch.Tensor,
         max_new_tokens: int,
         temperature: float = 1.0,
+        top_k: int | None = None,
+        on_token: Callable[[int], None] | None = None,
     ) -> torch.Tensor:
         if max_new_tokens < 0:
             raise ValueError("max_new_tokens must be non-negative")
         if temperature <= 0:
             raise ValueError("temperature must be positive")
+        if top_k is not None and top_k <= 0:
+            raise ValueError("top_k must be positive when set")
 
         was_training = self.training
         self.eval()
@@ -121,8 +126,20 @@ class TransformerLM(nn.Module):
             context = input_ids[:, -self.config.context_length :]
             logits, _ = self(context)
             next_token_logits = logits[:, -1, :] / temperature
+            if top_k is not None:
+                k = min(top_k, next_token_logits.shape[-1])
+                top_values, top_indices = torch.topk(next_token_logits, k=k, dim=-1)
+                filtered_logits = torch.full_like(next_token_logits, float("-inf"))
+                next_token_logits = filtered_logits.scatter(
+                    dim=-1,
+                    index=top_indices,
+                    src=top_values,
+                )
             probabilities = F.softmax(next_token_logits, dim=-1)
             next_token = torch.multinomial(probabilities, num_samples=1)
+            if on_token is not None:
+                for token_id in next_token[:, 0].tolist():
+                    on_token(int(token_id))
             input_ids = torch.cat((input_ids, next_token), dim=1)
         if was_training:
             self.train()

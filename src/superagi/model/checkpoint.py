@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import torch
 
@@ -132,6 +132,8 @@ def generate_from_checkpoint(
     prompt: str,
     max_new_tokens: int,
     temperature: float = 1.0,
+    top_k: int | None = None,
+    on_text: Callable[[str], None] | None = None,
     device: torch.device | str = "cpu",
     seed: int | None = None,
 ) -> str:
@@ -148,10 +150,17 @@ def generate_from_checkpoint(
         dtype=torch.long,
         device=torch_device,
     )
+
+    def emit_text(token_id: int) -> None:
+        if on_text is not None:
+            on_text(checkpoint.tokenizer.decode([token_id]))
+
     generated = checkpoint.model.generate(
         input_ids=input_ids,
         max_new_tokens=max_new_tokens,
         temperature=temperature,
+        top_k=top_k,
+        on_token=emit_text if on_text is not None else None,
     )
     return checkpoint.tokenizer.decode(generated[0].cpu().tolist())
 
