@@ -3,4 +3,6 @@ numpy
 pyyaml
 requests
 tokenizers
-torch>=2.12
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0+cu124; python_version < "3.13" and platform_system == "Linux"
+torch>=2.12; python_version >= "3.13" or platform_system != "Linux"

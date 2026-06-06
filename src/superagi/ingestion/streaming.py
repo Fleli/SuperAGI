@@ -8,7 +8,6 @@ from typing import Any
 
 import torch
 
-from superagi.ingestion.builders.common import normalize_document_text
 from superagi.ingestion.tokenizer import BpeTokenizer
 
 
@@ -23,6 +22,20 @@ class TokenShardBuildResult:
     train_tokens: int
     validation_tokens: int
     documents_tokenized: int
+
+
+def normalize_stream_document_text(text: str) -> str:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.strip() for line in text.split("\n")]
+    normalized_lines = []
+    previous_blank = False
+    for line in lines:
+        is_blank = not line
+        if is_blank and previous_blank:
+            continue
+        normalized_lines.append(line)
+        previous_blank = is_blank
+    return "\n".join(normalized_lines).strip()
 
 
 def build_c4_token_shards(
@@ -210,7 +223,7 @@ def _iter_normalized_texts(
 ) -> Iterable[str]:
     yielded = 0
     for example in examples:
-        text = normalize_document_text(str(example.get("text", "")))
+        text = normalize_stream_document_text(str(example.get("text", "")))
         if len(text) < min_chars:
             continue
         yield text

@@ -5,11 +5,21 @@ from pathlib import Path
 
 import torch
 
-from superagi.ingestion.streaming import build_token_shards_from_stream
+from superagi.ingestion.streaming import (
+    build_token_shards_from_stream,
+    normalize_stream_document_text,
+)
 from superagi.training.train import TokenShardDataset
 
 
 class StreamingShardTests(unittest.TestCase):
+    def test_streaming_normalizer_does_not_depend_on_raw_corpus_builders(self) -> None:
+        text = "  first line\r\n\r\n\r\n second line  "
+
+        normalized = normalize_stream_document_text(text)
+
+        self.assertEqual(normalized, "first line\n\nsecond line")
+
     def test_builds_bpe_token_shards_without_raw_text_files(self) -> None:
         examples = [
             {"text": "machine learning systems learn useful patterns"},
