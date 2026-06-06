@@ -27,7 +27,10 @@ class CorpusIngestionTests(unittest.TestCase):
             raw_dir = root / "raw"
             processed_dir = root / "processed"
             raw_dir.mkdir()
-            (raw_dir / "sample.txt").write_text("aba", encoding="utf-8")
+            (raw_dir / "sample.txt").write_text(
+                "machine learning learns machine learning patterns",
+                encoding="utf-8",
+            )
 
             artifact = ingest_raw_corpus(raw_dir, processed_dir, artifact_name="train")
 
@@ -36,8 +39,38 @@ class CorpusIngestionTests(unittest.TestCase):
             saved_tokens = torch.load(token_file)
             saved_vocab = json.loads(vocab_file.read_text(encoding="utf-8"))
 
+        self.assertEqual(saved_tokens.tolist(), artifact.token_ids)
+        self.assertEqual(saved_vocab["tokenizer_type"], "bpe")
+        self.assertEqual(saved_vocab["vocab_size"], artifact.tokenizer.vocab_size)
+        self.assertIn("tokenizer_json", saved_vocab)
+        self.assertEqual(
+            artifact.tokenizer.decode(artifact.token_ids),
+            "machine learning learns machine learning patterns",
+        )
+
+    def test_can_ingest_raw_corpus_with_char_tokenizer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            raw_dir = root / "raw"
+            processed_dir = root / "processed"
+            raw_dir.mkdir()
+            (raw_dir / "sample.txt").write_text("aba", encoding="utf-8")
+
+            artifact = ingest_raw_corpus(
+                raw_dir,
+                processed_dir,
+                artifact_name="train",
+                tokenizer_type="char",
+            )
+
+            saved_tokens = torch.load(processed_dir / "train_tokens.pt")
+            saved_vocab = json.loads(
+                (processed_dir / "train_vocab.json").read_text(encoding="utf-8")
+            )
+
         self.assertEqual(artifact.token_ids, [0, 1, 0])
         self.assertEqual(saved_tokens.tolist(), [0, 1, 0])
+        self.assertEqual(saved_vocab["tokenizer_type"], "char")
         self.assertEqual(saved_vocab["id_to_char"], ["a", "b"])
         self.assertEqual(artifact.tokenizer.decode(artifact.token_ids), "aba")
 
@@ -53,6 +86,7 @@ class CorpusIngestionTests(unittest.TestCase):
                 raw_dir,
                 processed_dir,
                 artifact_name="train",
+                tokenizer_type="char",
                 validation_fraction=0.3,
             )
 

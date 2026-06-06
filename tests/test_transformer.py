@@ -48,6 +48,31 @@ class TransformerLMTests(unittest.TestCase):
         self.assertIn("blocks.0.feed_forward.net.0.weight", parameter_names)
         self.assertGreater(sum(param.numel() for param in model.parameters()), 0)
 
+    def test_output_projection_reuses_token_embedding_weights(self) -> None:
+        config = TransformerConfig(
+            vocab_size=7,
+            context_length=5,
+            dim_embedding=12,
+            n_layers=1,
+            n_heads=3,
+            dropout=0.0,
+        )
+        model = TransformerLM(config)
+        input_ids = torch.tensor([[0, 1, 2, 3]])
+        target_ids = torch.tensor([[1, 2, 3, 4]])
+
+        _, loss = model(input_ids, target_ids)
+        if loss is None:
+            self.fail("expected training loss")
+        loss.backward()
+
+        self.assertIs(
+            model.output_projection.weight,
+            model.embeddings.token_embedding.weight,
+        )
+        self.assertIsNone(model.output_projection.bias)
+        self.assertIsNotNone(model.embeddings.token_embedding.weight.grad)
+
     def test_generate_appends_tokens(self) -> None:
         torch.manual_seed(1)
         config = TransformerConfig(

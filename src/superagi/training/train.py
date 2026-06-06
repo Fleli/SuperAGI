@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -33,9 +34,100 @@ class NextTokenDataset(Dataset):
 
 
 @dataclass(frozen=True)
+class TokenShard:
+    path: Path
+    token_count: int
+
+
+class TokenShardDataset:
+    def __init__(self, shards: Sequence[TokenShard]) -> None:
+        if not shards:
+            raise ValueError("at least one token shard is required")
+        self.shards = tuple(shards)
+        self.total_tokens = sum(shard.token_count for shard in self.shards)
+        self._loaded_path: Path | None = None
+        self._loaded_device: torch.device | None = None
+        self._loaded_tokens: torch.Tensor | None = None
+
+    @classmethod
+    def from_manifest(cls, manifest_path: Path | str) -> "TokenShardDataset":
+        path = Path(manifest_path)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("format") != "superagi-token-shards-v1":
+            raise ValueError("token shard manifest has unknown format")
+        shard_records = payload.get("shards")
+        if not isinstance(shard_records, list):
+            raise ValueError("token shard manifest must contain shards")
+
+        shards = []
+        for record in shard_records:
+            if not isinstance(record, dict):
+                raise ValueError("token shard records must be mappings")
+            relative_path = record.get("path")
+            token_count = record.get("tokens")
+            if not isinstance(relative_path, str):
+                raise ValueError("token shard path must be a string")
+            if not isinstance(token_count, int) or token_count <= 0:
+                raise ValueError("token shard token count must be positive")
+            shards.append(
+                TokenShard(
+                    path=path.parent / relative_path,
+                    token_count=token_count,
+                )
+            )
+        return cls(shards)
+
+    @property
+    def shard_count(self) -> int:
+        return len(self.shards)
+
+    def sample_next_token_batch(
+        self,
+        *,
+        context_length: int,
+        batch_size: int,
+        device: torch.device,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        eligible_shards = [
+            shard for shard in self.shards if shard.token_count > context_length
+        ]
+        if not eligible_shards:
+            raise ValueError("all token shards are shorter than context_length")
+
+        selected_index = int(torch.randint(len(eligible_shards), size=(1,)).item())
+        selected_shard = eligible_shards[selected_index]
+        tokens = self._load_shard(selected_shard.path, device)
+        return sample_next_token_batch(
+            tokens=tokens,
+            context_length=context_length,
+            batch_size=batch_size,
+        )
+
+    def _load_shard(self, path: Path, device: torch.device) -> torch.Tensor:
+        if (
+            self._loaded_tokens is not None
+            and self._loaded_path == path
+            and self._loaded_device == device
+        ):
+            return self._loaded_tokens
+
+        tokens = torch.load(path, map_location="cpu")
+        if not isinstance(tokens, torch.Tensor):
+            raise ValueError(f"token shard must contain a tensor: {path}")
+        if tokens.ndim != 1:
+            raise ValueError(f"token shard must contain a 1D tensor: {path}")
+        self._loaded_path = path
+        self._loaded_device = device
+        self._loaded_tokens = tokens.to(device=device, dtype=torch.long)
+        return self._loaded_tokens
+
+
+@dataclass(frozen=True)
 class TrainConfig:
     batch_size: int = 32
     learning_rate: float = 3e-4
+    min_learning_rate: float = 0.0
+    warmup_steps: int = 0
     max_steps: int = 1000
     weight_decay: float = 0.01
     grad_clip: float | None = 1.0
@@ -46,6 +138,12 @@ class TrainConfig:
             raise ValueError("batch_size must be positive")
         if self.learning_rate <= 0:
             raise ValueError("learning_rate must be positive")
+        if self.min_learning_rate < 0:
+            raise ValueError("min_learning_rate must be non-negative")
+        if self.min_learning_rate > self.learning_rate:
+            raise ValueError("min_learning_rate must be less than or equal to learning_rate")
+        if self.warmup_steps < 0:
+            raise ValueError("warmup_steps must be non-negative")
         if self.max_steps < 0:
             raise ValueError("max_steps must be non-negative")
         if self.weight_decay < 0:
@@ -59,6 +157,7 @@ class MetricSnapshot:
     step: int
     train_loss: float
     validation_loss: float | None
+    learning_rate: float
     elapsed_seconds: float
 
 
@@ -153,7 +252,7 @@ def evaluate_loss(
 
 def train_model(
     model: nn.Module,
-    token_ids: Sequence[int],
+    token_ids: Sequence[int] | torch.Tensor | TokenShardDataset,
     config: TrainConfig,
     device: torch.device | str = "cpu",
 ) -> list[float]:
@@ -168,7 +267,7 @@ def train_model(
 
 def train_model_with_metrics(
     model: nn.Module,
-    token_ids: Sequence[int],
+    token_ids: Sequence[int] | torch.Tensor | TokenShardDataset,
     config: TrainConfig,
     device: torch.device | str = "cpu",
     validation_token_ids: Sequence[int] | None = None,
@@ -190,7 +289,7 @@ def train_model_with_metrics(
 
     device = torch.device(device)
     model.to(device)
-    tokens = _tokens_to_device(token_ids, device)
+    tokens = None if isinstance(token_ids, TokenShardDataset) else _tokens_to_device(token_ids, device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
@@ -201,11 +300,22 @@ def train_model_with_metrics(
     metrics = []
     start_time = time.perf_counter()
     for step_index in range(1, config.max_steps + 1):
-        input_ids, target_ids = sample_next_token_batch(
-            tokens=tokens,
-            context_length=model.config.context_length,
-            batch_size=config.batch_size,
-        )
+        current_learning_rate = learning_rate_for_step(config, step_index)
+        _set_optimizer_learning_rate(optimizer, current_learning_rate)
+        if isinstance(token_ids, TokenShardDataset):
+            input_ids, target_ids = token_ids.sample_next_token_batch(
+                context_length=model.config.context_length,
+                batch_size=config.batch_size,
+                device=device,
+            )
+        else:
+            if tokens is None:
+                raise RuntimeError("tokens were not initialized")
+            input_ids, target_ids = sample_next_token_batch(
+                tokens=tokens,
+                context_length=model.config.context_length,
+                batch_size=config.batch_size,
+            )
         train_loss = train_step(
             model=model,
             optimizer=optimizer,
@@ -233,6 +343,7 @@ def train_model_with_metrics(
                     step=start_step + step_index,
                     train_loss=train_loss,
                     validation_loss=validation_loss,
+                    learning_rate=current_learning_rate,
                     elapsed_seconds=time.perf_counter() - start_time,
                 )
             )
@@ -241,7 +352,9 @@ def train_model_with_metrics(
                 f"{metrics[-1].step} "
                 f"train_loss={metrics[-1].train_loss:.6f} "
                 f"validation_loss={_format_loss(metrics[-1].validation_loss)} "
-                f"elapsed_seconds={metrics[-1].elapsed_seconds:.2f}",
+                f"learning_rate={metrics[-1].learning_rate:.8f} "
+                f"elapsed_seconds={metrics[-1].elapsed_seconds:.2f} "
+                f"estimated_remaining_seconds={_estimate_remaining_seconds(metrics[-1].elapsed_seconds, step_index, config.max_steps):.2f}",
                 flush=True,
             )
             if metric_callback is not None:
@@ -271,6 +384,37 @@ def append_metrics_jsonl(
             file.write("\n")
 
 
+def learning_rate_for_step(config: TrainConfig, step_index: int) -> float:
+    if step_index <= 0:
+        raise ValueError("step_index must be positive")
+    if config.max_steps <= 0:
+        return config.learning_rate
+
+    effective_step = min(step_index, config.max_steps)
+    warmup_steps = min(config.warmup_steps, config.max_steps)
+    if warmup_steps > 0 and effective_step <= warmup_steps:
+        return config.learning_rate * (effective_step / warmup_steps)
+
+    decay_steps = config.max_steps - warmup_steps
+    if decay_steps <= 0:
+        return config.learning_rate
+
+    decay_step = min(decay_steps, max(0, effective_step - warmup_steps))
+    progress = decay_step / decay_steps
+    cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+    return config.min_learning_rate + (
+        config.learning_rate - config.min_learning_rate
+    ) * cosine
+
+
+def _set_optimizer_learning_rate(
+    optimizer: torch.optim.Optimizer,
+    learning_rate: float,
+) -> None:
+    for parameter_group in optimizer.param_groups:
+        parameter_group["lr"] = learning_rate
+
+
 def _tokens_to_device(
     token_ids: Sequence[int] | torch.Tensor,
     device: torch.device,
@@ -284,3 +428,14 @@ def _format_loss(loss: float | None) -> str:
     if loss is None:
         return "null"
     return f"{loss:.6f}"
+
+
+def _estimate_remaining_seconds(
+    elapsed_seconds: float,
+    completed_steps: int,
+    total_steps: int,
+) -> float:
+    if completed_steps <= 0:
+        return 0.0
+    remaining_steps = max(0, total_steps - completed_steps)
+    return (elapsed_seconds / completed_steps) * remaining_steps

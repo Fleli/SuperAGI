@@ -77,7 +77,12 @@ class TransformerLM(nn.Module):
             TransformerBlock(config) for _ in range(config.n_layers)
         )
         self.ln_final = nn.LayerNorm(config.dim_embedding)
-        self.output_projection = nn.Linear(config.dim_embedding, config.vocab_size)
+        self.output_projection = nn.Linear(
+            config.dim_embedding,
+            config.vocab_size,
+            bias=False,
+        )
+        self.output_projection.weight = self.embeddings.token_embedding.weight
 
     def forward(
         self,

@@ -79,6 +79,40 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("append_metrics_jsonl", contents)
         self.assertIn('Path("$(METRICS)")', contents)
 
+    def test_train_target_wires_learning_rate_schedule(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("LR_MIN :=", contents)
+        self.assertIn("LR_WARMUP_STEPS :=", contents)
+        self.assertIn('min_learning_rate=float("$(LR_MIN)")', contents)
+        self.assertIn('warmup_steps=int("$(LR_WARMUP_STEPS)")', contents)
+        self.assertIn('"min_learning_rate": float("$(LR_MIN)")', contents)
+        self.assertIn('"warmup_steps": int("$(LR_WARMUP_STEPS)")', contents)
+
+    def test_ingest_defaults_to_bpe_tokenization(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("TOKENIZER := bpe", contents)
+        self.assertIn("BPE_VOCAB_SIZE := 8000", contents)
+        self.assertIn("BPE_MIN_FREQUENCY := 2", contents)
+        self.assertIn('tokenizer_type="$(TOKENIZER)"', contents)
+        self.assertIn('bpe_vocab_size=int("$(BPE_VOCAB_SIZE)")', contents)
+        self.assertIn('bpe_min_frequency=int("$(BPE_MIN_FREQUENCY)")', contents)
+        self.assertIn('vocab_size=int(vocab["vocab_size"])', contents)
+
+    def test_stream_c4_target_builds_token_shards(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("ingest-stream-c4", contents)
+        self.assertIn("STREAM_SHARD_TOKENS :=", contents)
+        self.assertIn("STREAM_VALIDATION_TOKENS :=", contents)
+        self.assertIn("build_c4_token_shards", contents)
+        self.assertIn("train_shards/manifest.json", contents)
+        self.assertIn("TokenShardDataset.from_manifest", contents)
+
     def test_train_target_wires_periodic_checkpointing(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
         contents = makefile.read_text(encoding="utf-8")

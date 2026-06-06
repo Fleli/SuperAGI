@@ -2,4 +2,5 @@ datasets
 numpy
 pyyaml
 requests
+tokenizers
 torch>=2.12

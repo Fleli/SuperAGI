@@ -12,6 +12,9 @@ CHECKPOINT := $(CHECKPOINT_DIR)/latest.pt
 BEST_CHECKPOINT := $(CHECKPOINT_DIR)/best.pt
 MODEL_OUT := $(CHECKPOINT_DIR)/final-model.pt
 RESUME :=
+TOKENIZER := bpe
+BPE_VOCAB_SIZE := 8000
+BPE_MIN_FREQUENCY := 2
 
 WIKI_QUERIES := machine learning,artificial intelligence
 WIKI_MAX := 5
@@ -20,6 +23,11 @@ WIKI_USER_AGENT := SuperAGI-learning-corpus-builder/0.1 (local learning project;
 
 C4_MAX := 100
 C4_MIN_CHARS := 500
+STREAM_C4_MAX := 10000
+STREAM_C4_MIN_CHARS := 1000
+STREAM_TOKENIZER_SAMPLE := 1000
+STREAM_SHARD_TOKENS := 1000000
+STREAM_VALIDATION_TOKENS := 200000
 
 TRAIN_4090_RAW_DIR := data/raw/c4-4090-night
 TRAIN_4090_C4_MAX := 150000
@@ -37,6 +45,8 @@ TRAIN_4090_TOP_K := 30
 
 BATCH := 32
 LR := 3e-4
+LR_MIN := 3e-5
+LR_WARMUP_STEPS := 100
 STEPS := 1000
 DEVICE := auto
 PROMPT := The
@@ -51,7 +61,7 @@ VAL_BATCHES := 10
 METRICS := $(CHECKPOINT_DIR)/metrics.jsonl
 CHECKPOINT_INTERVAL := 1000
 
-.PHONY: help setup data-dirs test wiki c4 ingest train params train-export-run train-4090 std-train export-model generate run-model smoke-train clean-generated
+.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 train params train-export-run train-4090 std-train export-model generate run-model smoke-train clean-generated
 
 help:
 	@echo "SuperAGI pipeline targets"
@@ -68,8 +78,11 @@ help:
 	@echo ""
 	@echo "Ingest and train:"
 	@echo "  make ingest            Tokenize data/raw into train/validation artifacts"
+	@echo "  make ingest TOKENIZER=bpe BPE_VOCAB_SIZE=8000 BPE_MIN_FREQUENCY=2"
+	@echo "  make ingest TOKENIZER=char"
+	@echo "  make ingest-stream-c4  Stream C4 directly into token shards"
 	@echo "  make params            Count params using data/processed vocab"
-	@echo "  make train STEPS=100 BATCH=16"
+	@echo "  make train STEPS=100 BATCH=16 LR=3e-4 LR_MIN=3e-5 LR_WARMUP_STEPS=100"
 	@echo "  make train RESUME=data/checkpoints/latest.pt STEPS=1000 CHECKPOINT_INTERVAL=1000"
 	@echo "  make train-export-run RESUME=data/checkpoints/latest.pt STEPS=1000 PROMPT=\"Attention is\""
 	@echo "  make train-4090        Fetch C4, rebuild artifacts, and start the RTX 4090 night run"
@@ -142,12 +155,38 @@ ingest: setup data-dirs
 		'    processed_dir="$(PROCESSED_DIR)",' \
 		'    artifact_name="$(ARTIFACT)",' \
 		'    validation_fraction=float("$(VALIDATION_FRACTION)"),' \
+		'    tokenizer_type="$(TOKENIZER)",' \
+		'    bpe_vocab_size=int("$(BPE_VOCAB_SIZE)"),' \
+		'    bpe_min_frequency=int("$(BPE_MIN_FREQUENCY)"),' \
 		')' \
 		'print(f"Tokenized {len(artifact.token_ids)} tokens")' \
 		'print(f"Vocab size: {artifact.tokenizer.vocab_size}")' \
 		'print("Artifacts: $(PROCESSED_DIR)/$(ARTIFACT)_tokens.pt, $(VAL_TOKENS), and $(PROCESSED_DIR)/$(ARTIFACT)_vocab.json")' \
 	| $(PYTHON)
 	@printf '==> [ingest] Finished ingesting raw text\n'
+
+ingest-stream-c4: setup data-dirs
+	@printf '==> [ingest-stream-c4] Streaming C4 into token shards\n'
+	@printf '%s\n' \
+		'from superagi.ingestion.streaming import build_c4_token_shards' \
+		'' \
+		'result = build_c4_token_shards(' \
+		'    processed_dir="$(PROCESSED_DIR)",' \
+		'    max_documents=int("$(STREAM_C4_MAX)"),' \
+		'    tokenizer_sample_documents=int("$(STREAM_TOKENIZER_SAMPLE)"),' \
+		'    shard_token_count=int("$(STREAM_SHARD_TOKENS)"),' \
+		'    validation_token_count=int("$(STREAM_VALIDATION_TOKENS)"),' \
+		'    min_chars=int("$(STREAM_C4_MIN_CHARS)"),' \
+		'    bpe_vocab_size=int("$(BPE_VOCAB_SIZE)"),' \
+		'    bpe_min_frequency=int("$(BPE_MIN_FREQUENCY)"),' \
+		')' \
+		'print(f"Tokenized {result.train_tokens} train tokens into {len(result.train_shard_paths)} shards")' \
+		'print(f"Validation tokens: {result.validation_tokens}")' \
+		'print(f"Vocab size: {result.tokenizer.vocab_size}")' \
+		'print(f"Manifest: {result.manifest_path}")' \
+		'print(f"Vocab: {result.vocab_path}")' \
+	| $(PYTHON)
+	@printf '==> [ingest-stream-c4] Finished streaming C4 into token shards\n'
 
 params: setup
 	@printf '%s\n' \
@@ -161,7 +200,7 @@ params: setup
 		'if not vocab_path.exists():' \
 		'    raise SystemExit("Missing vocab artifact. Run `make ingest` first.")' \
 		'vocab = json.loads(vocab_path.read_text(encoding="utf-8"))' \
-		'config = load_project_config().to_transformer_config(vocab_size=len(vocab["id_to_char"]))' \
+		'config = load_project_config().to_transformer_config(vocab_size=int(vocab["vocab_size"]))' \
 		'model = TransformerLM(config)' \
 		'print(sum(parameter.numel() for parameter in model.parameters()))' \
 	| $(PYTHON)
@@ -177,7 +216,7 @@ train: setup data-dirs
 		'' \
 		'from superagi.model.checkpoint import prepare_model_for_training, save_checkpoint' \
 		'from superagi.initialization.read_config import load_project_config' \
-		'from superagi.training.train import TrainConfig, append_metrics_jsonl, train_model_with_metrics' \
+		'from superagi.training.train import TokenShardDataset, TrainConfig, append_metrics_jsonl, train_model_with_metrics' \
 		'' \
 		'def choose_device() -> str:' \
 		'    configured = "$(DEVICE)"' \
@@ -191,12 +230,19 @@ train: setup data-dirs
 		'    return "cpu"' \
 		'' \
 		'token_path = Path("$(PROCESSED_DIR)") / "$(ARTIFACT)_tokens.pt"' \
+		'shard_manifest_path = Path("$(PROCESSED_DIR)") / "train_shards" / "manifest.json"' \
 		'vocab_path = Path("$(PROCESSED_DIR)") / "$(ARTIFACT)_vocab.json"' \
 		'val_token_path = Path("$(VAL_TOKENS)")' \
-		'if not token_path.exists() or not vocab_path.exists():' \
-		'    raise SystemExit("Missing processed artifacts. Run `make ingest` first.")' \
+		'if not vocab_path.exists():' \
+		'    raise SystemExit("Missing vocab artifact. Run `make ingest` or `make ingest-stream-c4` first.")' \
 		'' \
-		'token_ids = torch.load(token_path).tolist()' \
+		'if token_path.exists():' \
+		'    token_ids = torch.load(token_path).tolist()' \
+		'elif shard_manifest_path.exists():' \
+		'    token_ids = TokenShardDataset.from_manifest(shard_manifest_path)' \
+		'    print(f"Training shards: {token_ids.shard_count} shards, {token_ids.total_tokens} tokens")' \
+		'else:' \
+		'    raise SystemExit("Missing train tokens. Run `make ingest` or `make ingest-stream-c4` first. Expected train_tokens.pt or train_shards/manifest.json.")' \
 		'validation_token_ids = None' \
 		'if val_token_path.exists():' \
 		'    validation_token_ids = torch.load(val_token_path).tolist()' \
@@ -204,7 +250,7 @@ train: setup data-dirs
 		'else:' \
 		'    print("Validation tokens: not found; validation_loss will be null")' \
 		'vocab = json.loads(vocab_path.read_text(encoding="utf-8"))' \
-		'model_config = load_project_config().to_transformer_config(vocab_size=len(vocab["id_to_char"]))' \
+		'model_config = load_project_config().to_transformer_config(vocab_size=int(vocab["vocab_size"]))' \
 		'training_state = prepare_model_for_training(' \
 		'    vocab=vocab,' \
 		'    config=model_config,' \
@@ -235,6 +281,9 @@ train: setup data-dirs
 		'            "artifact": "$(ARTIFACT)",' \
 		'            "steps": total_losses,' \
 		'            "last_run_steps": int("$(STEPS)"),' \
+		'            "learning_rate": float("$(LR)"),' \
+		'            "min_learning_rate": float("$(LR_MIN)"),' \
+		'            "warmup_steps": int("$(LR_WARMUP_STEPS)"),' \
 		'            "eval_interval": int("$(EVAL_INTERVAL)"),' \
 		'            "validation_batches": int("$(VAL_BATCHES)"),' \
 		'            "checkpoint_interval": checkpoint_interval,' \
@@ -291,6 +340,8 @@ train: setup data-dirs
 		'    config=TrainConfig(' \
 		'        batch_size=int("$(BATCH)"),' \
 		'        learning_rate=float("$(LR)"),' \
+		'        min_learning_rate=float("$(LR_MIN)"),' \
+		'        warmup_steps=int("$(LR_WARMUP_STEPS)"),' \
 		'        max_steps=int("$(STEPS)"),' \
 		'    ),' \
 		'    device=choose_device(),' \
@@ -436,4 +487,4 @@ smoke-train: setup
 	| $(PYTHON)
 
 clean-generated:
-	rm -f "$(PROCESSED_DIR)"/* "$(CHECKPOINT_DIR)"/*
+	rm -rf "$(PROCESSED_DIR)"/* "$(CHECKPOINT_DIR)"/*

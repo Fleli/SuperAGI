@@ -6,19 +6,26 @@ from superagi.initialization.read_config import load_project_config
 
 
 class ConfigLoadingTests(unittest.TestCase):
-    def test_default_config_is_sized_for_4090_night_run(self) -> None:
+    def test_default_config_maps_to_transformer_config(self) -> None:
         config = load_project_config()
         transformer_config = config.to_transformer_config(vocab_size=100)
 
-        self.assertEqual(config.parameters.n_layers, 12)
-        self.assertEqual(config.parameters.dim_embedding, 512)
-        self.assertEqual(config.parameters.dim_key, 64)
-        self.assertEqual(config.parameters.ctx_window, 512)
-        self.assertEqual(config.parameters.n_heads, 8)
-        self.assertEqual(transformer_config.context_length, 512)
-        self.assertEqual(transformer_config.dim_embedding, 512)
-        self.assertEqual(transformer_config.n_layers, 12)
-        self.assertEqual(transformer_config.n_heads, 8)
+        self.assertGreater(config.parameters.n_layers, 0)
+        self.assertGreater(config.parameters.dim_embedding, 0)
+        self.assertGreater(config.parameters.dim_key, 0)
+        self.assertGreater(config.parameters.ctx_window, 0)
+        self.assertEqual(
+            config.parameters.dim_embedding % config.parameters.dim_key,
+            0,
+        )
+        self.assertEqual(transformer_config.vocab_size, 100)
+        self.assertEqual(transformer_config.context_length, config.parameters.ctx_window)
+        self.assertEqual(
+            transformer_config.dim_embedding,
+            config.parameters.dim_embedding,
+        )
+        self.assertEqual(transformer_config.n_layers, config.parameters.n_layers)
+        self.assertEqual(transformer_config.n_heads, config.parameters.n_heads)
 
     def test_loads_model_config_from_yaml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

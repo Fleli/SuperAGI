@@ -7,7 +7,7 @@ from typing import Iterable
 
 import torch
 
-from superagi.ingestion.tokenizer import CharTokenizer
+from superagi.ingestion.tokenizer import BpeTokenizer, CharTokenizer, TokenizerLike
 
 
 DEFAULT_SUFFIXES = (".txt", ".md")
@@ -22,7 +22,7 @@ class RawCorpus:
 @dataclass(frozen=True)
 class TokenizedCorpus:
     token_ids: list[int]
-    tokenizer: CharTokenizer
+    tokenizer: TokenizerLike
     source_paths: tuple[Path, ...]
 
 
@@ -53,8 +53,24 @@ def read_raw_corpus(
     return RawCorpus(text=text, source_paths=source_paths)
 
 
-def tokenize_raw_corpus(raw_corpus: RawCorpus) -> TokenizedCorpus:
-    tokenizer = CharTokenizer.from_text(raw_corpus.text)
+def tokenize_raw_corpus(
+    raw_corpus: RawCorpus,
+    *,
+    tokenizer_type: str = "bpe",
+    bpe_vocab_size: int = 8000,
+    bpe_min_frequency: int = 2,
+) -> TokenizedCorpus:
+    if tokenizer_type == "bpe":
+        tokenizer = BpeTokenizer.from_text(
+            raw_corpus.text,
+            vocab_size=bpe_vocab_size,
+            min_frequency=bpe_min_frequency,
+        )
+    elif tokenizer_type == "char":
+        tokenizer = CharTokenizer.from_text(raw_corpus.text)
+    else:
+        raise ValueError(f"unknown tokenizer_type: {tokenizer_type!r}")
+
     token_ids = tokenizer.encode(raw_corpus.text)
     return TokenizedCorpus(
         token_ids=token_ids,
@@ -69,9 +85,17 @@ def ingest_raw_corpus(
     artifact_name: str = "train",
     validation_fraction: float = 0.0,
     validation_artifact_name: str = "val",
+    tokenizer_type: str = "bpe",
+    bpe_vocab_size: int = 8000,
+    bpe_min_frequency: int = 2,
 ) -> TokenizedCorpus:
     raw_corpus = read_raw_corpus(raw_dir)
-    tokenized = tokenize_raw_corpus(raw_corpus)
+    tokenized = tokenize_raw_corpus(
+        raw_corpus,
+        tokenizer_type=tokenizer_type,
+        bpe_vocab_size=bpe_vocab_size,
+        bpe_min_frequency=bpe_min_frequency,
+    )
     save_tokenized_corpus(
         tokenized,
         processed_dir,
@@ -110,7 +134,7 @@ def save_tokenized_corpus(
         )
 
     vocab_payload = {
-        "id_to_char": list(tokenized.tokenizer.id_to_char),
+        **tokenized.tokenizer.to_payload(),
         "source_paths": [str(path) for path in tokenized.source_paths],
         "train_tokens": len(train_token_ids),
         "validation_tokens": len(validation_token_ids),

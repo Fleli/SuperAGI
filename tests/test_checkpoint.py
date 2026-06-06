@@ -10,6 +10,7 @@ from unittest import mock
 
 import torch
 
+from superagi.ingestion.tokenizer import BpeTokenizer
 from superagi.model.checkpoint import (
     generate_from_checkpoint,
     load_checkpoint,
@@ -21,8 +22,9 @@ from superagi.model.transformer import TransformerConfig, TransformerLM
 
 class CheckpointTests(unittest.TestCase):
     def test_save_and_load_portable_checkpoint(self) -> None:
-        model = self._tiny_model()
-        vocab = {"id_to_char": ["a", "b", " "]}
+        tokenizer = self._tiny_tokenizer()
+        model = self._tiny_model(vocab_size=tokenizer.vocab_size)
+        vocab = tokenizer.to_payload()
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             checkpoint_path = Path(tmp_dir) / "model.pt"
@@ -46,7 +48,8 @@ class CheckpointTests(unittest.TestCase):
 
         self.assertEqual(saved_path, checkpoint_path)
         self.assertEqual(loaded.config, model.config)
-        self.assertEqual(loaded.tokenizer.decode([0, 2, 1]), "a b")
+        self.assertEqual(loaded.tokenizer.decode(loaded.tokenizer.encode("a b")), "a b")
+        self.assertEqual(loaded.vocab["tokenizer_type"], "bpe")
         self.assertEqual(loaded.losses, [1.0, 0.5])
         self.assertEqual(loaded.metrics[0]["validation_loss"], 0.75)
         self.assertEqual(loaded.metadata["steps"], 2)
@@ -55,15 +58,15 @@ class CheckpointTests(unittest.TestCase):
             sum(parameter.numel() for parameter in model.parameters()),
         )
 
-    def test_generate_from_checkpoint_returns_prompt_plus_new_chars(self) -> None:
-        model = self._tiny_model(vocab_size=2)
-        vocab = {"id_to_char": ["a", "b"]}
+    def test_generate_from_checkpoint_returns_prompt_plus_new_text(self) -> None:
+        tokenizer = self._tiny_tokenizer()
+        model = self._tiny_model(vocab_size=tokenizer.vocab_size)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             checkpoint_path = save_checkpoint(
                 Path(tmp_dir) / "model.pt",
                 model=model,
-                vocab=vocab,
+                vocab=tokenizer.to_payload(),
             )
 
             generated = generate_from_checkpoint(
@@ -73,20 +76,19 @@ class CheckpointTests(unittest.TestCase):
                 seed=0,
             )
 
-        self.assertEqual(len(generated), 4)
         self.assertTrue(generated.startswith("a"))
-        self.assertTrue(set(generated).issubset({"a", "b"}))
+        self.assertGreaterEqual(len(generated), 1)
 
     def test_generate_from_checkpoint_streams_decoded_new_text(self) -> None:
-        model = self._tiny_model(vocab_size=2)
-        vocab = {"id_to_char": ["a", "b"]}
+        tokenizer = self._tiny_tokenizer()
+        model = self._tiny_model(vocab_size=tokenizer.vocab_size)
         streamed_chunks: list[str] = []
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             checkpoint_path = save_checkpoint(
                 Path(tmp_dir) / "model.pt",
                 model=model,
-                vocab=vocab,
+                vocab=tokenizer.to_payload(),
             )
 
             generated = generate_from_checkpoint(
@@ -98,17 +100,16 @@ class CheckpointTests(unittest.TestCase):
             )
 
         self.assertEqual("".join(streamed_chunks), generated[1:])
-        self.assertTrue(set(streamed_chunks).issubset({"a", "b"}))
 
     def test_run_model_script_generates_from_checkpoint(self) -> None:
-        model = self._tiny_model(vocab_size=2)
-        vocab = {"id_to_char": ["a", "b"]}
+        tokenizer = self._tiny_tokenizer()
+        model = self._tiny_model(vocab_size=tokenizer.vocab_size)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             checkpoint_path = save_checkpoint(
                 Path(tmp_dir) / "model.pt",
                 model=model,
-                vocab=vocab,
+                vocab=tokenizer.to_payload(),
             )
             result = subprocess.run(
                 [
@@ -132,9 +133,8 @@ class CheckpointTests(unittest.TestCase):
             )
 
         generated = result.stdout.strip()
-        self.assertEqual(len(generated), 3)
         self.assertTrue(generated.startswith("a"))
-        self.assertTrue(set(generated).issubset({"a", "b"}))
+        self.assertGreaterEqual(len(generated), 1)
 
     def test_run_model_script_streams_by_default(self) -> None:
         run_model = self._load_run_model_module()
@@ -197,8 +197,9 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "abc\n")
 
     def test_prepare_model_for_training_resumes_checkpoint(self) -> None:
-        model = self._tiny_model(vocab_size=2)
-        vocab = {"id_to_char": ["a", "b"]}
+        tokenizer = self._tiny_tokenizer()
+        vocab = tokenizer.to_payload()
+        model = self._tiny_model(vocab_size=tokenizer.vocab_size)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             checkpoint_path = save_checkpoint(
@@ -213,7 +214,7 @@ class CheckpointTests(unittest.TestCase):
             state = prepare_model_for_training(
                 vocab=vocab,
                 config=TransformerConfig(
-                    vocab_size=2,
+                    vocab_size=tokenizer.vocab_size,
                     context_length=4,
                     dim_embedding=4,
                     n_layers=1,
@@ -229,21 +230,26 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(state.resumed_from, checkpoint_path)
 
     def test_prepare_model_for_training_rejects_vocab_mismatch(self) -> None:
-        model = self._tiny_model(vocab_size=2)
+        tokenizer = self._tiny_tokenizer()
+        mismatched_tokenizer = self._tiny_tokenizer("x y x y")
+        model = self._tiny_model(vocab_size=tokenizer.vocab_size)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             checkpoint_path = save_checkpoint(
                 Path(tmp_dir) / "model.pt",
                 model=model,
-                vocab={"id_to_char": ["a", "b"]},
+                vocab=tokenizer.to_payload(),
             )
 
             with self.assertRaisesRegex(ValueError, "vocab does not match"):
                 prepare_model_for_training(
-                    vocab={"id_to_char": ["a", "c"]},
+                    vocab=mismatched_tokenizer.to_payload(),
                     config=model.config,
                     resume_path=checkpoint_path,
                 )
+
+    def _tiny_tokenizer(self, text: str = "a b a b") -> BpeTokenizer:
+        return BpeTokenizer.from_text(text, vocab_size=300, min_frequency=1)
 
     def _tiny_model(self, vocab_size: int = 3) -> TransformerLM:
         torch.manual_seed(0)

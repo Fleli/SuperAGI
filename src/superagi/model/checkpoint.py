@@ -6,19 +6,23 @@ from typing import Any, Callable, Iterable
 
 import torch
 
-from superagi.ingestion.tokenizer import CharTokenizer
+from superagi.ingestion.tokenizer import (
+    TokenizerLike,
+    normalize_tokenizer_payload,
+    tokenizer_from_payload,
+)
 from superagi.model.transformer import TransformerConfig, TransformerLM
 
 
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
 
 
 @dataclass(frozen=True)
 class LoadedCheckpoint:
     model: TransformerLM
     config: TransformerConfig
-    tokenizer: CharTokenizer
-    vocab: dict[str, list[str]]
+    tokenizer: TokenizerLike
+    vocab: dict[str, Any]
     losses: list[float]
     metrics: list[dict[str, Any]]
     metadata: dict[str, Any]
@@ -28,7 +32,7 @@ class LoadedCheckpoint:
 class TrainingState:
     model: TransformerLM
     config: TransformerConfig
-    vocab: dict[str, list[str]]
+    vocab: dict[str, Any]
     previous_losses: list[float]
     previous_metrics: list[dict[str, Any]]
     metadata: dict[str, Any]
@@ -39,7 +43,7 @@ def save_checkpoint(
     path: Path | str,
     *,
     model: TransformerLM,
-    vocab: dict[str, Iterable[str]],
+    vocab: dict[str, Any],
     losses: Iterable[float] | None = None,
     metrics: Iterable[dict[str, Any]] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -63,7 +67,7 @@ def save_checkpoint(
 
 def prepare_model_for_training(
     *,
-    vocab: dict[str, Iterable[str]],
+    vocab: dict[str, Any],
     config: TransformerConfig,
     resume_path: Path | str | None = None,
 ) -> TrainingState:
@@ -82,7 +86,7 @@ def prepare_model_for_training(
 
     checkpoint_path = Path(resume_path)
     checkpoint = load_checkpoint(checkpoint_path)
-    if checkpoint.vocab != normalized_vocab:
+    if _tokenizer_identity(checkpoint.vocab) != _tokenizer_identity(normalized_vocab):
         raise ValueError(
             "checkpoint vocab does not match processed vocab; "
             "resume with the same tokenizer vocabulary or train from scratch"
@@ -90,7 +94,7 @@ def prepare_model_for_training(
     return TrainingState(
         model=checkpoint.model,
         config=checkpoint.config,
-        vocab=checkpoint.vocab,
+        vocab=normalized_vocab,
         previous_losses=checkpoint.losses,
         previous_metrics=checkpoint.metrics,
         metadata=checkpoint.metadata,
@@ -110,6 +114,7 @@ def load_checkpoint(
 
     config = TransformerConfig(**_required_mapping(payload, "model_config"))
     vocab = _normalize_vocab(_required_mapping(payload, "vocab"))
+    _validate_config_vocab_size(config, vocab)
     model = TransformerLM(config)
     model.load_state_dict(payload["model_state"])
     model.eval()
@@ -117,7 +122,7 @@ def load_checkpoint(
     return LoadedCheckpoint(
         model=model,
         config=config,
-        tokenizer=_tokenizer_from_vocab(vocab),
+        tokenizer=tokenizer_from_payload(vocab),
         vocab=vocab,
         losses=list(payload.get("losses", [])),
         metrics=list(payload.get("metrics", [])),
@@ -145,15 +150,27 @@ def generate_from_checkpoint(
     torch_device = _resolve_device(device)
     checkpoint = load_checkpoint(path, map_location="cpu")
     checkpoint.model.to(torch_device)
+    prompt_ids = checkpoint.tokenizer.encode(prompt)
+    if not prompt_ids:
+        raise ValueError("prompt must encode to at least one token")
     input_ids = torch.tensor(
-        [checkpoint.tokenizer.encode(prompt)],
+        [prompt_ids],
         dtype=torch.long,
         device=torch_device,
     )
+    streamed_token_ids = list(prompt_ids)
+    streamed_text = checkpoint.tokenizer.decode(streamed_token_ids)
 
     def emit_text(token_id: int) -> None:
+        nonlocal streamed_text
         if on_text is not None:
-            on_text(checkpoint.tokenizer.decode([token_id]))
+            streamed_token_ids.append(token_id)
+            next_text = checkpoint.tokenizer.decode(streamed_token_ids)
+            if next_text.startswith(streamed_text):
+                on_text(next_text[len(streamed_text) :])
+            else:
+                on_text(checkpoint.tokenizer.decode([token_id]))
+            streamed_text = next_text
 
     generated = checkpoint.model.generate(
         input_ids=input_ids,
@@ -165,28 +182,19 @@ def generate_from_checkpoint(
     return checkpoint.tokenizer.decode(generated[0].cpu().tolist())
 
 
-def _tokenizer_from_vocab(vocab: dict[str, list[str]]) -> CharTokenizer:
-    id_to_char = tuple(vocab["id_to_char"])
-    char_to_id = {char: token_id for token_id, char in enumerate(id_to_char)}
-    return CharTokenizer(char_to_id=char_to_id, id_to_char=id_to_char)
+def _normalize_vocab(vocab: dict[str, Any]) -> dict[str, Any]:
+    return normalize_tokenizer_payload(vocab)
 
 
-def _normalize_vocab(vocab: dict[str, Iterable[str]]) -> dict[str, list[str]]:
-    if "id_to_char" not in vocab:
-        raise ValueError("vocab must contain id_to_char")
-    id_to_char = list(vocab["id_to_char"])
-    if not id_to_char:
-        raise ValueError("vocab must contain at least one token")
-    if len(set(id_to_char)) != len(id_to_char):
-        raise ValueError("vocab id_to_char entries must be unique")
-    return {"id_to_char": id_to_char}
+def _tokenizer_identity(vocab: dict[str, Any]) -> dict[str, Any]:
+    return tokenizer_from_payload(vocab).to_payload()
 
 
 def _validate_config_vocab_size(
     config: TransformerConfig,
-    vocab: dict[str, list[str]],
+    vocab: dict[str, Any],
 ) -> None:
-    if config.vocab_size != len(vocab["id_to_char"]):
+    if config.vocab_size != int(vocab["vocab_size"]):
         raise ValueError("config vocab_size must match vocab size")
 
 
