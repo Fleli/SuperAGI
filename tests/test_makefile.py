@@ -54,7 +54,7 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("TRAIN_4090_C4_MAX := 150000", contents)
         self.assertIn("TRAIN_4090_C4_MIN_CHARS := 1000", contents)
         self.assertIn("TRAIN_4090_STEPS := 120000", contents)
-        self.assertIn("TRAIN_4090_BATCH := 32", contents)
+        self.assertIn("TRAIN_4090_BATCH := 16", contents)
         self.assertIn("TRAIN_4090_DEVICE := cuda", contents)
         self.assertIn("$(MAKE) c4 \\", contents)
         self.assertIn('RAW_DIR="$(TRAIN_4090_RAW_DIR)"', contents)

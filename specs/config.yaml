@@ -7,4 +7,4 @@ parameters:
   n_layers: 12
   dim_embedding: 512
   dim_key: 64
-  ctx_window: 512
+  ctx_window: 768
