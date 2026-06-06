@@ -231,6 +231,38 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(output.getvalue(), "abc\n")
 
+    def test_run_model_script_can_format_chat_prompt(self) -> None:
+        run_model = self._load_run_model_module()
+
+        def fake_generate_from_checkpoint(*args, prompt=None, **kwargs):
+            self.assertEqual(prompt, "User: What are you?\nAGI:")
+            return "User: What are you?\nAGI: I am a small model."
+
+        output = io.StringIO()
+        with mock.patch.object(
+            run_model,
+            "generate_from_checkpoint",
+            side_effect=fake_generate_from_checkpoint,
+        ):
+            with contextlib.redirect_stdout(output):
+                exit_code = run_model.main(
+                    [
+                        "--checkpoint",
+                        "unused.pt",
+                        "--prompt",
+                        "What are you?",
+                        "--new-tokens",
+                        "2",
+                        "--chat",
+                        "1",
+                        "--stream",
+                        "0",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(output.getvalue(), "User: What are you?\nAGI: I am a small model.\n")
+
     def test_prepare_model_for_training_resumes_checkpoint(self) -> None:
         tokenizer = self._tiny_tokenizer()
         vocab = tokenizer.to_payload()

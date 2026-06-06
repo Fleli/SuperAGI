@@ -12,6 +12,12 @@ from tokenizers.trainers import BpeTrainer
 
 
 @dataclass(frozen=True)
+class TokenEncoding:
+    ids: tuple[int, ...]
+    offsets: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True)
 class CharTokenizer:
     """Maps characters to token IDs; learned embeddings live in the model."""
 
@@ -36,6 +42,12 @@ class CharTokenizer:
             return [self.char_to_id[char] for char in text]
         except KeyError as exc:
             raise ValueError(f"unknown character: {exc.args[0]!r}") from None
+
+    def encode_with_offsets(self, text: str) -> TokenEncoding:
+        return TokenEncoding(
+            ids=tuple(self.encode(text)),
+            offsets=tuple((index, index + 1) for index in range(len(text))),
+        )
 
     def decode(self, token_ids: Iterable[int]) -> str:
         chars = []
@@ -149,6 +161,13 @@ class BpeTokenizer:
 
     def encode(self, text: str) -> list[int]:
         return self.tokenizer.encode(text).ids
+
+    def encode_with_offsets(self, text: str) -> TokenEncoding:
+        encoding = self.tokenizer.encode(text)
+        return TokenEncoding(
+            ids=tuple(encoding.ids),
+            offsets=tuple((int(start), int(end)) for start, end in encoding.offsets),
+        )
 
     def decode(self, token_ids: Iterable[int]) -> str:
         return self.tokenizer.decode(list(token_ids))

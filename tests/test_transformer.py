@@ -216,6 +216,40 @@ class TransformerLMTests(unittest.TestCase):
 
         self.assertEqual(streamed_tokens, generated[0, -3:].tolist())
 
+    def test_generate_stops_when_token_callback_requests_stop(self) -> None:
+        class FixedLogitModel(TransformerLM):
+            def __init__(self) -> None:
+                super().__init__(
+                    TransformerConfig(
+                        vocab_size=5,
+                        context_length=4,
+                        dim_embedding=8,
+                        n_layers=1,
+                        n_heads=2,
+                        dropout=0.0,
+                    )
+                )
+
+            def forward(self, input_ids, target_ids=None):
+                batch_size, sequence_length = input_ids.shape
+                logits = torch.zeros(batch_size, sequence_length, self.config.vocab_size)
+                logits[..., 1] = 10.0
+                return logits, None
+
+        model = FixedLogitModel()
+        input_ids = torch.tensor([[0]])
+        streamed_tokens: list[int] = []
+
+        generated = model.generate(
+            input_ids,
+            max_new_tokens=10,
+            top_k=1,
+            on_token=lambda token_id: streamed_tokens.append(token_id) or True,
+        )
+
+        self.assertEqual(streamed_tokens, [1])
+        self.assertEqual(generated.shape, (1, 2))
+
 
 if __name__ == "__main__":
     unittest.main()

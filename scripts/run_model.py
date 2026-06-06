@@ -10,6 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from superagi.model.checkpoint import generate_from_checkpoint  # noqa: E402
+from superagi.chat.formatting import format_user_prompt  # noqa: E402
 
 
 def _parse_bool(value: str) -> bool:
@@ -29,6 +30,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to a portable model checkpoint.",
     )
     parser.add_argument("--prompt", required=True, help="Prompt text to continue.")
+    parser.add_argument(
+        "--chat",
+        type=_parse_bool,
+        default=False,
+        help="Format prompt as a User:/AGI: chat turn before generation.",
+    )
     parser.add_argument(
         "--new-tokens",
         type=int,
@@ -84,11 +91,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.repetition_window < 0:
         parser.error("--repetition-window must be non-negative")
 
+    prompt = format_user_prompt(args.prompt).text if args.chat else args.prompt
+
     if args.stream:
-        print(args.prompt, end="", flush=True)
+        print(prompt, end="", flush=True)
         generate_from_checkpoint(
             args.checkpoint,
-            prompt=args.prompt,
+            prompt=prompt,
             max_new_tokens=args.new_tokens,
             temperature=args.temperature,
             top_k=args.top_k or None,
@@ -102,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         generated = generate_from_checkpoint(
             args.checkpoint,
-            prompt=args.prompt,
+            prompt=prompt,
             max_new_tokens=args.new_tokens,
             temperature=args.temperature,
             top_k=args.top_k or None,

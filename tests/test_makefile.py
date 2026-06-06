@@ -38,6 +38,42 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("STREAM := 1", contents)
         self.assertIn('--stream "$(STREAM)"', contents)
 
+    def test_run_model_target_wires_chat_formatting(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("CHAT :=", contents)
+        self.assertIn('--chat "$(CHAT)"', contents)
+
+    def test_sft_train_target_writes_separate_checkpoint(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("sft-train", contents)
+        self.assertIn("SFT_DATA := data/sft/seed.jsonl", contents)
+        self.assertIn("SFT_BASE_CHECKPOINT := $(CHECKPOINT)", contents)
+        self.assertIn("SFT_OUT := data/sft/runs/chat-sft.pt", contents)
+        self.assertIn("SFT_METRICS := data/sft/runs/metrics.jsonl", contents)
+        self.assertIn("scripts/train_sft.py", contents)
+        self.assertIn('--base-checkpoint "$(SFT_BASE_CHECKPOINT)"', contents)
+        self.assertIn('--out "$(SFT_OUT)"', contents)
+        self.assertIn('--metrics "$(SFT_METRICS)"', contents)
+        self.assertIn("==> [sft-train] Training supervised chat model", contents)
+        self.assertIn("==> [sft-train] Finished supervised chat training", contents)
+
+    def test_chat_target_starts_interactive_chat_wrapper(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("chat", contents)
+        self.assertIn("CHAT_MAX_TOKENS :=", contents)
+        self.assertIn("CHAT_CHECKPOINT := $(SFT_OUT)", contents)
+        self.assertIn("scripts/chat.py", contents)
+        self.assertIn('--checkpoint "$(CHAT_CHECKPOINT)"', contents)
+        self.assertIn('--new-tokens "$(CHAT_MAX_TOKENS)"', contents)
+        self.assertIn('--repetition-penalty "$(REPETITION_PENALTY)"', contents)
+        self.assertIn("==> [chat] Starting interactive chat", contents)
+
     def test_std_train_prefills_standard_training_command(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
         contents = makefile.read_text(encoding="utf-8")

@@ -118,7 +118,7 @@ class TransformerLM(nn.Module):
         top_k: int | None = None,
         repetition_penalty: float = 1.0,
         repetition_window: int | None = None,
-        on_token: Callable[[int], None] | None = None,
+        on_token: Callable[[int], bool | None] | None = None,
     ) -> torch.Tensor:
         if max_new_tokens < 0:
             raise ValueError("max_new_tokens must be non-negative")
@@ -155,10 +155,13 @@ class TransformerLM(nn.Module):
                 )
             probabilities = F.softmax(next_token_logits, dim=-1)
             next_token = torch.multinomial(probabilities, num_samples=1)
+            should_stop = False
             if on_token is not None:
                 for token_id in next_token[:, 0].tolist():
-                    on_token(int(token_id))
+                    should_stop = bool(on_token(int(token_id))) or should_stop
             input_ids = torch.cat((input_ids, next_token), dim=1)
+            if should_stop:
+                break
         if was_training:
             self.train()
         return input_ids

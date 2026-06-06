@@ -56,14 +56,31 @@ TOP_K := 0
 REPETITION_PENALTY := 1.0
 REPETITION_WINDOW := 128
 STREAM := 1
+CHAT := 0
+CHAT_MAX_TOKENS := 80
 VALIDATION_FRACTION := 0.1
 VAL_TOKENS := $(PROCESSED_DIR)/val_tokens.pt
 EVAL_INTERVAL := 500
 VAL_BATCHES := 10
 METRICS := $(CHECKPOINT_DIR)/metrics.jsonl
 CHECKPOINT_INTERVAL := 1000
+SFT_DATA := data/sft/seed.jsonl
+SFT_BASE_CHECKPOINT := $(CHECKPOINT)
+SFT_OUT := data/sft/runs/chat-sft.pt
+CHAT_CHECKPOINT := $(SFT_OUT)
+SFT_METRICS := data/sft/runs/metrics.jsonl
+SFT_STEPS := 3000
+SFT_BATCH := 8
+SFT_LR := 3e-5
+SFT_LR_MIN := 3e-6
+SFT_LR_WARMUP_STEPS := 10
+SFT_WEIGHT_DECAY := 0.01
+SFT_GRAD_CLIP := 1.0
+SFT_DEVICE := auto
+SFT_CHECKPOINT_INTERVAL := 250
+SFT_SEED := 1337
 
-.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 train params train-export-run train-4090 std-train export-model generate run-model smoke-train clean-generated
+.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 train sft-train params train-export-run train-4090 std-train export-model generate run-model chat smoke-train clean-generated
 
 help:
 	@echo "SuperAGI pipeline targets"
@@ -87,13 +104,16 @@ help:
 	@echo "  make train STEPS=100 BATCH=16 LR=3e-4 LR_MIN=3e-5 LR_WARMUP_STEPS=100"
 	@echo "  make train RESUME=data/checkpoints/latest.pt STEPS=1000 CHECKPOINT_INTERVAL=1000"
 	@echo "  make train-export-run RESUME=data/checkpoints/latest.pt STEPS=1000 PROMPT=\"Attention is\""
+	@echo "  make sft-train SFT_BASE_CHECKPOINT=data/checkpoints/best.pt SFT_STEPS=200"
 	@echo "  make train-4090        Fetch C4, rebuild artifacts, and start the RTX 4090 night run"
 	@echo "  make run-model CHECKPOINT=data/checkpoints/best.pt PROMPT=\"The\""
 	@echo "  make std-train         Resume latest, train 5k steps, export, sample"
 	@echo "  make export-model      Validate/copy latest checkpoint to a portable .pt file"
 	@echo "  make run-model PROMPT=\"The\" NEW_TOKENS=100 TOP_K=50"
 	@echo "  make run-model PROMPT=\"The\" REPETITION_PENALTY=1.15 REPETITION_WINDOW=128"
+	@echo "  make run-model CHAT=1 PROMPT=\"What are you?\""
 	@echo "  make run-model STREAM=0 PROMPT=\"The\" NEW_TOKENS=100"
+	@echo "  make chat CHAT_CHECKPOINT=data/sft/runs/chat-sft.pt"
 	@echo "  make generate PROMPT=\"The\" NEW_TOKENS=100"
 	@echo ""
 	@echo "Cleanup:"
@@ -380,6 +400,25 @@ train: setup data-dirs
 	| $(PYTHON)
 	@printf '==> [train] Finished training model\n'
 
+sft-train: setup
+	@printf '==> [sft-train] Training supervised chat model\n'
+	$(PYTHON) scripts/train_sft.py \
+		--base-checkpoint "$(SFT_BASE_CHECKPOINT)" \
+		--data "$(SFT_DATA)" \
+		--out "$(SFT_OUT)" \
+		--metrics "$(SFT_METRICS)" \
+		--steps "$(SFT_STEPS)" \
+		--batch "$(SFT_BATCH)" \
+		--lr "$(SFT_LR)" \
+		--lr-min "$(SFT_LR_MIN)" \
+		--lr-warmup-steps "$(SFT_LR_WARMUP_STEPS)" \
+		--weight-decay "$(SFT_WEIGHT_DECAY)" \
+		--grad-clip "$(SFT_GRAD_CLIP)" \
+		--checkpoint-interval "$(SFT_CHECKPOINT_INTERVAL)" \
+		--device "$(SFT_DEVICE)" \
+		--seed "$(SFT_SEED)"
+	@printf '==> [sft-train] Finished supervised chat training\n'
+
 train-export-run:
 	@set -e; \
 	printf '==> [pipeline] Starting train/export/run\n'; \
@@ -464,9 +503,21 @@ run-model: setup
 		--top-k "$(TOP_K)" \
 		--repetition-penalty "$(REPETITION_PENALTY)" \
 		--repetition-window "$(REPETITION_WINDOW)" \
+		--chat "$(CHAT)" \
 		--stream "$(STREAM)" \
 		--device "$(DEVICE)"
 	@printf '==> [run-model] Finished generating sample text\n'
+
+chat: setup
+	@printf '==> [chat] Starting interactive chat\n'
+	$(PYTHON) scripts/chat.py \
+		--checkpoint "$(CHAT_CHECKPOINT)" \
+		--new-tokens "$(CHAT_MAX_TOKENS)" \
+		--temperature "$(TEMPERATURE)" \
+		--top-k "$(TOP_K)" \
+		--repetition-penalty "$(REPETITION_PENALTY)" \
+		--repetition-window "$(REPETITION_WINDOW)" \
+		--device "$(DEVICE)"
 
 smoke-train: setup
 	@printf '%s\n' \
