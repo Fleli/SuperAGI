@@ -138,6 +138,8 @@ def generate_from_checkpoint(
     max_new_tokens: int,
     temperature: float = 1.0,
     top_k: int | None = None,
+    repetition_penalty: float = 1.0,
+    repetition_window: int | None = None,
     on_text: Callable[[str], None] | None = None,
     device: torch.device | str = "cpu",
     seed: int | None = None,
@@ -177,6 +179,8 @@ def generate_from_checkpoint(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
+        repetition_penalty=repetition_penalty,
+        repetition_window=repetition_window,
         on_token=emit_text if on_text is not None else None,
     )
     return checkpoint.tokenizer.decode(generated[0].cpu().tolist())

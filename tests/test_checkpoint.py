@@ -166,6 +166,41 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(output.getvalue(), "abc\n")
 
+    def test_run_model_script_passes_repetition_penalty_options(self) -> None:
+        run_model = self._load_run_model_module()
+
+        def fake_generate_from_checkpoint(*args, **kwargs):
+            self.assertEqual(kwargs["repetition_penalty"], 1.2)
+            self.assertEqual(kwargs["repetition_window"], 64)
+            return "abc"
+
+        output = io.StringIO()
+        with mock.patch.object(
+            run_model,
+            "generate_from_checkpoint",
+            side_effect=fake_generate_from_checkpoint,
+        ):
+            with contextlib.redirect_stdout(output):
+                exit_code = run_model.main(
+                    [
+                        "--checkpoint",
+                        "unused.pt",
+                        "--prompt",
+                        "a",
+                        "--new-tokens",
+                        "2",
+                        "--stream",
+                        "0",
+                        "--repetition-penalty",
+                        "1.2",
+                        "--repetition-window",
+                        "64",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(output.getvalue(), "abc\n")
+
     def test_run_model_script_can_disable_streaming(self) -> None:
         run_model = self._load_run_model_module()
 

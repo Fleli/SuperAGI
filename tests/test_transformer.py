@@ -124,6 +124,76 @@ class TransformerLMTests(unittest.TestCase):
 
         self.assertTrue(set(new_tokens.tolist()).issubset({0, 1}))
 
+    def test_generate_penalizes_repeated_tokens_before_sampling(self) -> None:
+        class RepeatFavoriteModel(TransformerLM):
+            def __init__(self) -> None:
+                super().__init__(
+                    TransformerConfig(
+                        vocab_size=5,
+                        context_length=4,
+                        dim_embedding=8,
+                        n_layers=1,
+                        n_heads=2,
+                        dropout=0.0,
+                    )
+                )
+
+            def forward(self, input_ids, target_ids=None):
+                batch_size, sequence_length = input_ids.shape
+                logits = torch.zeros(batch_size, sequence_length, self.config.vocab_size)
+                logits[..., 1] = 9.0
+                logits[..., 2] = 10.0
+                return logits, None
+
+        torch.manual_seed(0)
+        model = RepeatFavoriteModel()
+        input_ids = torch.tensor([[2]])
+
+        generated = model.generate(
+            input_ids,
+            max_new_tokens=1,
+            top_k=1,
+            repetition_penalty=2.0,
+            repetition_window=4,
+        )
+
+        self.assertEqual(generated[0, -1].item(), 1)
+
+    def test_generate_repetition_window_only_penalizes_recent_tokens(self) -> None:
+        class RepeatFavoriteModel(TransformerLM):
+            def __init__(self) -> None:
+                super().__init__(
+                    TransformerConfig(
+                        vocab_size=5,
+                        context_length=4,
+                        dim_embedding=8,
+                        n_layers=1,
+                        n_heads=2,
+                        dropout=0.0,
+                    )
+                )
+
+            def forward(self, input_ids, target_ids=None):
+                batch_size, sequence_length = input_ids.shape
+                logits = torch.zeros(batch_size, sequence_length, self.config.vocab_size)
+                logits[..., 1] = 9.0
+                logits[..., 2] = 10.0
+                return logits, None
+
+        torch.manual_seed(0)
+        model = RepeatFavoriteModel()
+        input_ids = torch.tensor([[2, 3]])
+
+        generated = model.generate(
+            input_ids,
+            max_new_tokens=1,
+            top_k=1,
+            repetition_penalty=2.0,
+            repetition_window=1,
+        )
+
+        self.assertEqual(generated[0, -1].item(), 2)
+
     def test_generate_calls_on_token_for_each_new_token(self) -> None:
         torch.manual_seed(0)
         config = TransformerConfig(

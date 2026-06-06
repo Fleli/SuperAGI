@@ -48,6 +48,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Limit sampling to the k most likely next tokens; 0 disables it.",
     )
     parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=1.0,
+        help="Penalty applied to recently used token logits; 1.0 disables it.",
+    )
+    parser.add_argument(
+        "--repetition-window",
+        type=int,
+        default=128,
+        help="Number of recent tokens to penalize; 0 disables the window.",
+    )
+    parser.add_argument(
         "--stream",
         type=_parse_bool,
         default=True,
@@ -67,6 +79,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.top_k < 0:
         parser.error("--top-k must be non-negative")
+    if args.repetition_penalty < 1.0:
+        parser.error("--repetition-penalty must be at least 1.0")
+    if args.repetition_window < 0:
+        parser.error("--repetition-window must be non-negative")
 
     if args.stream:
         print(args.prompt, end="", flush=True)
@@ -76,6 +92,8 @@ def main(argv: list[str] | None = None) -> int:
             max_new_tokens=args.new_tokens,
             temperature=args.temperature,
             top_k=args.top_k or None,
+            repetition_penalty=args.repetition_penalty,
+            repetition_window=args.repetition_window,
             on_text=lambda text: print(text, end="", flush=True),
             device=args.device,
             seed=args.seed,
@@ -88,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
             max_new_tokens=args.new_tokens,
             temperature=args.temperature,
             top_k=args.top_k or None,
+            repetition_penalty=args.repetition_penalty,
+            repetition_window=args.repetition_window,
             device=args.device,
             seed=args.seed,
         )

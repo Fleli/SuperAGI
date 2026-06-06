@@ -22,6 +22,15 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("TOP_K :=", contents)
         self.assertIn('--top-k "$(TOP_K)"', contents)
 
+    def test_run_model_target_wires_repetition_penalty_sampling(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("REPETITION_PENALTY :=", contents)
+        self.assertIn("REPETITION_WINDOW :=", contents)
+        self.assertIn('--repetition-penalty "$(REPETITION_PENALTY)"', contents)
+        self.assertIn('--repetition-window "$(REPETITION_WINDOW)"', contents)
+
     def test_run_model_target_streams_by_default(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
         contents = makefile.read_text(encoding="utf-8")

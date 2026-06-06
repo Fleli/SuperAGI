@@ -116,6 +116,8 @@ class TransformerLM(nn.Module):
         max_new_tokens: int,
         temperature: float = 1.0,
         top_k: int | None = None,
+        repetition_penalty: float = 1.0,
+        repetition_window: int | None = None,
         on_token: Callable[[int], None] | None = None,
     ) -> torch.Tensor:
         if max_new_tokens < 0:
@@ -124,13 +126,24 @@ class TransformerLM(nn.Module):
             raise ValueError("temperature must be positive")
         if top_k is not None and top_k <= 0:
             raise ValueError("top_k must be positive when set")
+        if repetition_penalty < 1.0:
+            raise ValueError("repetition_penalty must be at least 1.0")
+        if repetition_window is not None and repetition_window < 0:
+            raise ValueError("repetition_window must be non-negative when set")
 
         was_training = self.training
         self.eval()
         for _ in range(max_new_tokens):
             context = input_ids[:, -self.config.context_length :]
             logits, _ = self(context)
-            next_token_logits = logits[:, -1, :] / temperature
+            next_token_logits = logits[:, -1, :]
+            next_token_logits = _apply_repetition_penalty(
+                logits=next_token_logits,
+                input_ids=input_ids,
+                penalty=repetition_penalty,
+                window=repetition_window,
+            )
+            next_token_logits = next_token_logits / temperature
             if top_k is not None:
                 k = min(top_k, next_token_logits.shape[-1])
                 top_values, top_indices = torch.topk(next_token_logits, k=k, dim=-1)
@@ -149,3 +162,26 @@ class TransformerLM(nn.Module):
         if was_training:
             self.train()
         return input_ids
+
+
+def _apply_repetition_penalty(
+    *,
+    logits: torch.Tensor,
+    input_ids: torch.Tensor,
+    penalty: float,
+    window: int | None,
+) -> torch.Tensor:
+    if penalty == 1.0 or window == 0:
+        return logits
+
+    penalized_logits = logits.clone()
+    recent_input_ids = input_ids if window is None else input_ids[:, -window:]
+    for batch_index in range(recent_input_ids.shape[0]):
+        repeated_token_ids = recent_input_ids[batch_index].unique()
+        repeated_logits = penalized_logits[batch_index, repeated_token_ids]
+        penalized_logits[batch_index, repeated_token_ids] = torch.where(
+            repeated_logits < 0,
+            repeated_logits * penalty,
+            repeated_logits / penalty,
+        )
+    return penalized_logits

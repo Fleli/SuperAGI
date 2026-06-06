@@ -53,6 +53,8 @@ PROMPT := The
 NEW_TOKENS := 100
 TEMPERATURE := 1.0
 TOP_K := 0
+REPETITION_PENALTY := 1.0
+REPETITION_WINDOW := 128
 STREAM := 1
 VALIDATION_FRACTION := 0.1
 VAL_TOKENS := $(PROCESSED_DIR)/val_tokens.pt
@@ -90,6 +92,7 @@ help:
 	@echo "  make std-train         Resume latest, train 5k steps, export, sample"
 	@echo "  make export-model      Validate/copy latest checkpoint to a portable .pt file"
 	@echo "  make run-model PROMPT=\"The\" NEW_TOKENS=100 TOP_K=50"
+	@echo "  make run-model PROMPT=\"The\" REPETITION_PENALTY=1.15 REPETITION_WINDOW=128"
 	@echo "  make run-model STREAM=0 PROMPT=\"The\" NEW_TOKENS=100"
 	@echo "  make generate PROMPT=\"The\" NEW_TOKENS=100"
 	@echo ""
@@ -459,6 +462,8 @@ run-model: setup
 		--new-tokens "$(NEW_TOKENS)" \
 		--temperature "$(TEMPERATURE)" \
 		--top-k "$(TOP_K)" \
+		--repetition-penalty "$(REPETITION_PENALTY)" \
+		--repetition-window "$(REPETITION_WINDOW)" \
 		--stream "$(STREAM)" \
 		--device "$(DEVICE)"
 	@printf '==> [run-model] Finished generating sample text\n'
