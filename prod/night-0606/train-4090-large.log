@@ -1,0 +1,339 @@
+==> [train-4090] Fetching night-run C4 corpus
+make c4 \
+	RAW_DIR="data/raw/c4-4090-night" \
+	C4_MAX="150000" \
+	C4_MIN_CHARS="1000"
+make[1]: Entering directory '/workspace/SuperAGI'
+mkdir -p "data/raw/c4-4090-night" "data/processed" "data/checkpoints"
+==> [c4] Fetching C4 text
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Traceback (most recent call last):
+  File "<stdin>", line 3, in <module>
+  File "/workspace/SuperAGI/src/superagi/ingestion/builders/c4.py", line 45, in build_c4_corpus
+    document_path = write_raw_document(
+                    ^^^^^^^^^^^^^^^^^^^
+  File "/workspace/SuperAGI/src/superagi/ingestion/builders/common.py", line 46, in write_raw_document
+    document_path.write_text(f"{normalize_document_text(text)}\n", encoding="utf-8")
+  File "/usr/lib/python3.11/pathlib.py", line 1078, in write_text
+    with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:
+OSError: [Errno 122] Disk quota exceeded
+make[1]: *** [Makefile:122: c4] Error 1
+make[1]: Leaving directory '/workspace/SuperAGI'
+make: *** [Makefile:349: train-4090] Error 2
+==> [pipeline] Starting train/export/run
+make[1]: Entering directory '/workspace/SuperAGI'
+mkdir -p "data/raw" "/tmp/superagi-processed" "data/checkpoints"
+==> [train] Training model
+==> [pipeline] Starting train/export/run
+make[1]: Entering directory '/workspace/SuperAGI'
+mkdir -p "data/raw" "/tmp/superagi-processed" "data/checkpoints"
+==> [train] Training model
+Validation tokens: 41862121
+Training from scratch
+step=1000 train_loss=1.714017 validation_loss=1.614290 elapsed_seconds=171.21
+Best checkpoint: data/checkpoints/best.pt at step 1000 validation_loss=1.614290
+Periodic checkpoint: data/checkpoints/latest.pt at step 1000
+step=2000 train_loss=1.392288 validation_loss=1.306593 elapsed_seconds=343.41
+Best checkpoint: data/checkpoints/best.pt at step 2000 validation_loss=1.306593
+Periodic checkpoint: data/checkpoints/latest.pt at step 2000
+step=3000 train_loss=1.394434 validation_loss=1.212038 elapsed_seconds=515.50
+Best checkpoint: data/checkpoints/best.pt at step 3000 validation_loss=1.212038
+Periodic checkpoint: data/checkpoints/latest.pt at step 3000
+step=4000 train_loss=1.286889 validation_loss=1.172220 elapsed_seconds=687.61
+Best checkpoint: data/checkpoints/best.pt at step 4000 validation_loss=1.172220
+Periodic checkpoint: data/checkpoints/latest.pt at step 4000
+step=5000 train_loss=1.322227 validation_loss=1.143258 elapsed_seconds=859.66
+Best checkpoint: data/checkpoints/best.pt at step 5000 validation_loss=1.143258
+Periodic checkpoint: data/checkpoints/latest.pt at step 5000
+step=6000 train_loss=1.222966 validation_loss=1.134214 elapsed_seconds=1032.53
+Best checkpoint: data/checkpoints/best.pt at step 6000 validation_loss=1.134214
+Periodic checkpoint: data/checkpoints/latest.pt at step 6000
+step=7000 train_loss=1.221124 validation_loss=1.131277 elapsed_seconds=1205.32
+Best checkpoint: data/checkpoints/best.pt at step 7000 validation_loss=1.131277
+Periodic checkpoint: data/checkpoints/latest.pt at step 7000
+step=8000 train_loss=1.150321 validation_loss=1.114782 elapsed_seconds=1377.73
+Best checkpoint: data/checkpoints/best.pt at step 8000 validation_loss=1.114782
+Periodic checkpoint: data/checkpoints/latest.pt at step 8000
+step=9000 train_loss=1.150183 validation_loss=1.106459 elapsed_seconds=1549.70
+Best checkpoint: data/checkpoints/best.pt at step 9000 validation_loss=1.106459
+Periodic checkpoint: data/checkpoints/latest.pt at step 9000
+step=10000 train_loss=1.144454 validation_loss=1.087294 elapsed_seconds=1721.54
+Best checkpoint: data/checkpoints/best.pt at step 10000 validation_loss=1.087294
+Periodic checkpoint: data/checkpoints/latest.pt at step 10000
+step=11000 train_loss=1.113124 validation_loss=1.076104 elapsed_seconds=1893.25
+Best checkpoint: data/checkpoints/best.pt at step 11000 validation_loss=1.076104
+Periodic checkpoint: data/checkpoints/latest.pt at step 11000
+step=12000 train_loss=1.144685 validation_loss=1.067643 elapsed_seconds=2065.54
+Best checkpoint: data/checkpoints/best.pt at step 12000 validation_loss=1.067643
+Periodic checkpoint: data/checkpoints/latest.pt at step 12000
+step=13000 train_loss=1.095571 validation_loss=1.075504 elapsed_seconds=2237.37
+Periodic checkpoint: data/checkpoints/latest.pt at step 13000
+step=14000 train_loss=1.130680 validation_loss=1.052681 elapsed_seconds=2408.85
+Best checkpoint: data/checkpoints/best.pt at step 14000 validation_loss=1.052681
+Periodic checkpoint: data/checkpoints/latest.pt at step 14000
+step=15000 train_loss=1.134359 validation_loss=1.039849 elapsed_seconds=2580.87
+Best checkpoint: data/checkpoints/best.pt at step 15000 validation_loss=1.039849
+Periodic checkpoint: data/checkpoints/latest.pt at step 15000
+step=16000 train_loss=1.105270 validation_loss=1.052453 elapsed_seconds=2753.80
+Periodic checkpoint: data/checkpoints/latest.pt at step 16000
+step=17000 train_loss=1.157575 validation_loss=1.035951 elapsed_seconds=2926.98
+Best checkpoint: data/checkpoints/best.pt at step 17000 validation_loss=1.035951
+Periodic checkpoint: data/checkpoints/latest.pt at step 17000
+step=18000 train_loss=1.117613 validation_loss=1.048517 elapsed_seconds=3099.41
+Periodic checkpoint: data/checkpoints/latest.pt at step 18000
+step=19000 train_loss=1.039313 validation_loss=1.047041 elapsed_seconds=3271.35
+Periodic checkpoint: data/checkpoints/latest.pt at step 19000
+step=20000 train_loss=1.091461 validation_loss=1.034706 elapsed_seconds=3443.21
+Best checkpoint: data/checkpoints/best.pt at step 20000 validation_loss=1.034706
+Periodic checkpoint: data/checkpoints/latest.pt at step 20000
+step=21000 train_loss=1.192595 validation_loss=1.020226 elapsed_seconds=3615.86
+Best checkpoint: data/checkpoints/best.pt at step 21000 validation_loss=1.020226
+Periodic checkpoint: data/checkpoints/latest.pt at step 21000
+step=22000 train_loss=1.131159 validation_loss=1.031834 elapsed_seconds=3788.63
+Periodic checkpoint: data/checkpoints/latest.pt at step 22000
+step=23000 train_loss=1.110485 validation_loss=1.025230 elapsed_seconds=3960.33
+Periodic checkpoint: data/checkpoints/latest.pt at step 23000
+step=24000 train_loss=1.061133 validation_loss=1.033335 elapsed_seconds=4131.94
+Periodic checkpoint: data/checkpoints/latest.pt at step 24000
+step=25000 train_loss=1.033347 validation_loss=1.027108 elapsed_seconds=4303.41
+Periodic checkpoint: data/checkpoints/latest.pt at step 25000
+step=26000 train_loss=1.075835 validation_loss=1.034684 elapsed_seconds=4474.78
+Periodic checkpoint: data/checkpoints/latest.pt at step 26000
+step=27000 train_loss=1.030657 validation_loss=1.025014 elapsed_seconds=4646.02
+Periodic checkpoint: data/checkpoints/latest.pt at step 27000
+step=28000 train_loss=1.018469 validation_loss=1.032392 elapsed_seconds=4817.60
+Periodic checkpoint: data/checkpoints/latest.pt at step 28000
+step=29000 train_loss=1.034138 validation_loss=1.015069 elapsed_seconds=4989.11
+Best checkpoint: data/checkpoints/best.pt at step 29000 validation_loss=1.015069
+Periodic checkpoint: data/checkpoints/latest.pt at step 29000
+step=30000 train_loss=1.047975 validation_loss=0.998947 elapsed_seconds=5161.08
+Best checkpoint: data/checkpoints/best.pt at step 30000 validation_loss=0.998947
+Periodic checkpoint: data/checkpoints/latest.pt at step 30000
+step=31000 train_loss=1.065573 validation_loss=1.020777 elapsed_seconds=5332.82
+Periodic checkpoint: data/checkpoints/latest.pt at step 31000
+step=32000 train_loss=1.046052 validation_loss=1.031460 elapsed_seconds=5504.34
+Periodic checkpoint: data/checkpoints/latest.pt at step 32000
+step=33000 train_loss=1.076540 validation_loss=1.006294 elapsed_seconds=5675.93
+Periodic checkpoint: data/checkpoints/latest.pt at step 33000
+step=34000 train_loss=1.045012 validation_loss=1.008443 elapsed_seconds=5847.49
+Periodic checkpoint: data/checkpoints/latest.pt at step 34000
+step=35000 train_loss=1.093723 validation_loss=1.019734 elapsed_seconds=6019.25
+Periodic checkpoint: data/checkpoints/latest.pt at step 35000
+step=36000 train_loss=1.061356 validation_loss=0.989417 elapsed_seconds=6190.71
+Best checkpoint: data/checkpoints/best.pt at step 36000 validation_loss=0.989417
+Periodic checkpoint: data/checkpoints/latest.pt at step 36000
+step=37000 train_loss=1.103091 validation_loss=0.982561 elapsed_seconds=6363.34
+Best checkpoint: data/checkpoints/best.pt at step 37000 validation_loss=0.982561
+Periodic checkpoint: data/checkpoints/latest.pt at step 37000
+step=38000 train_loss=1.059135 validation_loss=0.990798 elapsed_seconds=6536.03
+Periodic checkpoint: data/checkpoints/latest.pt at step 38000
+step=39000 train_loss=1.059001 validation_loss=1.001381 elapsed_seconds=6707.73
+Periodic checkpoint: data/checkpoints/latest.pt at step 39000
+step=40000 train_loss=1.001516 validation_loss=0.996689 elapsed_seconds=6879.60
+Periodic checkpoint: data/checkpoints/latest.pt at step 40000
+step=41000 train_loss=1.050338 validation_loss=1.004668 elapsed_seconds=7051.55
+Periodic checkpoint: data/checkpoints/latest.pt at step 41000
+step=42000 train_loss=1.008155 validation_loss=0.997944 elapsed_seconds=7223.21
+Periodic checkpoint: data/checkpoints/latest.pt at step 42000
+step=43000 train_loss=1.032178 validation_loss=1.013113 elapsed_seconds=7394.89
+Periodic checkpoint: data/checkpoints/latest.pt at step 43000
+step=44000 train_loss=1.017227 validation_loss=0.998723 elapsed_seconds=7566.39
+Periodic checkpoint: data/checkpoints/latest.pt at step 44000
+step=45000 train_loss=1.019951 validation_loss=0.987909 elapsed_seconds=7737.91
+Periodic checkpoint: data/checkpoints/latest.pt at step 45000
+step=46000 train_loss=0.971308 validation_loss=1.003633 elapsed_seconds=7909.71
+Periodic checkpoint: data/checkpoints/latest.pt at step 46000
+step=47000 train_loss=1.025009 validation_loss=0.977684 elapsed_seconds=8081.24
+Best checkpoint: data/checkpoints/best.pt at step 47000 validation_loss=0.977684
+Periodic checkpoint: data/checkpoints/latest.pt at step 47000
+step=48000 train_loss=1.126484 validation_loss=0.988440 elapsed_seconds=8253.37
+Periodic checkpoint: data/checkpoints/latest.pt at step 48000
+step=49000 train_loss=0.995875 validation_loss=1.002926 elapsed_seconds=8425.42
+Periodic checkpoint: data/checkpoints/latest.pt at step 49000
+step=50000 train_loss=0.978479 validation_loss=1.001616 elapsed_seconds=8597.36
+Periodic checkpoint: data/checkpoints/latest.pt at step 50000
+step=51000 train_loss=1.025547 validation_loss=0.996969 elapsed_seconds=8769.70
+Periodic checkpoint: data/checkpoints/latest.pt at step 51000
+step=52000 train_loss=1.000672 validation_loss=0.983431 elapsed_seconds=8941.11
+Periodic checkpoint: data/checkpoints/latest.pt at step 52000
+step=53000 train_loss=1.030449 validation_loss=0.985447 elapsed_seconds=9112.69
+Periodic checkpoint: data/checkpoints/latest.pt at step 53000
+step=54000 train_loss=1.078516 validation_loss=0.993859 elapsed_seconds=9284.25
+Periodic checkpoint: data/checkpoints/latest.pt at step 54000
+step=55000 train_loss=0.990304 validation_loss=1.003831 elapsed_seconds=9456.03
+Periodic checkpoint: data/checkpoints/latest.pt at step 55000
+step=56000 train_loss=0.950241 validation_loss=0.991770 elapsed_seconds=9627.56
+Periodic checkpoint: data/checkpoints/latest.pt at step 56000
+step=57000 train_loss=1.001866 validation_loss=0.986976 elapsed_seconds=9799.15
+Periodic checkpoint: data/checkpoints/latest.pt at step 57000
+step=58000 train_loss=1.010512 validation_loss=0.987955 elapsed_seconds=9970.57
+Periodic checkpoint: data/checkpoints/latest.pt at step 58000
+step=59000 train_loss=1.061929 validation_loss=0.977569 elapsed_seconds=10142.24
+Best checkpoint: data/checkpoints/best.pt at step 59000 validation_loss=0.977569
+Periodic checkpoint: data/checkpoints/latest.pt at step 59000
+step=60000 train_loss=1.034026 validation_loss=0.983220 elapsed_seconds=10314.50
+Periodic checkpoint: data/checkpoints/latest.pt at step 60000
+step=61000 train_loss=1.015739 validation_loss=0.988679 elapsed_seconds=10486.34
+Periodic checkpoint: data/checkpoints/latest.pt at step 61000
+step=62000 train_loss=0.986922 validation_loss=0.988149 elapsed_seconds=10658.01
+Periodic checkpoint: data/checkpoints/latest.pt at step 62000
+step=63000 train_loss=0.946864 validation_loss=0.977069 elapsed_seconds=10829.48
+Best checkpoint: data/checkpoints/best.pt at step 63000 validation_loss=0.977069
+Periodic checkpoint: data/checkpoints/latest.pt at step 63000
+step=64000 train_loss=0.982048 validation_loss=0.973048 elapsed_seconds=11001.46
+Best checkpoint: data/checkpoints/best.pt at step 64000 validation_loss=0.973048
+Periodic checkpoint: data/checkpoints/latest.pt at step 64000
+step=65000 train_loss=0.997810 validation_loss=0.971753 elapsed_seconds=11173.98
+Best checkpoint: data/checkpoints/best.pt at step 65000 validation_loss=0.971753
+Periodic checkpoint: data/checkpoints/latest.pt at step 65000
+step=66000 train_loss=0.960877 validation_loss=0.971649 elapsed_seconds=11346.12
+Best checkpoint: data/checkpoints/best.pt at step 66000 validation_loss=0.971649
+Periodic checkpoint: data/checkpoints/latest.pt at step 66000
+step=67000 train_loss=0.986332 validation_loss=0.980056 elapsed_seconds=11518.14
+Periodic checkpoint: data/checkpoints/latest.pt at step 67000
+step=68000 train_loss=0.939467 validation_loss=0.977083 elapsed_seconds=11689.78
+Periodic checkpoint: data/checkpoints/latest.pt at step 68000
+step=69000 train_loss=0.954451 validation_loss=0.972298 elapsed_seconds=11861.20
+Periodic checkpoint: data/checkpoints/latest.pt at step 69000
+step=70000 train_loss=1.027173 validation_loss=0.968997 elapsed_seconds=12032.52
+Best checkpoint: data/checkpoints/best.pt at step 70000 validation_loss=0.968997
+Periodic checkpoint: data/checkpoints/latest.pt at step 70000
+step=71000 train_loss=1.044091 validation_loss=0.973297 elapsed_seconds=12204.43
+Periodic checkpoint: data/checkpoints/latest.pt at step 71000
+step=72000 train_loss=0.976655 validation_loss=0.987825 elapsed_seconds=12375.99
+Periodic checkpoint: data/checkpoints/latest.pt at step 72000
+step=73000 train_loss=1.012364 validation_loss=0.983543 elapsed_seconds=12547.71
+Periodic checkpoint: data/checkpoints/latest.pt at step 73000
+step=74000 train_loss=0.988552 validation_loss=0.975006 elapsed_seconds=12720.21
+Periodic checkpoint: data/checkpoints/latest.pt at step 74000
+step=75000 train_loss=1.005841 validation_loss=0.985380 elapsed_seconds=12891.61
+Periodic checkpoint: data/checkpoints/latest.pt at step 75000
+step=76000 train_loss=1.000345 validation_loss=0.973527 elapsed_seconds=13063.32
+Periodic checkpoint: data/checkpoints/latest.pt at step 76000
+step=77000 train_loss=0.979582 validation_loss=0.963891 elapsed_seconds=13234.60
+Best checkpoint: data/checkpoints/best.pt at step 77000 validation_loss=0.963891
+Periodic checkpoint: data/checkpoints/latest.pt at step 77000
+step=78000 train_loss=0.932781 validation_loss=0.976513 elapsed_seconds=13407.15
+Periodic checkpoint: data/checkpoints/latest.pt at step 78000
+step=79000 train_loss=0.934984 validation_loss=0.965004 elapsed_seconds=13579.03
+Periodic checkpoint: data/checkpoints/latest.pt at step 79000
+step=80000 train_loss=0.984859 validation_loss=0.979812 elapsed_seconds=13750.84
+Periodic checkpoint: data/checkpoints/latest.pt at step 80000
+step=81000 train_loss=1.024906 validation_loss=0.972865 elapsed_seconds=13922.72
+Periodic checkpoint: data/checkpoints/latest.pt at step 81000
+step=82000 train_loss=1.054654 validation_loss=0.967807 elapsed_seconds=14094.33
+Periodic checkpoint: data/checkpoints/latest.pt at step 82000
+step=83000 train_loss=0.920978 validation_loss=0.976149 elapsed_seconds=14266.17
+Periodic checkpoint: data/checkpoints/latest.pt at step 83000
+step=84000 train_loss=0.956308 validation_loss=0.965114 elapsed_seconds=14438.00
+Periodic checkpoint: data/checkpoints/latest.pt at step 84000
+step=85000 train_loss=0.998691 validation_loss=0.960380 elapsed_seconds=14609.68
+Best checkpoint: data/checkpoints/best.pt at step 85000 validation_loss=0.960380
+Periodic checkpoint: data/checkpoints/latest.pt at step 85000
+step=86000 train_loss=0.968166 validation_loss=0.981811 elapsed_seconds=14781.96
+Periodic checkpoint: data/checkpoints/latest.pt at step 86000
+step=87000 train_loss=0.929347 validation_loss=0.970111 elapsed_seconds=14953.73
+Periodic checkpoint: data/checkpoints/latest.pt at step 87000
+step=88000 train_loss=0.971838 validation_loss=0.967743 elapsed_seconds=15125.41
+Periodic checkpoint: data/checkpoints/latest.pt at step 88000
+step=89000 train_loss=0.981747 validation_loss=0.959567 elapsed_seconds=15297.29
+Best checkpoint: data/checkpoints/best.pt at step 89000 validation_loss=0.959567
+Periodic checkpoint: data/checkpoints/latest.pt at step 89000
+step=90000 train_loss=0.906625 validation_loss=0.957046 elapsed_seconds=15469.81
+Best checkpoint: data/checkpoints/best.pt at step 90000 validation_loss=0.957046
+Periodic checkpoint: data/checkpoints/latest.pt at step 90000
+step=91000 train_loss=0.928385 validation_loss=0.949446 elapsed_seconds=15642.40
+Best checkpoint: data/checkpoints/best.pt at step 91000 validation_loss=0.949446
+Periodic checkpoint: data/checkpoints/latest.pt at step 91000
+step=92000 train_loss=0.959197 validation_loss=0.964259 elapsed_seconds=15814.74
+Periodic checkpoint: data/checkpoints/latest.pt at step 92000
+step=93000 train_loss=0.939116 validation_loss=0.966105 elapsed_seconds=15986.46
+Periodic checkpoint: data/checkpoints/latest.pt at step 93000
+step=94000 train_loss=0.951867 validation_loss=0.961967 elapsed_seconds=16158.20
+Periodic checkpoint: data/checkpoints/latest.pt at step 94000
+step=95000 train_loss=0.933968 validation_loss=0.982181 elapsed_seconds=16329.98
+Periodic checkpoint: data/checkpoints/latest.pt at step 95000
+step=96000 train_loss=0.930501 validation_loss=0.981206 elapsed_seconds=16501.84
+Periodic checkpoint: data/checkpoints/latest.pt at step 96000
+step=97000 train_loss=0.978675 validation_loss=0.974005 elapsed_seconds=16673.50
+Periodic checkpoint: data/checkpoints/latest.pt at step 97000
+step=98000 train_loss=0.942346 validation_loss=0.981267 elapsed_seconds=16845.51
+Periodic checkpoint: data/checkpoints/latest.pt at step 98000
+step=99000 train_loss=0.964431 validation_loss=0.986289 elapsed_seconds=17017.43
+Periodic checkpoint: data/checkpoints/latest.pt at step 99000
+step=100000 train_loss=0.943462 validation_loss=0.969079 elapsed_seconds=17189.07
+Periodic checkpoint: data/checkpoints/latest.pt at step 100000
+step=101000 train_loss=0.980299 validation_loss=0.974824 elapsed_seconds=17360.95
+Periodic checkpoint: data/checkpoints/latest.pt at step 101000
+step=102000 train_loss=0.997100 validation_loss=0.978757 elapsed_seconds=17532.66
+Periodic checkpoint: data/checkpoints/latest.pt at step 102000
+step=103000 train_loss=0.952888 validation_loss=0.978938 elapsed_seconds=17704.08
+Periodic checkpoint: data/checkpoints/latest.pt at step 103000
+step=104000 train_loss=0.975410 validation_loss=0.977876 elapsed_seconds=17875.56
+Periodic checkpoint: data/checkpoints/latest.pt at step 104000
+step=105000 train_loss=0.927435 validation_loss=0.972637 elapsed_seconds=18047.20
+Periodic checkpoint: data/checkpoints/latest.pt at step 105000
+step=106000 train_loss=0.969621 validation_loss=0.978612 elapsed_seconds=18218.65
+Periodic checkpoint: data/checkpoints/latest.pt at step 106000
+step=107000 train_loss=0.967290 validation_loss=0.968196 elapsed_seconds=18390.06
+Periodic checkpoint: data/checkpoints/latest.pt at step 107000
+step=108000 train_loss=0.943605 validation_loss=0.972780 elapsed_seconds=18561.81
+Periodic checkpoint: data/checkpoints/latest.pt at step 108000
+step=109000 train_loss=0.906361 validation_loss=0.973765 elapsed_seconds=18733.63
+Periodic checkpoint: data/checkpoints/latest.pt at step 109000
+step=110000 train_loss=0.917492 validation_loss=0.976731 elapsed_seconds=18905.17
+Periodic checkpoint: data/checkpoints/latest.pt at step 110000
+step=111000 train_loss=0.984765 validation_loss=0.972708 elapsed_seconds=19076.49
+Periodic checkpoint: data/checkpoints/latest.pt at step 111000
+step=112000 train_loss=0.984352 validation_loss=0.966218 elapsed_seconds=19247.98
+Periodic checkpoint: data/checkpoints/latest.pt at step 112000
+step=113000 train_loss=0.967412 validation_loss=0.969535 elapsed_seconds=19419.74
+Periodic checkpoint: data/checkpoints/latest.pt at step 113000
+step=114000 train_loss=1.067804 validation_loss=0.957475 elapsed_seconds=19591.28
+Periodic checkpoint: data/checkpoints/latest.pt at step 114000
+step=115000 train_loss=0.963633 validation_loss=0.947090 elapsed_seconds=19763.08
+Best checkpoint: data/checkpoints/best.pt at step 115000 validation_loss=0.947090
+Periodic checkpoint: data/checkpoints/latest.pt at step 115000
+step=116000 train_loss=0.985150 validation_loss=0.962276 elapsed_seconds=19935.34
+Periodic checkpoint: data/checkpoints/latest.pt at step 116000
+step=117000 train_loss=0.969663 validation_loss=0.973446 elapsed_seconds=20106.89
+Periodic checkpoint: data/checkpoints/latest.pt at step 117000
+step=118000 train_loss=0.933747 validation_loss=0.974526 elapsed_seconds=20278.58
+Periodic checkpoint: data/checkpoints/latest.pt at step 118000
+step=119000 train_loss=0.929241 validation_loss=0.964034 elapsed_seconds=20450.21
+Periodic checkpoint: data/checkpoints/latest.pt at step 119000
+step=120000 train_loss=0.984831 validation_loss=0.974078 elapsed_seconds=20621.71
+Periodic checkpoint: data/checkpoints/latest.pt at step 120000
+Final loss: 0.9848313331604004
+Last metric: step=120000 train_loss=0.9848313331604004 validation_loss=0.974078145623207
+Metrics: data/checkpoints/metrics.jsonl
+Total recorded steps: 120000
+Checkpoint: data/checkpoints/latest.pt
+==> [train] Finished training model
+make[1]: Leaving directory '/workspace/SuperAGI'
+Training elapsed: 05:44:24 (20664 seconds)
+==> [pipeline] Training finished; exporting model
+make export-model
+make[1]: Entering directory '/workspace/SuperAGI'
+==> [export-model] Exporting portable model
+Portable model artifact: /workspace/SuperAGI/data/checkpoints/final-model.pt
+==> [export-model] Finished exporting portable model
+make[1]: Leaving directory '/workspace/SuperAGI'
+==> [pipeline] Export finished; generating sample
+make run-model CHECKPOINT="data/checkpoints/final-model.pt"
+make[1]: Entering directory '/workspace/SuperAGI'
+==> [run-model] Generating sample text
+.venv/bin/python scripts/run_model.py \
+	--checkpoint "data/checkpoints/final-model.pt" \
+	--prompt "In machine learning," \
+	--new-tokens "500" \
+	--temperature "0.6" \
+	--top-k "30" \
+	--stream "1" \
+	--device "cuda"
+In machine learning, the strategy is to understand and explain the benefits and disadvantages of consumers. Data analytics is also proposed to assist the learning and strategy of consumer data analytics.
+The strategy is to introduce a new consumer to an enterprise internet connection in next generations. It is also a leader in the security and data protection industry.
+The result of a data protection facility is to continue to expand its security and consumer security and intelligence by regarding the correct data 
+==> [run-model] Finished generating sample text
+make[1]: Leaving directory '/workspace/SuperAGI'
+==> [pipeline] Finished train/export/run
