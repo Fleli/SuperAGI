@@ -79,8 +79,54 @@ SFT_GRAD_CLIP := 1.0
 SFT_DEVICE := auto
 SFT_CHECKPOINT_INTERVAL := 250
 SFT_SEED := 1337
+SFT_OVERFIT_DATA := data/sft/diagnostics/overfit-50.jsonl
+SFT_OVERFIT_BASE_CHECKPOINT := $(SFT_BASE_CHECKPOINT)
+SFT_OVERFIT_OUT := data/sft/runs/chat-sft-overfit-50.pt
+SFT_OVERFIT_METRICS := data/sft/runs/chat-sft-overfit-50-metrics.jsonl
+SFT_OVERFIT_STEPS := 2000
+SFT_OVERFIT_BATCH := 16
+SFT_OVERFIT_LR := 5e-5
+SFT_OVERFIT_LR_MIN := 5e-6
+SFT_OVERFIT_LR_WARMUP_STEPS := 25
+SFT_OVERFIT_WEIGHT_DECAY := 0.0
+SFT_OVERFIT_CHECKPOINT_INTERVAL := 250
+SFT_STAGED_BASE_CHECKPOINT := $(SFT_BASE_CHECKPOINT)
+SFT_ANCHOR_DATA := data/sft/stages/anchor.jsonl
+SFT_ANCHOR_BASE_CHECKPOINT := $(SFT_STAGED_BASE_CHECKPOINT)
+SFT_ANCHOR_OUT := data/sft/runs/chat-anchor.pt
+SFT_ANCHOR_METRICS := data/sft/runs/chat-anchor-metrics.jsonl
+SFT_ANCHOR_STEPS := 1200
+SFT_ANCHOR_BATCH := 8
+SFT_ANCHOR_LR := 2e-5
+SFT_ANCHOR_LR_MIN := 5e-6
+SFT_ANCHOR_LR_WARMUP_STEPS := 50
+SFT_ANCHOR_WEIGHT_DECAY := 0.0
+SFT_ANCHOR_CHECKPOINT_INTERVAL := 250
+SFT_BROAD_DATA := data/sft/stages/broad-mixed.jsonl
+SFT_BROAD_BASE_CHECKPOINT := $(SFT_ANCHOR_OUT)
+SFT_BROAD_OUT := data/sft/runs/chat-broad.pt
+SFT_BROAD_METRICS := data/sft/runs/chat-broad-metrics.jsonl
+SFT_BROAD_STEPS := 2200
+SFT_BROAD_BATCH := 8
+SFT_BROAD_LR := 8e-6
+SFT_BROAD_LR_MIN := 2e-6
+SFT_BROAD_LR_WARMUP_STEPS := 100
+SFT_BROAD_WEIGHT_DECAY := 0.01
+SFT_BROAD_CHECKPOINT_INTERVAL := 250
+SFT_STYLE_DATA := data/sft/stages/style-playful-direct.jsonl
+SFT_STYLE_BASE_CHECKPOINT := $(SFT_BROAD_OUT)
+SFT_STYLE_OUT := data/sft/runs/chat-playful-direct.pt
+SFT_STYLE_METRICS := data/sft/runs/chat-playful-direct-metrics.jsonl
+SFT_STYLE_STEPS := 600
+SFT_STYLE_BATCH := 8
+SFT_STYLE_LR := 3e-6
+SFT_STYLE_LR_MIN := 1e-6
+SFT_STYLE_LR_WARMUP_STEPS := 50
+SFT_STYLE_WEIGHT_DECAY := 0.01
+SFT_STYLE_CHECKPOINT_INTERVAL := 200
+SFT_STAGED_OUT := $(SFT_STYLE_OUT)
 
-.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 train sft-train params train-export-run train-4090 std-train export-model generate run-model chat smoke-train clean-generated
+.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 train sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged params train-export-run train-4090 std-train export-model generate run-model chat smoke-train clean-generated
 
 help:
 	@echo "SuperAGI pipeline targets"
@@ -105,6 +151,8 @@ help:
 	@echo "  make train RESUME=data/checkpoints/latest.pt STEPS=1000 CHECKPOINT_INTERVAL=1000"
 	@echo "  make train-export-run RESUME=data/checkpoints/latest.pt STEPS=1000 PROMPT=\"Attention is\""
 	@echo "  make sft-train SFT_BASE_CHECKPOINT=data/checkpoints/best.pt SFT_STEPS=200"
+	@echo "  make sft-overfit-50 SFT_OVERFIT_BASE_CHECKPOINT=./best-current-cloud.pt"
+	@echo "  make sft-staged SFT_STAGED_BASE_CHECKPOINT=./best-current-cloud.pt"
 	@echo "  make train-4090        Fetch C4, rebuild artifacts, and start the RTX 4090 night run"
 	@echo "  make run-model CHECKPOINT=data/checkpoints/best.pt PROMPT=\"The\""
 	@echo "  make std-train         Resume latest, train 5k steps, export, sample"
@@ -418,6 +466,81 @@ sft-train: setup
 		--device "$(SFT_DEVICE)" \
 		--seed "$(SFT_SEED)"
 	@printf '==> [sft-train] Finished supervised chat training\n'
+
+sft-overfit-50:
+	@printf '==> [sft-overfit-50] Training hard-overfit SFT diagnostic\n'
+	$(MAKE) sft-train \
+		SFT_BASE_CHECKPOINT="$(SFT_OVERFIT_BASE_CHECKPOINT)" \
+		SFT_DATA="$(SFT_OVERFIT_DATA)" \
+		SFT_OUT="$(SFT_OVERFIT_OUT)" \
+		SFT_METRICS="$(SFT_OVERFIT_METRICS)" \
+		SFT_STEPS="$(SFT_OVERFIT_STEPS)" \
+		SFT_BATCH="$(SFT_OVERFIT_BATCH)" \
+		SFT_LR="$(SFT_OVERFIT_LR)" \
+		SFT_LR_MIN="$(SFT_OVERFIT_LR_MIN)" \
+		SFT_LR_WARMUP_STEPS="$(SFT_OVERFIT_LR_WARMUP_STEPS)" \
+		SFT_WEIGHT_DECAY="$(SFT_OVERFIT_WEIGHT_DECAY)" \
+		SFT_CHECKPOINT_INTERVAL="$(SFT_OVERFIT_CHECKPOINT_INTERVAL)"
+	@printf '==> [sft-overfit-50] Finished hard-overfit SFT diagnostic\n'
+
+sft-anchor:
+	@printf '==> [sft-anchor] Training anchor behavior SFT phase\n'
+	$(MAKE) sft-train \
+		SFT_BASE_CHECKPOINT="$(SFT_ANCHOR_BASE_CHECKPOINT)" \
+		SFT_DATA="$(SFT_ANCHOR_DATA)" \
+		SFT_OUT="$(SFT_ANCHOR_OUT)" \
+		SFT_METRICS="$(SFT_ANCHOR_METRICS)" \
+		SFT_STEPS="$(SFT_ANCHOR_STEPS)" \
+		SFT_BATCH="$(SFT_ANCHOR_BATCH)" \
+		SFT_LR="$(SFT_ANCHOR_LR)" \
+		SFT_LR_MIN="$(SFT_ANCHOR_LR_MIN)" \
+		SFT_LR_WARMUP_STEPS="$(SFT_ANCHOR_LR_WARMUP_STEPS)" \
+		SFT_WEIGHT_DECAY="$(SFT_ANCHOR_WEIGHT_DECAY)" \
+		SFT_CHECKPOINT_INTERVAL="$(SFT_ANCHOR_CHECKPOINT_INTERVAL)"
+	@printf '==> [sft-anchor] Finished anchor behavior SFT phase\n'
+
+sft-broad:
+	@printf '==> [sft-broad] Training broad chat SFT phase\n'
+	$(MAKE) sft-train \
+		SFT_BASE_CHECKPOINT="$(SFT_BROAD_BASE_CHECKPOINT)" \
+		SFT_DATA="$(SFT_BROAD_DATA)" \
+		SFT_OUT="$(SFT_BROAD_OUT)" \
+		SFT_METRICS="$(SFT_BROAD_METRICS)" \
+		SFT_STEPS="$(SFT_BROAD_STEPS)" \
+		SFT_BATCH="$(SFT_BROAD_BATCH)" \
+		SFT_LR="$(SFT_BROAD_LR)" \
+		SFT_LR_MIN="$(SFT_BROAD_LR_MIN)" \
+		SFT_LR_WARMUP_STEPS="$(SFT_BROAD_LR_WARMUP_STEPS)" \
+		SFT_WEIGHT_DECAY="$(SFT_BROAD_WEIGHT_DECAY)" \
+		SFT_CHECKPOINT_INTERVAL="$(SFT_BROAD_CHECKPOINT_INTERVAL)"
+	@printf '==> [sft-broad] Finished broad chat SFT phase\n'
+
+sft-style:
+	@printf '==> [sft-style] Training playful direct style SFT phase\n'
+	$(MAKE) sft-train \
+		SFT_BASE_CHECKPOINT="$(SFT_STYLE_BASE_CHECKPOINT)" \
+		SFT_DATA="$(SFT_STYLE_DATA)" \
+		SFT_OUT="$(SFT_STYLE_OUT)" \
+		SFT_METRICS="$(SFT_STYLE_METRICS)" \
+		SFT_STEPS="$(SFT_STYLE_STEPS)" \
+		SFT_BATCH="$(SFT_STYLE_BATCH)" \
+		SFT_LR="$(SFT_STYLE_LR)" \
+		SFT_LR_MIN="$(SFT_STYLE_LR_MIN)" \
+		SFT_LR_WARMUP_STEPS="$(SFT_STYLE_LR_WARMUP_STEPS)" \
+		SFT_WEIGHT_DECAY="$(SFT_STYLE_WEIGHT_DECAY)" \
+		SFT_CHECKPOINT_INTERVAL="$(SFT_STYLE_CHECKPOINT_INTERVAL)"
+	@printf '==> [sft-style] Finished playful direct style SFT phase\n'
+
+sft-staged:
+	@printf '==> [sft-staged] Starting staged supervised chat training\n'
+	$(MAKE) sft-anchor \
+		SFT_ANCHOR_BASE_CHECKPOINT="$(SFT_STAGED_BASE_CHECKPOINT)"
+	$(MAKE) sft-broad \
+		SFT_BROAD_BASE_CHECKPOINT="$(SFT_ANCHOR_OUT)"
+	$(MAKE) sft-style \
+		SFT_STYLE_BASE_CHECKPOINT="$(SFT_BROAD_OUT)"
+	@printf 'Final staged checkpoint: $(SFT_STAGED_OUT)\n'
+	@printf '==> [sft-staged] Finished staged supervised chat training\n'
 
 train-export-run:
 	@set -e; \
