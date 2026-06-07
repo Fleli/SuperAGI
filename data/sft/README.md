@@ -15,8 +15,10 @@ Guidelines:
   with all `seed.jsonl` examples, then adds lightly teasing, direct examples.
 - Use `stages/anchor.jsonl` first when a checkpoint needs to learn the basic
   chat contract: identity, limits, refusal to guess live facts, and topic repair.
-- Use `stages/broad-mixed.jsonl` after anchor training. It keeps the reviewed
-  seed corpus, repeats anchor rows, and adds broader low-stakes chat coverage.
+- Use the broad stage after anchor training. By default it mixes
+  `stages/anchor.jsonl`, `stages/broad-mixed.jsonl`, and
+  `imported/public-mixed.jsonl`, then samples by source weights so reviewed
+  anchor behavior is not drowned by high-volume public chat data.
 - Use `stages/style-playful-direct.jsonl` last and lightly. It nudges tone
   without replacing the anchor and broad behavior.
 - Use `diagnostics/overfit-50.jsonl` only as a pipeline sanity check. It is a
@@ -63,6 +65,21 @@ make sft-train \
 
 The trainer formats examples with literal role prefixes such as `User:` and `AGI:`. Future tokenizers can add special chat tokens.
 
+`SFT_DATA` may contain one JSONL file or comma-separated JSONL files. Public
+imports carry a `source` field such as `wildchat:123`; local staged files default
+to the filename stem such as `anchor` or `broad-mixed`. Use `SFT_SOURCE_WEIGHTS`
+to bias batch sampling without rewriting the corpus:
+
+```bash
+make sft-train \
+  SFT_BASE_CHECKPOINT=./best-200m-current.pt \
+  SFT_DATA=data/sft/stages/anchor.jsonl,data/sft/imported/public-mixed.jsonl \
+  SFT_SOURCE_WEIGHTS=anchor=4,no_robots=1.5,openassistant=1.25,dolly=1,ultrachat=0.8,wildchat=0.35
+```
+
+Validation examples are still evaluated unweighted so the reported validation
+loss remains a normal holdout estimate.
+
 Run the 50-example overfit diagnostic from a pretrained checkpoint:
 
 ```bash
@@ -81,6 +98,9 @@ make sft-staged \
   SFT_STAGED_BASE_CHECKPOINT=./best-current-cloud.pt \
   SFT_DEVICE=auto
 ```
+
+Run `make sft-import-public` first, or override `SFT_BROAD_DATA` to remove
+`data/sft/imported/public-mixed.jsonl`.
 
 This writes separate checkpoints for each phase:
 

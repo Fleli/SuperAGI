@@ -102,6 +102,9 @@ SFT_WEIGHT_DECAY := 0.01
 SFT_GRAD_CLIP := 1.0
 SFT_DEVICE := auto
 SFT_CHECKPOINT_INTERVAL := 250
+SFT_VALIDATION_FRACTION := 0.05
+SFT_VALIDATION_BATCHES := 10
+SFT_SOURCE_WEIGHTS :=
 SFT_SEED := 1337
 SFT_IMPORT_CHECKPOINT := $(SFT_BASE_CHECKPOINT)
 SFT_IMPORT_OUT := data/sft/imported/public-mixed.jsonl
@@ -136,7 +139,7 @@ SFT_ANCHOR_LR_MIN := 5e-6
 SFT_ANCHOR_LR_WARMUP_STEPS := 50
 SFT_ANCHOR_WEIGHT_DECAY := 0.0
 SFT_ANCHOR_CHECKPOINT_INTERVAL := 250
-SFT_BROAD_DATA := data/sft/stages/broad-mixed.jsonl
+SFT_BROAD_DATA := data/sft/stages/anchor.jsonl,data/sft/stages/broad-mixed.jsonl,data/sft/imported/public-mixed.jsonl
 SFT_BROAD_BASE_CHECKPOINT := $(SFT_ANCHOR_OUT)
 SFT_BROAD_OUT := data/sft/runs/chat-broad.pt
 SFT_BROAD_METRICS := data/sft/runs/chat-broad-metrics.jsonl
@@ -147,6 +150,7 @@ SFT_BROAD_LR_MIN := 2e-6
 SFT_BROAD_LR_WARMUP_STEPS := 100
 SFT_BROAD_WEIGHT_DECAY := 0.01
 SFT_BROAD_CHECKPOINT_INTERVAL := 250
+SFT_BROAD_SOURCE_WEIGHTS := anchor=4,broad-mixed=2,no_robots=1.5,openassistant=1.25,dolly=1,ultrachat=0.8,wildchat=0.35,default=1
 SFT_STYLE_DATA := data/sft/stages/style-playful-direct.jsonl
 SFT_STYLE_BASE_CHECKPOINT := $(SFT_BROAD_OUT)
 SFT_STYLE_OUT := data/sft/runs/chat-playful-direct.pt
@@ -185,9 +189,9 @@ help:
 	@echo "  make train RESUME=data/checkpoints/latest.pt STEPS=1000 CHECKPOINT_INTERVAL=1000"
 	@echo "  make train-export-run RESUME=data/checkpoints/latest.pt STEPS=1000 PROMPT=\"Attention is\""
 	@echo "  make sft-import-public SFT_IMPORT_CHECKPOINT=./best-200m-current.pt"
-	@echo "  make sft-train SFT_BASE_CHECKPOINT=data/checkpoints/best.pt SFT_STEPS=200"
+	@echo "  make sft-train SFT_BASE_CHECKPOINT=data/checkpoints/best.pt SFT_STEPS=200 SFT_SOURCE_WEIGHTS=anchor=4,wildchat=0.35"
 	@echo "  make sft-overfit-50 SFT_OVERFIT_BASE_CHECKPOINT=./best-current-cloud.pt"
-	@echo "  make sft-staged SFT_STAGED_BASE_CHECKPOINT=./best-current-cloud.pt"
+	@echo "  make sft-staged SFT_STAGED_BASE_CHECKPOINT=./best-current-cloud.pt  # run sft-import-public first"
 	@echo "  make train-4090        Fetch C4, rebuild artifacts, and start the RTX 4090 night run"
 	@echo "  make train-200m        Clean, stream C4 shards, and start the 200M training run"
 	@echo "  make run-model CHECKPOINT=data/checkpoints/best.pt PROMPT=\"The\""
@@ -501,6 +505,9 @@ sft-train: setup
 		--weight-decay "$(SFT_WEIGHT_DECAY)" \
 		--grad-clip "$(SFT_GRAD_CLIP)" \
 		--checkpoint-interval "$(SFT_CHECKPOINT_INTERVAL)" \
+		--validation-fraction "$(SFT_VALIDATION_FRACTION)" \
+		--validation-batches "$(SFT_VALIDATION_BATCHES)" \
+		--source-weights "$(SFT_SOURCE_WEIGHTS)" \
 		--device "$(SFT_DEVICE)" \
 		--seed "$(SFT_SEED)"
 	@printf '==> [sft-train] Finished supervised chat training\n'
@@ -533,7 +540,8 @@ sft-overfit-50:
 		SFT_LR_MIN="$(SFT_OVERFIT_LR_MIN)" \
 		SFT_LR_WARMUP_STEPS="$(SFT_OVERFIT_LR_WARMUP_STEPS)" \
 		SFT_WEIGHT_DECAY="$(SFT_OVERFIT_WEIGHT_DECAY)" \
-		SFT_CHECKPOINT_INTERVAL="$(SFT_OVERFIT_CHECKPOINT_INTERVAL)"
+		SFT_CHECKPOINT_INTERVAL="$(SFT_OVERFIT_CHECKPOINT_INTERVAL)" \
+		SFT_VALIDATION_FRACTION="0"
 	@printf '==> [sft-overfit-50] Finished hard-overfit SFT diagnostic\n'
 
 sft-anchor:
@@ -565,7 +573,8 @@ sft-broad:
 		SFT_LR_MIN="$(SFT_BROAD_LR_MIN)" \
 		SFT_LR_WARMUP_STEPS="$(SFT_BROAD_LR_WARMUP_STEPS)" \
 		SFT_WEIGHT_DECAY="$(SFT_BROAD_WEIGHT_DECAY)" \
-		SFT_CHECKPOINT_INTERVAL="$(SFT_BROAD_CHECKPOINT_INTERVAL)"
+		SFT_CHECKPOINT_INTERVAL="$(SFT_BROAD_CHECKPOINT_INTERVAL)" \
+		SFT_SOURCE_WEIGHTS="$(SFT_BROAD_SOURCE_WEIGHTS)"
 	@printf '==> [sft-broad] Finished broad chat SFT phase\n'
 
 sft-style:

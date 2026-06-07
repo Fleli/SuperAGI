@@ -61,6 +61,17 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("==> [sft-train] Training supervised chat model", contents)
         self.assertIn("==> [sft-train] Finished supervised chat training", contents)
 
+    def test_sft_train_target_wires_validation_split_and_batches(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("SFT_VALIDATION_FRACTION := 0.05", contents)
+        self.assertIn("SFT_VALIDATION_BATCHES := 10", contents)
+        self.assertIn("SFT_SOURCE_WEIGHTS :=", contents)
+        self.assertIn('--validation-fraction "$(SFT_VALIDATION_FRACTION)"', contents)
+        self.assertIn('--validation-batches "$(SFT_VALIDATION_BATCHES)"', contents)
+        self.assertIn('--source-weights "$(SFT_SOURCE_WEIGHTS)"', contents)
+
     def test_sft_import_public_target_downloads_and_filters_public_data(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
         contents = makefile.read_text(encoding="utf-8")
@@ -88,6 +99,7 @@ class MakefileTests(unittest.TestCase):
         self.assertIn('SFT_DATA="$(SFT_OVERFIT_DATA)"', contents)
         self.assertIn('SFT_OUT="$(SFT_OVERFIT_OUT)"', contents)
         self.assertIn('SFT_WEIGHT_DECAY="$(SFT_OVERFIT_WEIGHT_DECAY)"', contents)
+        self.assertIn('SFT_VALIDATION_FRACTION="0"', contents)
         self.assertIn("==> [sft-overfit-50] Training hard-overfit SFT diagnostic", contents)
 
     def test_staged_sft_targets_chain_anchor_broad_and_style_runs(self) -> None:
@@ -99,7 +111,11 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("sft-style", contents)
         self.assertIn("sft-staged", contents)
         self.assertIn("SFT_ANCHOR_DATA := data/sft/stages/anchor.jsonl", contents)
-        self.assertIn("SFT_BROAD_DATA := data/sft/stages/broad-mixed.jsonl", contents)
+        self.assertIn(
+            "SFT_BROAD_DATA := data/sft/stages/anchor.jsonl,data/sft/stages/broad-mixed.jsonl,data/sft/imported/public-mixed.jsonl",
+            contents,
+        )
+        self.assertIn("SFT_BROAD_SOURCE_WEIGHTS :=", contents)
         self.assertIn("SFT_STYLE_DATA := data/sft/stages/style-playful-direct.jsonl", contents)
         self.assertIn("SFT_ANCHOR_OUT := data/sft/runs/chat-anchor.pt", contents)
         self.assertIn("SFT_BROAD_BASE_CHECKPOINT := $(SFT_ANCHOR_OUT)", contents)
@@ -107,6 +123,7 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("SFT_STAGED_OUT := $(SFT_STYLE_OUT)", contents)
         self.assertIn('SFT_DATA="$(SFT_ANCHOR_DATA)"', contents)
         self.assertIn('SFT_DATA="$(SFT_BROAD_DATA)"', contents)
+        self.assertIn('SFT_SOURCE_WEIGHTS="$(SFT_BROAD_SOURCE_WEIGHTS)"', contents)
         self.assertIn('SFT_DATA="$(SFT_STYLE_DATA)"', contents)
         self.assertIn('$(MAKE) sft-anchor', contents)
         self.assertIn('$(MAKE) sft-broad', contents)

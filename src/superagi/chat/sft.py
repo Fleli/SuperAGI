@@ -18,11 +18,20 @@ class TokenizedSftExample:
     input_ids: tuple[int, ...]
     target_ids: tuple[int, ...]
     supervised_token_count: int
+    source: str = "manual"
+
+
+@dataclass(frozen=True)
+class SftConversation:
+    messages: tuple[ChatMessage, ...]
+    source: str
 
 
 def tokenize_sft_messages(
     messages: Sequence[ChatMessage | Mapping[str, str]],
     tokenizer: TokenizerLike,
+    *,
+    source: str = "manual",
 ) -> TokenizedSftExample:
     formatted = format_chat_messages(messages)
     encoding = tokenizer.encode_with_offsets(formatted.text)
@@ -48,12 +57,21 @@ def tokenize_sft_messages(
         input_ids=input_ids,
         target_ids=target_ids,
         supervised_token_count=supervised_token_count,
+        source=source,
     )
 
 
 def load_sft_jsonl(path: Path | str) -> list[tuple[ChatMessage, ...]]:
+    return [record.messages for record in load_sft_records(path)]
+
+
+def load_sft_records(
+    path: Path | str,
+    *,
+    default_source: str = "manual",
+) -> list[SftConversation]:
     sft_path = Path(path)
-    conversations: list[tuple[ChatMessage, ...]] = []
+    conversations: list[SftConversation] = []
     for line_number, line in enumerate(
         sft_path.read_text(encoding="utf-8").splitlines(),
         start=1,
@@ -64,8 +82,16 @@ def load_sft_jsonl(path: Path | str) -> list[tuple[ChatMessage, ...]]:
         messages = payload.get("messages")
         if not isinstance(messages, list):
             raise ValueError(f"SFT line {line_number} must contain messages")
+        source = payload.get("source", default_source)
+        if not isinstance(source, str) or not source.strip():
+            raise ValueError(f"SFT line {line_number} source must be a non-empty string")
         conversations.append(
-            tuple(_coerce_chat_message(message, line_number) for message in messages)
+            SftConversation(
+                messages=tuple(
+                    _coerce_chat_message(message, line_number) for message in messages
+                ),
+                source=source.strip(),
+            )
         )
     if not conversations:
         raise ValueError(f"no SFT examples found in {sft_path}")
