@@ -11,7 +11,7 @@ class ChatFormattingTests(unittest.TestCase):
     def test_formats_user_prompt_for_generation(self) -> None:
         formatted = format_user_prompt("What are you?")
 
-        self.assertEqual(formatted.text, "<bos><user> What are you?\n<agi> ")
+        self.assertEqual(formatted.text, "<bos><user> What are you?\n<agi>")
         self.assertEqual(formatted.agi_spans, ())
 
     def test_formats_chat_messages_with_agi_spans_for_sft(self) -> None:
@@ -62,7 +62,7 @@ class ChatFormattingTests(unittest.TestCase):
             "<bos><user> What is AI?\n"
             "<agi> AI is software that performs intelligent tasks.<eos>\n"
             "<user> One sentence?\n"
-            "<agi> ",
+            "<agi>",
         )
 
     def test_rejects_unknown_roles(self) -> None:

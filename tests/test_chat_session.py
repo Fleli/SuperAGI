@@ -19,7 +19,7 @@ class ChatSessionTests(unittest.TestCase):
             "<bos><user> What are you?\n"
             "<agi> I am a small model.<eos>\n"
             "<user> Can you chat?\n"
-            "<agi> ",
+            "<agi>",
         )
 
     def test_extracts_reply_before_next_user_turn(self) -> None:

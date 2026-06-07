@@ -272,7 +272,7 @@ class CheckpointTests(unittest.TestCase):
         run_model = self._load_run_model_module()
 
         def fake_generate_from_checkpoint(*args, prompt=None, **kwargs):
-            self.assertEqual(prompt, "<bos><user> What are you?\n<agi> ")
+            self.assertEqual(prompt, "<bos><user> What are you?\n<agi>")
             return "<bos><user> What are you?\n<agi> I am a small model.<eos>"
 
         output = io.StringIO()

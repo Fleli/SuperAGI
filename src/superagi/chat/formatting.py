@@ -78,7 +78,7 @@ def format_chat_messages(
         current_offset += len(line)
 
     if add_generation_prompt:
-        text_parts.append(f"{AGI_TOKEN} ")
+        text_parts.append(AGI_TOKEN)
 
     return ChatFormat(
         text="".join(text_parts),
