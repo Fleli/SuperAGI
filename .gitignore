@@ -9,6 +9,8 @@ data/checkpoints/*
 !data/checkpoints/.gitkeep
 data/sft/generated/*
 !data/sft/generated/.gitkeep
+data/sft/imported/*
+!data/sft/imported/.gitkeep
 data/sft/staging/*
 !data/sft/staging/.gitkeep
 data/sft/runs/*

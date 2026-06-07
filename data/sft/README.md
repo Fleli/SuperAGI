@@ -23,8 +23,31 @@ Guidelines:
   tiny identity dataset designed to overfit hard, not a balanced chat dataset.
 - Keep AGI answers concise and honest about model limitations.
 - Use `generated/` for bulk synthetic data before review; it is ignored by Git.
+- Use `imported/` for filtered public instruction/chat datasets; it is ignored
+  by Git because the artifacts can become large and upstream licenses vary.
 - Use `runs/` for tokenized SFT artifacts, checkpoints, and experiment outputs; it is ignored by Git.
 - Do not commit private website logs or personally identifying user content.
+
+Import filtered public SFT data from high-value instruction/chat datasets:
+
+```bash
+make sft-import-public \
+  SFT_IMPORT_CHECKPOINT=./best-200m-current.pt \
+  SFT_IMPORT_MAX_ROWS_PER_SOURCE=50000 \
+  SFT_IMPORT_MAX_EXAMPLES_PER_SOURCE=5000
+```
+
+The default import sources are `no_robots`, `dolly`, `openassistant`,
+`wildchat`, and `ultrachat`. The importer writes:
+
+- `data/sft/imported/public-mixed.jsonl`
+- `data/sft/imported/public-mixed.metadata.json`
+
+The importer filters examples before writing them: over-context examples,
+empty answers, very short answers, very long answers, duplicate answers,
+known synthetic artifacts, and repeated five-gram loops are rejected.
+Review upstream licenses before using imported data outside local learning
+experiments.
 
 Run a supervised fine-tune from an existing checkpoint without overwriting it:
 

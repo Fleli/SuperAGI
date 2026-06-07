@@ -103,6 +103,16 @@ SFT_GRAD_CLIP := 1.0
 SFT_DEVICE := auto
 SFT_CHECKPOINT_INTERVAL := 250
 SFT_SEED := 1337
+SFT_IMPORT_CHECKPOINT := $(SFT_BASE_CHECKPOINT)
+SFT_IMPORT_OUT := data/sft/imported/public-mixed.jsonl
+SFT_IMPORT_METADATA := data/sft/imported/public-mixed.metadata.json
+SFT_IMPORT_SOURCES := no_robots,dolly,openassistant,wildchat,ultrachat
+SFT_IMPORT_MAX_ROWS_PER_SOURCE := 50000
+SFT_IMPORT_MAX_EXAMPLES_PER_SOURCE := 5000
+SFT_IMPORT_MAX_CONTEXT_TOKENS := 900
+SFT_IMPORT_MAX_MESSAGES := 8
+SFT_IMPORT_MAX_AGI_CHARS := 1200
+SFT_IMPORT_MIN_AGI_CHARS := 20
 SFT_OVERFIT_DATA := data/sft/diagnostics/overfit-50.jsonl
 SFT_OVERFIT_BASE_CHECKPOINT := $(SFT_BASE_CHECKPOINT)
 SFT_OVERFIT_OUT := data/sft/runs/chat-sft-overfit-50.pt
@@ -150,7 +160,7 @@ SFT_STYLE_WEIGHT_DECAY := 0.01
 SFT_STYLE_CHECKPOINT_INTERVAL := 200
 SFT_STAGED_OUT := $(SFT_STYLE_OUT)
 
-.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 train sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged params train-export-run train-4090 train-200m std-train export-model generate run-model chat smoke-train clean-generated
+.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 train sft-import-public sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged params train-export-run train-4090 train-200m std-train export-model generate run-model chat smoke-train clean-generated
 
 help:
 	@echo "SuperAGI pipeline targets"
@@ -174,6 +184,7 @@ help:
 	@echo "  make train STEPS=100 BATCH=16 LR=3e-4 LR_MIN=3e-5 LR_WARMUP_STEPS=100 MIXED_PRECISION=auto"
 	@echo "  make train RESUME=data/checkpoints/latest.pt STEPS=1000 CHECKPOINT_INTERVAL=1000"
 	@echo "  make train-export-run RESUME=data/checkpoints/latest.pt STEPS=1000 PROMPT=\"Attention is\""
+	@echo "  make sft-import-public SFT_IMPORT_CHECKPOINT=./best-200m-current.pt"
 	@echo "  make sft-train SFT_BASE_CHECKPOINT=data/checkpoints/best.pt SFT_STEPS=200"
 	@echo "  make sft-overfit-50 SFT_OVERFIT_BASE_CHECKPOINT=./best-current-cloud.pt"
 	@echo "  make sft-staged SFT_STAGED_BASE_CHECKPOINT=./best-current-cloud.pt"
@@ -493,6 +504,21 @@ sft-train: setup
 		--device "$(SFT_DEVICE)" \
 		--seed "$(SFT_SEED)"
 	@printf '==> [sft-train] Finished supervised chat training\n'
+
+sft-import-public: setup
+	@printf '==> [sft-import-public] Importing public SFT datasets\n'
+	$(PYTHON) scripts/import_public_sft.py \
+		--checkpoint "$(SFT_IMPORT_CHECKPOINT)" \
+		--out "$(SFT_IMPORT_OUT)" \
+		--metadata "$(SFT_IMPORT_METADATA)" \
+		--sources "$(SFT_IMPORT_SOURCES)" \
+		--max-rows-per-source "$(SFT_IMPORT_MAX_ROWS_PER_SOURCE)" \
+		--max-examples-per-source "$(SFT_IMPORT_MAX_EXAMPLES_PER_SOURCE)" \
+		--max-context-tokens "$(SFT_IMPORT_MAX_CONTEXT_TOKENS)" \
+		--max-messages "$(SFT_IMPORT_MAX_MESSAGES)" \
+		--max-agi-chars "$(SFT_IMPORT_MAX_AGI_CHARS)" \
+		--min-agi-chars "$(SFT_IMPORT_MIN_AGI_CHARS)"
+	@printf '==> [sft-import-public] Finished importing public SFT datasets\n'
 
 sft-overfit-50:
 	@printf '==> [sft-overfit-50] Training hard-overfit SFT diagnostic\n'
