@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import sqrt
 from typing import Callable
 
 import torch
@@ -21,6 +22,8 @@ class TransformerConfig:
     n_heads: int = 4
     dim_feed_forward: int | None = None
     dropout: float = 0.0
+    init_std: float = 0.02
+    scale_residual_projections: bool = True
 
     def __post_init__(self) -> None:
         if self.vocab_size <= 0:
@@ -37,6 +40,8 @@ class TransformerConfig:
             raise ValueError("dim_embedding must be divisible by n_heads")
         if not 0.0 <= self.dropout < 1.0:
             raise ValueError("dropout must be in the range [0.0, 1.0)")
+        if self.init_std <= 0:
+            raise ValueError("init_std must be positive")
         if self.dim_feed_forward is None:
             object.__setattr__(self, "dim_feed_forward", 4 * self.dim_embedding)
 
@@ -82,7 +87,35 @@ class TransformerLM(nn.Module):
             config.vocab_size,
             bias=False,
         )
+        self.apply(self._init_weights)
+        if config.scale_residual_projections:
+            self._scale_residual_projections()
         self.output_projection.weight = self.embeddings.token_embedding.weight
+
+    def _init_weights(self, module: nn.Module) -> None:
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=self.config.init_std)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=self.config.init_std)
+        elif isinstance(module, nn.LayerNorm):
+            nn.init.ones_(module.weight)
+            nn.init.zeros_(module.bias)
+
+    def _scale_residual_projections(self) -> None:
+        residual_std = self.config.init_std / sqrt(2 * self.config.n_layers)
+        for block in self.blocks:
+            nn.init.normal_(
+                block.attention.out_proj.weight,
+                mean=0.0,
+                std=residual_std,
+            )
+            nn.init.normal_(
+                block.feed_forward.net[2].weight,
+                mean=0.0,
+                std=residual_std,
+            )
 
     def forward(
         self,
@@ -118,6 +151,7 @@ class TransformerLM(nn.Module):
         top_k: int | None = None,
         repetition_penalty: float = 1.0,
         repetition_window: int | None = None,
+        stop_token_ids: set[int] | None = None,
         on_token: Callable[[int], bool | None] | None = None,
     ) -> torch.Tensor:
         if max_new_tokens < 0:
@@ -155,10 +189,15 @@ class TransformerLM(nn.Module):
                 )
             probabilities = F.softmax(next_token_logits, dim=-1)
             next_token = torch.multinomial(probabilities, num_samples=1)
-            should_stop = False
+            sampled_token_ids = [int(token_id) for token_id in next_token[:, 0].tolist()]
+            should_stop = any(
+                token_id in stop_token_ids for token_id in sampled_token_ids
+            ) if stop_token_ids else False
             if on_token is not None:
-                for token_id in next_token[:, 0].tolist():
-                    should_stop = bool(on_token(int(token_id))) or should_stop
+                for token_id in sampled_token_ids:
+                    if stop_token_ids and token_id in stop_token_ids:
+                        continue
+                    should_stop = bool(on_token(token_id)) or should_stop
             input_ids = torch.cat((input_ids, next_token), dim=1)
             if should_stop:
                 break

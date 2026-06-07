@@ -19,7 +19,7 @@ class SftTokenizationTests(unittest.TestCase):
             {"role": "user", "content": "What are you?"},
             {"role": "agi", "content": "I am AGI."},
         ]
-        text = "User: What are you?\nAGI: I am AGI.\n"
+        text = "<bos><user> What are you?\n<agi> I am AGI.<eos>\n"
         tokenizer = CharTokenizer.from_text(text)
 
         tokenized = tokenize_sft_messages(messages, tokenizer)
@@ -30,8 +30,8 @@ class SftTokenizationTests(unittest.TestCase):
             if token_id != IGNORE_INDEX
         ]
         self.assertEqual(tokenized.text, text)
-        self.assertEqual(tokenizer.decode(supervised_ids), "I am AGI.")
-        self.assertEqual(tokenized.supervised_token_count, len("I am AGI."))
+        self.assertEqual(tokenizer.decode(supervised_ids), "I am AGI.<eos>")
+        self.assertEqual(tokenized.supervised_token_count, len("I am AGI.<eos>"))
         self.assertTrue(
             all(
                 token_id == IGNORE_INDEX
@@ -44,7 +44,7 @@ class SftTokenizationTests(unittest.TestCase):
             {"role": "user", "content": "Explain ML."},
             {"role": "agi", "content": "ML learns patterns from data."},
         ]
-        text = "User: Explain ML.\nAGI: ML learns patterns from data.\n"
+        text = "<bos><user> Explain ML.\n<agi> ML learns patterns from data.<eos>\n"
         tokenizer = BpeTokenizer.from_text(text, vocab_size=300, min_frequency=1)
 
         tokenized = tokenize_sft_messages(messages, tokenizer)
@@ -56,7 +56,7 @@ class SftTokenizationTests(unittest.TestCase):
         ]
         self.assertEqual(
             tokenizer.decode(supervised_ids).strip(),
-            "ML learns patterns from data.",
+            "ML learns patterns from data.<eos>",
         )
         self.assertGreater(tokenized.supervised_token_count, 0)
 
@@ -68,10 +68,10 @@ class SftTokenizationTests(unittest.TestCase):
             {"role": "agi", "content": "ML learns from data."},
         ]
         text = (
-            "User: What is AI?\n"
-            "AGI: AI is software.\n"
-            "User: And ML?\n"
-            "AGI: ML learns from data.\n"
+            "<bos><user> What is AI?\n"
+            "<agi> AI is software.<eos>\n"
+            "<user> And ML?\n"
+            "<agi> ML learns from data.<eos>\n"
         )
         tokenizer = CharTokenizer.from_text(text)
 
@@ -84,11 +84,11 @@ class SftTokenizationTests(unittest.TestCase):
         ]
         self.assertEqual(
             tokenizer.decode(supervised_ids),
-            "AI is software.ML learns from data.",
+            "AI is software.<eos>ML learns from data.<eos>",
         )
 
     def test_rejects_conversation_without_agi_labels(self) -> None:
-        tokenizer = CharTokenizer.from_text("User: Hello\n")
+        tokenizer = CharTokenizer.from_text("<bos><user> Hello\n")
 
         with self.assertRaisesRegex(ValueError, "no AGI response tokens"):
             tokenize_sft_messages([{"role": "user", "content": "Hello"}], tokenizer)

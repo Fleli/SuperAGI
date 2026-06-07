@@ -148,6 +148,29 @@ class MakefileTests(unittest.TestCase):
         self.assertIn('PROMPT="$(TRAIN_4090_PROMPT)"', contents)
         self.assertIn('TOP_K="$(TRAIN_4090_TOP_K)"', contents)
 
+    def test_train_200m_streams_tokenizes_and_starts_serious_run(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("train-200m", contents)
+        self.assertIn("make train-200m", contents)
+        self.assertIn("TRAIN_200M_STREAM_C4_MAX := 1000000", contents)
+        self.assertIn("TRAIN_200M_STREAM_TOKENIZER_SAMPLE := 20000", contents)
+        self.assertIn("TRAIN_200M_STREAM_SHARD_TOKENS := 2000000", contents)
+        self.assertIn("TRAIN_200M_STREAM_VALIDATION_TOKENS := 2000000", contents)
+        self.assertIn("TRAIN_200M_STEPS := 300000", contents)
+        self.assertIn("TRAIN_200M_BATCH := 8", contents)
+        self.assertIn("TRAIN_200M_DEVICE := cuda", contents)
+        self.assertIn("TRAIN_200M_MIXED_PRECISION := auto", contents)
+        self.assertIn("$(MAKE) clean-generated", contents)
+        self.assertIn("$(MAKE) ingest-stream-c4", contents)
+        self.assertIn('STREAM_C4_MAX="$(TRAIN_200M_STREAM_C4_MAX)"', contents)
+        self.assertIn('STREAM_TOKENIZER_SAMPLE="$(TRAIN_200M_STREAM_TOKENIZER_SAMPLE)"', contents)
+        self.assertIn('BPE_VOCAB_SIZE="$(TRAIN_200M_BPE_VOCAB_SIZE)"', contents)
+        self.assertIn("$(MAKE) train-export-run", contents)
+        self.assertIn('LR_WARMUP_STEPS="$(TRAIN_200M_LR_WARMUP_STEPS)"', contents)
+        self.assertIn('MIXED_PRECISION="$(TRAIN_200M_MIXED_PRECISION)"', contents)
+
     def test_validation_metrics_are_wired_into_ingest_and_train(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
         contents = makefile.read_text(encoding="utf-8")
@@ -172,6 +195,15 @@ class MakefileTests(unittest.TestCase):
         self.assertIn('warmup_steps=int("$(LR_WARMUP_STEPS)")', contents)
         self.assertIn('"min_learning_rate": float("$(LR_MIN)")', contents)
         self.assertIn('"warmup_steps": int("$(LR_WARMUP_STEPS)")', contents)
+
+    def test_train_target_wires_mixed_precision(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("MIXED_PRECISION := auto", contents)
+        self.assertIn('mixed_precision="$(MIXED_PRECISION)"', contents)
+        self.assertIn('"mixed_precision": "$(MIXED_PRECISION)"', contents)
+        self.assertIn('MIXED_PRECISION="$(TRAIN_4090_MIXED_PRECISION)"', contents)
 
     def test_ingest_defaults_to_bpe_tokenization(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
@@ -245,6 +277,8 @@ class MakefileTests(unittest.TestCase):
             "==> [run-model] Finished generating sample text",
             "==> [pipeline] Starting train/export/run",
             "==> [pipeline] Finished train/export/run",
+            "==> [train-200m] Streaming and tokenizing C4 corpus",
+            "==> [train-200m] Finished 200M training pipeline",
         ]
 
         for marker in expected_markers:

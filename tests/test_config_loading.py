@@ -33,8 +33,8 @@ class ConfigLoadingTests(unittest.TestCase):
             config_path.write_text(
                 """
 init:
-  range_min: -1
-  range_max: 1
+  weight_std: 0.02
+  scale_residual_projections: true
 
 parameters:
   n_layers: 2
@@ -48,14 +48,16 @@ parameters:
             config = load_project_config(config_path)
             transformer_config = config.to_transformer_config(vocab_size=10)
 
-        self.assertEqual(config.init.range_min, -1)
-        self.assertEqual(config.init.range_max, 1)
+        self.assertEqual(config.init.weight_std, 0.02)
+        self.assertTrue(config.init.scale_residual_projections)
         self.assertEqual(config.parameters.n_heads, 3)
         self.assertEqual(transformer_config.vocab_size, 10)
         self.assertEqual(transformer_config.context_length, 16)
         self.assertEqual(transformer_config.dim_embedding, 12)
         self.assertEqual(transformer_config.n_layers, 2)
         self.assertEqual(transformer_config.n_heads, 3)
+        self.assertEqual(transformer_config.init_std, 0.02)
+        self.assertTrue(transformer_config.scale_residual_projections)
 
     def test_rejects_embedding_dimension_not_divisible_by_key_dimension(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -63,8 +65,8 @@ parameters:
             config_path.write_text(
                 """
 init:
-  range_min: -1
-  range_max: 1
+  weight_std: 0.02
+  scale_residual_projections: true
 
 parameters:
   n_layers: 2

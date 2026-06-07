@@ -1,4 +1,6 @@
 import unittest
+from math import sqrt
+from unittest import mock
 
 import torch
 
@@ -11,6 +13,31 @@ class TransformerLMTests(unittest.TestCase):
     def test_attention_and_perception_modules_live_directly_under_inference(self) -> None:
         self.assertEqual(CausalSelfAttention.__name__, "CausalSelfAttention")
         self.assertEqual(FeedForward.__name__, "FeedForward")
+
+    def test_attention_uses_scaled_dot_product_causal_kernel(self) -> None:
+        attention = CausalSelfAttention(
+            dim_embedding=8,
+            n_heads=2,
+            context_length=4,
+            dropout=0.25,
+        )
+        x = torch.randn(2, 3, 8)
+        calls = []
+
+        def fake_scaled_dot_product_attention(q, k, v, **kwargs):
+            calls.append(kwargs)
+            return torch.zeros_like(q)
+
+        with mock.patch(
+            "superagi.model.inference.attend.F.scaled_dot_product_attention",
+            side_effect=fake_scaled_dot_product_attention,
+        ):
+            out = attention(x)
+
+        self.assertEqual(out.shape, x.shape)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0]["is_causal"])
+        self.assertEqual(calls[0]["dropout_p"], 0.25)
 
     def test_forward_returns_logits_and_loss(self) -> None:
         config = TransformerConfig(
@@ -72,6 +99,46 @@ class TransformerLMTests(unittest.TestCase):
         )
         self.assertIsNone(model.output_projection.bias)
         self.assertIsNotNone(model.embeddings.token_embedding.weight.grad)
+
+    def test_initializes_weights_with_gpt_style_small_normal(self) -> None:
+        torch.manual_seed(0)
+        config = TransformerConfig(
+            vocab_size=2048,
+            context_length=16,
+            dim_embedding=64,
+            n_layers=4,
+            n_heads=4,
+            init_std=0.02,
+            scale_residual_projections=True,
+        )
+        model = TransformerLM(config)
+
+        token_std = model.embeddings.token_embedding.weight.std().item()
+        q_std = model.blocks[0].attention.q_proj.weight.std().item()
+        residual_std = model.blocks[0].attention.out_proj.weight.std().item()
+        expected_residual_std = config.init_std / sqrt(2 * config.n_layers)
+
+        self.assertLess(abs(token_std - config.init_std), 0.003)
+        self.assertLess(abs(q_std - config.init_std), 0.003)
+        self.assertLess(abs(residual_std - expected_residual_std), 0.003)
+        self.assertTrue(
+            torch.allclose(
+                model.blocks[0].attention.q_proj.bias,
+                torch.zeros_like(model.blocks[0].attention.q_proj.bias),
+            )
+        )
+        self.assertTrue(
+            torch.allclose(
+                model.ln_final.weight,
+                torch.ones_like(model.ln_final.weight),
+            )
+        )
+        self.assertTrue(
+            torch.allclose(
+                model.ln_final.bias,
+                torch.zeros_like(model.ln_final.bias),
+            )
+        )
 
     def test_generate_appends_tokens(self) -> None:
         torch.manual_seed(1)

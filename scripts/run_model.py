@@ -9,8 +9,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from superagi.model.checkpoint import generate_from_checkpoint  # noqa: E402
 from superagi.chat.formatting import format_user_prompt  # noqa: E402
+from superagi.chat.session import extract_chat_reply  # noqa: E402
+from superagi.model.checkpoint import generate_from_checkpoint  # noqa: E402
 
 
 def _parse_bool(value: str) -> bool:
@@ -92,9 +93,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--repetition-window must be non-negative")
 
     prompt = format_user_prompt(args.prompt).text if args.chat else args.prompt
+    visible_prompt = f"User: {args.prompt}\nAGI: " if args.chat else prompt
 
     if args.stream:
-        print(prompt, end="", flush=True)
+        print(visible_prompt, end="", flush=True)
         generate_from_checkpoint(
             args.checkpoint,
             prompt=prompt,
@@ -120,7 +122,10 @@ def main(argv: list[str] | None = None) -> int:
             device=args.device,
             seed=args.seed,
         )
-        print(generated)
+        if args.chat:
+            print(f"{visible_prompt}{extract_chat_reply(prompt, generated)}")
+        else:
+            print(generated)
     return 0
 
 

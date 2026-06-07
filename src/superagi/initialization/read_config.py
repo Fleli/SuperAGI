@@ -14,8 +14,12 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / "specs" / "config.ya
 
 @dataclass(frozen=True)
 class InitConfig:
-    range_min: float
-    range_max: float
+    weight_std: float
+    scale_residual_projections: bool
+
+    def __post_init__(self) -> None:
+        if self.weight_std <= 0:
+            raise ValueError("weight_std must be positive")
 
 
 @dataclass(frozen=True)
@@ -54,6 +58,8 @@ class ProjectConfig:
             dim_embedding=self.parameters.dim_embedding,
             n_layers=self.parameters.n_layers,
             n_heads=self.parameters.n_heads,
+            init_std=self.init.weight_std,
+            scale_residual_projections=self.init.scale_residual_projections,
         )
 
 
@@ -67,8 +73,11 @@ def load_project_config(path: Path | str = DEFAULT_CONFIG_PATH) -> ProjectConfig
     parameters = _required_mapping(payload, "parameters")
     return ProjectConfig(
         init=InitConfig(
-            range_min=_required_number(init, "range_min"),
-            range_max=_required_number(init, "range_max"),
+            weight_std=_required_number(init, "weight_std"),
+            scale_residual_projections=_required_bool(
+                init,
+                "scale_residual_projections",
+            ),
         ),
         parameters=ModelParameters(
             n_layers=_required_int(parameters, "n_layers"),
@@ -97,4 +106,11 @@ def _required_number(payload: dict[str, Any], key: str) -> float:
     value = payload.get(key)
     if not isinstance(value, int | float):
         raise ValueError(f"config field {key!r} must be numeric")
+    return value
+
+
+def _required_bool(payload: dict[str, Any], key: str) -> bool:
+    value = payload.get(key)
+    if not isinstance(value, bool):
+        raise ValueError(f"config field {key!r} must be boolean")
     return value

@@ -1,6 +1,12 @@
 import unittest
 
-from superagi.ingestion.tokenizer import BpeTokenizer, CharTokenizer
+from superagi.ingestion.tokenizer import (
+    BOS_TOKEN,
+    EOS_TOKEN,
+    SPECIAL_TOKENS,
+    BpeTokenizer,
+    CharTokenizer,
+)
 
 
 class CharTokenizerTests(unittest.TestCase):
@@ -22,6 +28,21 @@ class CharTokenizerTests(unittest.TestCase):
 
 
 class BpeTokenizerTests(unittest.TestCase):
+    def test_bpe_reserves_special_tokens_as_atomic_ids(self) -> None:
+        tokenizer = BpeTokenizer.from_text(
+            "machine learning models learn machine learning patterns",
+            vocab_size=300,
+        )
+
+        special_ids = [tokenizer.special_token_id(token) for token in SPECIAL_TOKENS]
+
+        self.assertEqual(len(set(special_ids)), len(SPECIAL_TOKENS))
+        self.assertEqual(tokenizer.encode(EOS_TOKEN), [tokenizer.special_token_id(EOS_TOKEN)])
+        self.assertEqual(
+            tokenizer.decode([tokenizer.special_token_id(BOS_TOKEN), tokenizer.special_token_id(EOS_TOKEN)]),
+            f"{BOS_TOKEN}{EOS_TOKEN}",
+        )
+
     def test_trains_encodes_decodes_and_serializes_bpe(self) -> None:
         tokenizer = BpeTokenizer.from_text(
             "machine learning models learn machine learning patterns",

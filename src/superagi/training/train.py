@@ -132,6 +132,7 @@ class TrainConfig:
     weight_decay: float = 0.01
     grad_clip: float | None = 1.0
     shuffle: bool = True
+    mixed_precision: str = "none"
 
     def __post_init__(self) -> None:
         if self.batch_size <= 0:
@@ -150,6 +151,8 @@ class TrainConfig:
             raise ValueError("weight_decay must be non-negative")
         if self.grad_clip is not None and self.grad_clip <= 0:
             raise ValueError("grad_clip must be positive when set")
+        if self.mixed_precision not in {"none", "auto", "float16", "bfloat16"}:
+            raise ValueError("mixed_precision must be one of: none, auto, float16, bfloat16")
 
 
 @dataclass(frozen=True)
@@ -167,17 +170,32 @@ def train_step(
     input_ids: torch.Tensor,
     target_ids: torch.Tensor,
     grad_clip: float | None = 1.0,
+    mixed_precision_dtype: torch.dtype | None = None,
+    grad_scaler: torch.amp.GradScaler | None = None,
 ) -> float:
     model.train()
     optimizer.zero_grad(set_to_none=True)
-    _, loss = model(input_ids, target_ids)
+    with torch.amp.autocast(
+        device_type=input_ids.device.type,
+        dtype=mixed_precision_dtype,
+        enabled=mixed_precision_dtype is not None,
+    ):
+        _, loss = model(input_ids, target_ids)
     if loss is None:
         raise RuntimeError("model did not return a loss")
 
-    loss.backward()
-    if grad_clip is not None:
-        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-    optimizer.step()
+    if grad_scaler is not None and grad_scaler.is_enabled():
+        grad_scaler.scale(loss).backward()
+        if grad_clip is not None:
+            grad_scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        grad_scaler.step(optimizer)
+        grad_scaler.update()
+    else:
+        loss.backward()
+        if grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        optimizer.step()
     return float(loss.detach().item())
 
 
@@ -217,6 +235,7 @@ def evaluate_loss(
     batch_size: int,
     max_batches: int,
     device: torch.device | str = "cpu",
+    mixed_precision_dtype: torch.dtype | None = None,
 ) -> float:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
@@ -240,7 +259,12 @@ def evaluate_loss(
         target_positions = input_positions + 1
         input_ids = tokens[input_positions]
         target_ids = tokens[target_positions]
-        _, loss = model(input_ids, target_ids)
+        with torch.amp.autocast(
+            device_type=device.type,
+            dtype=mixed_precision_dtype,
+            enabled=mixed_precision_dtype is not None,
+        ):
+            _, loss = model(input_ids, target_ids)
         if loss is None:
             raise RuntimeError("model did not return a loss")
         losses.append(float(loss.detach().item()))
@@ -295,6 +319,11 @@ def train_model_with_metrics(
         lr=config.learning_rate,
         weight_decay=config.weight_decay,
     )
+    mixed_precision_dtype = _resolve_mixed_precision_dtype(
+        config.mixed_precision,
+        device,
+    )
+    grad_scaler = _build_grad_scaler(mixed_precision_dtype, device)
 
     losses = []
     metrics = []
@@ -322,6 +351,8 @@ def train_model_with_metrics(
             input_ids=input_ids,
             target_ids=target_ids,
             grad_clip=config.grad_clip,
+            mixed_precision_dtype=mixed_precision_dtype,
+            grad_scaler=grad_scaler,
         )
         losses.append(train_loss)
 
@@ -337,6 +368,7 @@ def train_model_with_metrics(
                     batch_size=config.batch_size,
                     max_batches=validation_batches,
                     device=device,
+                    mixed_precision_dtype=mixed_precision_dtype,
                 )
             metrics.append(
                 MetricSnapshot(
@@ -439,3 +471,27 @@ def _estimate_remaining_seconds(
         return 0.0
     remaining_steps = max(0, total_steps - completed_steps)
     return (elapsed_seconds / completed_steps) * remaining_steps
+
+
+def _resolve_mixed_precision_dtype(
+    mixed_precision: str,
+    device: torch.device,
+) -> torch.dtype | None:
+    if mixed_precision == "none":
+        return None
+    if mixed_precision == "auto":
+        return torch.float16 if device.type == "cuda" else None
+    if mixed_precision == "float16":
+        return torch.float16
+    if mixed_precision == "bfloat16":
+        return torch.bfloat16
+    raise ValueError("mixed_precision must be one of: none, auto, float16, bfloat16")
+
+
+def _build_grad_scaler(
+    mixed_precision_dtype: torch.dtype | None,
+    device: torch.device,
+) -> torch.amp.GradScaler | None:
+    if mixed_precision_dtype != torch.float16 or device.type != "cuda":
+        return None
+    return torch.amp.GradScaler(device.type, enabled=True)

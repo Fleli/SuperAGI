@@ -3,6 +3,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 import tempfile
+from unittest import mock
 
 import torch
 
@@ -72,6 +73,58 @@ class TrainingTests(unittest.TestCase):
         after = model.embeddings.token_embedding.weight.detach()
         self.assertGreater(loss, 0.0)
         self.assertFalse(torch.equal(before, after))
+
+    def test_train_step_uses_autocast_for_mixed_precision(self) -> None:
+        torch.manual_seed(0)
+        config = TransformerConfig(
+            vocab_size=6,
+            context_length=4,
+            dim_embedding=8,
+            n_layers=1,
+            n_heads=2,
+            dropout=0.0,
+        )
+        model = TransformerLM(config)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
+        input_ids = torch.tensor([[0, 1, 2, 3], [1, 2, 3, 4]])
+        target_ids = torch.tensor([[1, 2, 3, 4], [2, 3, 4, 5]])
+        autocast_calls = []
+
+        class FakeAutocast:
+            def __init__(self, *, device_type, dtype, enabled):
+                autocast_calls.append(
+                    {
+                        "device_type": device_type,
+                        "dtype": dtype,
+                        "enabled": enabled,
+                    }
+                )
+
+            def __enter__(self):
+                return None
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        with mock.patch("superagi.training.train.torch.amp.autocast", FakeAutocast):
+            train_step(
+                model,
+                optimizer,
+                input_ids,
+                target_ids,
+                mixed_precision_dtype=torch.float16,
+            )
+
+        self.assertEqual(
+            autocast_calls,
+            [
+                {
+                    "device_type": "cpu",
+                    "dtype": torch.float16,
+                    "enabled": True,
+                }
+            ],
+        )
 
     def test_train_model_runs_requested_number_of_steps(self) -> None:
         torch.manual_seed(0)

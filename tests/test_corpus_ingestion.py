@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 
 from superagi.ingestion.corpus import ingest_raw_corpus, read_raw_corpus
+from superagi.ingestion.tokenizer import BOS_TOKEN, EOS_TOKEN
 
 
 class CorpusIngestionTests(unittest.TestCase):
@@ -45,7 +46,7 @@ class CorpusIngestionTests(unittest.TestCase):
         self.assertIn("tokenizer_json", saved_vocab)
         self.assertEqual(
             artifact.tokenizer.decode(artifact.token_ids),
-            "machine learning learns machine learning patterns",
+            f"{BOS_TOKEN}machine learning learns machine learning patterns{EOS_TOKEN}",
         )
 
     def test_can_ingest_raw_corpus_with_char_tokenizer(self) -> None:

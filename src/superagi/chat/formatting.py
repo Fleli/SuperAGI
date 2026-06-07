@@ -5,10 +5,20 @@ from dataclasses import dataclass
 from typing import Literal
 
 
-ChatRole = Literal["user", "agi"]
+from superagi.ingestion.tokenizer import (
+    AGI_TOKEN,
+    BOS_TOKEN,
+    EOS_TOKEN,
+    SYSTEM_TOKEN,
+    USER_TOKEN,
+)
+
+
+ChatRole = Literal["system", "user", "agi"]
 ROLE_LABELS: dict[ChatRole, str] = {
-    "user": "User",
-    "agi": "AGI",
+    "system": SYSTEM_TOKEN,
+    "user": USER_TOKEN,
+    "agi": AGI_TOKEN,
 }
 
 
@@ -45,26 +55,30 @@ def format_chat_messages(
     if not messages:
         raise ValueError("at least one chat message is required")
 
-    text_parts: list[str] = []
+    text_parts: list[str] = [BOS_TOKEN]
     agi_spans: list[TextSpan] = []
-    current_offset = 0
+    current_offset = len(BOS_TOKEN)
     for raw_message in messages:
         message = _coerce_message(raw_message)
-        label = ROLE_LABELS[message.role]
-        prefix = f"{label}: "
+        prefix = f"{ROLE_LABELS[message.role]} "
         content = _normalize_content(message.content)
-        line = f"{prefix}{content}\n"
+        if message.role == "agi":
+            response = f"{content}{EOS_TOKEN}"
+            line = f"{prefix}{response}\n"
+        else:
+            response = content
+            line = f"{prefix}{content}\n"
 
         if message.role == "agi":
             span_start = current_offset + len(prefix)
-            span_end = span_start + len(content)
+            span_end = span_start + len(response)
             agi_spans.append(TextSpan(start=span_start, end=span_end))
 
         text_parts.append(line)
         current_offset += len(line)
 
     if add_generation_prompt:
-        text_parts.append("AGI:")
+        text_parts.append(f"{AGI_TOKEN} ")
 
     return ChatFormat(
         text="".join(text_parts),

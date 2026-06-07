@@ -11,6 +11,24 @@ from tokenizers.pre_tokenizers import ByteLevel
 from tokenizers.trainers import BpeTrainer
 
 
+UNK_TOKEN = "<unk>"
+PAD_TOKEN = "<pad>"
+BOS_TOKEN = "<bos>"
+EOS_TOKEN = "<eos>"
+USER_TOKEN = "<user>"
+AGI_TOKEN = "<agi>"
+SYSTEM_TOKEN = "<system>"
+SPECIAL_TOKENS = (
+    UNK_TOKEN,
+    PAD_TOKEN,
+    BOS_TOKEN,
+    EOS_TOKEN,
+    USER_TOKEN,
+    AGI_TOKEN,
+    SYSTEM_TOKEN,
+)
+
+
 @dataclass(frozen=True)
 class TokenEncoding:
     ids: tuple[int, ...]
@@ -49,7 +67,12 @@ class CharTokenizer:
             offsets=tuple((index, index + 1) for index in range(len(text))),
         )
 
-    def decode(self, token_ids: Iterable[int]) -> str:
+    def decode(
+        self,
+        token_ids: Iterable[int],
+        *,
+        skip_special_tokens: bool = False,
+    ) -> str:
         chars = []
         for token_id in token_ids:
             if token_id < 0 or token_id >= self.vocab_size:
@@ -128,13 +151,13 @@ class BpeTokenizer:
         if not first_text:
             raise ValueError("texts must not contain empty documents")
 
-        tokenizer = Tokenizer(BPE(unk_token="<unk>"))
+        tokenizer = Tokenizer(BPE(unk_token=UNK_TOKEN))
         tokenizer.pre_tokenizer = ByteLevel(add_prefix_space=False)
         tokenizer.decoder = ByteLevelDecoder()
         trainer = BpeTrainer(
             vocab_size=vocab_size,
             min_frequency=min_frequency,
-            special_tokens=["<unk>"],
+            special_tokens=list(SPECIAL_TOKENS),
             initial_alphabet=ByteLevel.alphabet(),
         )
         tokenizer.train_from_iterator(chain([first_text], text_iterator), trainer=trainer)
@@ -169,14 +192,31 @@ class BpeTokenizer:
             offsets=tuple((int(start), int(end)) for start, end in encoding.offsets),
         )
 
-    def decode(self, token_ids: Iterable[int]) -> str:
-        return self.tokenizer.decode(list(token_ids))
+    def decode(
+        self,
+        token_ids: Iterable[int],
+        *,
+        skip_special_tokens: bool = False,
+    ) -> str:
+        return self.tokenizer.decode(
+            list(token_ids),
+            skip_special_tokens=skip_special_tokens,
+        )
+
+    def special_token_id(self, token: str) -> int:
+        if token not in SPECIAL_TOKENS:
+            raise ValueError(f"unknown special token: {token!r}")
+        token_id = self.tokenizer.token_to_id(token)
+        if token_id is None:
+            raise ValueError(f"special token is not in the vocabulary: {token!r}")
+        return int(token_id)
 
     def to_payload(self) -> dict[str, Any]:
         return {
             "tokenizer_type": "bpe",
             "tokenizer_json": self.tokenizer.to_str(),
             "vocab_size": self.vocab_size,
+            "special_tokens": list(SPECIAL_TOKENS),
         }
 
 

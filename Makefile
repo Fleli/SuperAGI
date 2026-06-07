@@ -35,6 +35,7 @@ TRAIN_4090_C4_MIN_CHARS := 1000
 TRAIN_4090_STEPS := 120000
 TRAIN_4090_BATCH := 16
 TRAIN_4090_DEVICE := cuda
+TRAIN_4090_MIXED_PRECISION := auto
 TRAIN_4090_EVAL_INTERVAL := 1000
 TRAIN_4090_VAL_BATCHES := 20
 TRAIN_4090_CHECKPOINT_INTERVAL := 1000
@@ -43,10 +44,33 @@ TRAIN_4090_NEW_TOKENS := 500
 TRAIN_4090_TEMPERATURE := 0.6
 TRAIN_4090_TOP_K := 30
 
+TRAIN_200M_STREAM_C4_MAX := 1000000
+TRAIN_200M_STREAM_C4_MIN_CHARS := 1000
+TRAIN_200M_STREAM_TOKENIZER_SAMPLE := 20000
+TRAIN_200M_STREAM_SHARD_TOKENS := 2000000
+TRAIN_200M_STREAM_VALIDATION_TOKENS := 2000000
+TRAIN_200M_BPE_VOCAB_SIZE := 8000
+TRAIN_200M_BPE_MIN_FREQUENCY := 2
+TRAIN_200M_STEPS := 300000
+TRAIN_200M_BATCH := 8
+TRAIN_200M_DEVICE := cuda
+TRAIN_200M_MIXED_PRECISION := auto
+TRAIN_200M_LR := 3e-4
+TRAIN_200M_LR_MIN := 3e-5
+TRAIN_200M_LR_WARMUP_STEPS := 3000
+TRAIN_200M_EVAL_INTERVAL := 1000
+TRAIN_200M_VAL_BATCHES := 20
+TRAIN_200M_CHECKPOINT_INTERVAL := 1000
+TRAIN_200M_PROMPT := In machine learning,
+TRAIN_200M_NEW_TOKENS := 500
+TRAIN_200M_TEMPERATURE := 0.7
+TRAIN_200M_TOP_K := 30
+
 BATCH := 32
 LR := 3e-4
 LR_MIN := 3e-5
 LR_WARMUP_STEPS := 100
+MIXED_PRECISION := auto
 STEPS := 1000
 DEVICE := auto
 PROMPT := The
@@ -126,7 +150,7 @@ SFT_STYLE_WEIGHT_DECAY := 0.01
 SFT_STYLE_CHECKPOINT_INTERVAL := 200
 SFT_STAGED_OUT := $(SFT_STYLE_OUT)
 
-.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 train sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged params train-export-run train-4090 std-train export-model generate run-model chat smoke-train clean-generated
+.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 train sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged params train-export-run train-4090 train-200m std-train export-model generate run-model chat smoke-train clean-generated
 
 help:
 	@echo "SuperAGI pipeline targets"
@@ -147,13 +171,14 @@ help:
 	@echo "  make ingest TOKENIZER=char"
 	@echo "  make ingest-stream-c4  Stream C4 directly into token shards"
 	@echo "  make params            Count params using data/processed vocab"
-	@echo "  make train STEPS=100 BATCH=16 LR=3e-4 LR_MIN=3e-5 LR_WARMUP_STEPS=100"
+	@echo "  make train STEPS=100 BATCH=16 LR=3e-4 LR_MIN=3e-5 LR_WARMUP_STEPS=100 MIXED_PRECISION=auto"
 	@echo "  make train RESUME=data/checkpoints/latest.pt STEPS=1000 CHECKPOINT_INTERVAL=1000"
 	@echo "  make train-export-run RESUME=data/checkpoints/latest.pt STEPS=1000 PROMPT=\"Attention is\""
 	@echo "  make sft-train SFT_BASE_CHECKPOINT=data/checkpoints/best.pt SFT_STEPS=200"
 	@echo "  make sft-overfit-50 SFT_OVERFIT_BASE_CHECKPOINT=./best-current-cloud.pt"
 	@echo "  make sft-staged SFT_STAGED_BASE_CHECKPOINT=./best-current-cloud.pt"
 	@echo "  make train-4090        Fetch C4, rebuild artifacts, and start the RTX 4090 night run"
+	@echo "  make train-200m        Clean, stream C4 shards, and start the 200M training run"
 	@echo "  make run-model CHECKPOINT=data/checkpoints/best.pt PROMPT=\"The\""
 	@echo "  make std-train         Resume latest, train 5k steps, export, sample"
 	@echo "  make export-model      Validate/copy latest checkpoint to a portable .pt file"
@@ -355,6 +380,7 @@ train: setup data-dirs
 		'            "learning_rate": float("$(LR)"),' \
 		'            "min_learning_rate": float("$(LR_MIN)"),' \
 		'            "warmup_steps": int("$(LR_WARMUP_STEPS)"),' \
+		'            "mixed_precision": "$(MIXED_PRECISION)",' \
 		'            "eval_interval": int("$(EVAL_INTERVAL)"),' \
 		'            "validation_batches": int("$(VAL_BATCHES)"),' \
 		'            "checkpoint_interval": checkpoint_interval,' \
@@ -413,6 +439,7 @@ train: setup data-dirs
 		'        learning_rate=float("$(LR)"),' \
 		'        min_learning_rate=float("$(LR_MIN)"),' \
 		'        warmup_steps=int("$(LR_WARMUP_STEPS)"),' \
+		'        mixed_precision="$(MIXED_PRECISION)",' \
 		'        max_steps=int("$(STEPS)"),' \
 		'    ),' \
 		'    device=choose_device(),' \
@@ -576,6 +603,7 @@ train-4090:
 		STEPS="$(TRAIN_4090_STEPS)" \
 		BATCH="$(TRAIN_4090_BATCH)" \
 		DEVICE="$(TRAIN_4090_DEVICE)" \
+		MIXED_PRECISION="$(TRAIN_4090_MIXED_PRECISION)" \
 		EVAL_INTERVAL="$(TRAIN_4090_EVAL_INTERVAL)" \
 		VAL_BATCHES="$(TRAIN_4090_VAL_BATCHES)" \
 		CHECKPOINT_INTERVAL="$(TRAIN_4090_CHECKPOINT_INTERVAL)" \
@@ -584,6 +612,38 @@ train-4090:
 		TEMPERATURE="$(TRAIN_4090_TEMPERATURE)" \
 		TOP_K="$(TRAIN_4090_TOP_K)"
 	@printf '==> [train-4090] Finished RTX 4090 night run\n'
+
+train-200m:
+	@printf '==> [train-200m] Starting 200M training pipeline\n'
+	@printf '==> [train-200m] Clearing generated processed artifacts and checkpoints\n'
+	$(MAKE) clean-generated
+	@printf '==> [train-200m] Streaming and tokenizing C4 corpus\n'
+	$(MAKE) ingest-stream-c4 \
+		STREAM_C4_MAX="$(TRAIN_200M_STREAM_C4_MAX)" \
+		STREAM_C4_MIN_CHARS="$(TRAIN_200M_STREAM_C4_MIN_CHARS)" \
+		STREAM_TOKENIZER_SAMPLE="$(TRAIN_200M_STREAM_TOKENIZER_SAMPLE)" \
+		STREAM_SHARD_TOKENS="$(TRAIN_200M_STREAM_SHARD_TOKENS)" \
+		STREAM_VALIDATION_TOKENS="$(TRAIN_200M_STREAM_VALIDATION_TOKENS)" \
+		BPE_VOCAB_SIZE="$(TRAIN_200M_BPE_VOCAB_SIZE)" \
+		BPE_MIN_FREQUENCY="$(TRAIN_200M_BPE_MIN_FREQUENCY)"
+	@printf '==> [train-200m] Starting fresh 200M train/export/run\n'
+	$(MAKE) train-export-run \
+		RESUME= \
+		STEPS="$(TRAIN_200M_STEPS)" \
+		BATCH="$(TRAIN_200M_BATCH)" \
+		DEVICE="$(TRAIN_200M_DEVICE)" \
+		MIXED_PRECISION="$(TRAIN_200M_MIXED_PRECISION)" \
+		LR="$(TRAIN_200M_LR)" \
+		LR_MIN="$(TRAIN_200M_LR_MIN)" \
+		LR_WARMUP_STEPS="$(TRAIN_200M_LR_WARMUP_STEPS)" \
+		EVAL_INTERVAL="$(TRAIN_200M_EVAL_INTERVAL)" \
+		VAL_BATCHES="$(TRAIN_200M_VAL_BATCHES)" \
+		CHECKPOINT_INTERVAL="$(TRAIN_200M_CHECKPOINT_INTERVAL)" \
+		PROMPT="$(TRAIN_200M_PROMPT)" \
+		NEW_TOKENS="$(TRAIN_200M_NEW_TOKENS)" \
+		TEMPERATURE="$(TRAIN_200M_TEMPERATURE)" \
+		TOP_K="$(TRAIN_200M_TOP_K)"
+	@printf '==> [train-200m] Finished 200M training pipeline\n'
 
 std-train:
 	$(MAKE) train-export-run \

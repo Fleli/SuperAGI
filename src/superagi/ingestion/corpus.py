@@ -7,7 +7,13 @@ from typing import Iterable
 
 import torch
 
-from superagi.ingestion.tokenizer import BpeTokenizer, CharTokenizer, TokenizerLike
+from superagi.ingestion.tokenizer import (
+    BOS_TOKEN,
+    EOS_TOKEN,
+    BpeTokenizer,
+    CharTokenizer,
+    TokenizerLike,
+)
 
 
 DEFAULT_SUFFIXES = (".txt", ".md")
@@ -16,6 +22,7 @@ DEFAULT_SUFFIXES = (".txt", ".md")
 @dataclass(frozen=True)
 class RawCorpus:
     text: str
+    documents: tuple[str, ...]
     source_paths: tuple[Path, ...]
 
 
@@ -50,7 +57,7 @@ def read_raw_corpus(
     text = separator.join(texts)
     if not text:
         raise ValueError("raw corpus is empty")
-    return RawCorpus(text=text, source_paths=source_paths)
+    return RawCorpus(text=text, documents=tuple(texts), source_paths=source_paths)
 
 
 def tokenize_raw_corpus(
@@ -61,22 +68,35 @@ def tokenize_raw_corpus(
     bpe_min_frequency: int = 2,
 ) -> TokenizedCorpus:
     if tokenizer_type == "bpe":
+        text = format_pretraining_documents(raw_corpus.documents)
         tokenizer = BpeTokenizer.from_text(
-            raw_corpus.text,
+            text,
             vocab_size=bpe_vocab_size,
             min_frequency=bpe_min_frequency,
         )
     elif tokenizer_type == "char":
+        text = raw_corpus.text
         tokenizer = CharTokenizer.from_text(raw_corpus.text)
     else:
         raise ValueError(f"unknown tokenizer_type: {tokenizer_type!r}")
 
-    token_ids = tokenizer.encode(raw_corpus.text)
+    token_ids = tokenizer.encode(text)
     return TokenizedCorpus(
         token_ids=token_ids,
         tokenizer=tokenizer,
         source_paths=raw_corpus.source_paths,
     )
+
+
+def format_pretraining_documents(documents: Iterable[str]) -> str:
+    formatted_documents = []
+    for document in documents:
+        normalized = document.strip()
+        if normalized:
+            formatted_documents.append(f"{BOS_TOKEN}{normalized}{EOS_TOKEN}")
+    if not formatted_documents:
+        raise ValueError("raw corpus is empty")
+    return "\n".join(formatted_documents)
 
 
 def ingest_raw_corpus(

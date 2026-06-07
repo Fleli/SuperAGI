@@ -1,5 +1,3 @@
-import math
-
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -23,7 +21,7 @@ class CausalSelfAttention(nn.Module):
         self.k_proj = nn.Linear(dim_embedding, dim_embedding)
         self.v_proj = nn.Linear(dim_embedding, dim_embedding)
         self.out_proj = nn.Linear(dim_embedding, dim_embedding)
-        self.dropout = nn.Dropout(dropout)
+        self.dropout_probability = dropout
         self.register_buffer(
             "causal_mask",
             torch.tril(torch.ones(context_length, context_length, dtype=torch.bool)),
@@ -36,14 +34,13 @@ class CausalSelfAttention(nn.Module):
         k = self._split_heads(self.k_proj(x))
         v = self._split_heads(self.v_proj(x))
 
-        attention_scores = q @ k.transpose(-2, -1)
-        attention_scores = attention_scores / math.sqrt(self.head_dim)
-        causal_mask = self.causal_mask[:sequence_length, :sequence_length]
-        attention_scores = attention_scores.masked_fill(~causal_mask, float("-inf"))
-        attention_weights = F.softmax(attention_scores, dim=-1)
-        attention_weights = self.dropout(attention_weights)
-
-        out = attention_weights @ v
+        out = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            dropout_p=self.dropout_probability if self.training else 0.0,
+            is_causal=True,
+        )
         out = out.transpose(1, 2).contiguous().view(
             batch_size,
             sequence_length,

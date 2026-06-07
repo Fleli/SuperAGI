@@ -5,7 +5,18 @@ from collections.abc import Callable, Sequence
 import torch
 
 from superagi.chat.formatting import ChatMessage, format_chat_messages
+from superagi.ingestion.tokenizer import (
+    AGI_TOKEN,
+    BOS_TOKEN,
+    EOS_TOKEN,
+    SYSTEM_TOKEN,
+    USER_TOKEN,
+)
 from superagi.model.checkpoint import LoadedCheckpoint
+
+
+CHAT_STOP_MARKERS = (EOS_TOKEN, USER_TOKEN, AGI_TOKEN, SYSTEM_TOKEN, BOS_TOKEN)
+LEGACY_CHAT_STOP_MARKERS = ("\nUser:", "\nUSER:", "\nAGI:")
 
 
 def build_chat_prompt(messages: Sequence[ChatMessage]) -> str:
@@ -18,7 +29,7 @@ def extract_chat_reply(prompt: str, generated: str) -> str:
     else:
         reply = generated
 
-    for stop_marker in ("\nUser:", "\nUSER:", "\nAGI:", "\n"):
+    for stop_marker in (*CHAT_STOP_MARKERS, *LEGACY_CHAT_STOP_MARKERS):
         marker_index = reply.find(stop_marker)
         if marker_index >= 0:
             reply = reply[:marker_index]
@@ -49,6 +60,7 @@ def generate_chat_reply(
     prompt_text = checkpoint.tokenizer.decode(streamed_token_ids)
     streamed_text = prompt_text
     streamed_reply = ""
+    stop_token_ids = _chat_stop_token_ids(checkpoint)
 
     def emit_text(token_id: int) -> bool:
         nonlocal streamed_reply, streamed_text
@@ -68,6 +80,7 @@ def generate_chat_reply(
         top_k=top_k,
         repetition_penalty=repetition_penalty,
         repetition_window=repetition_window,
+        stop_token_ids=stop_token_ids or None,
         on_token=emit_text,
     )
     generated_text = checkpoint.tokenizer.decode(generated[0].cpu().tolist())
@@ -79,4 +92,18 @@ def _chat_reply_should_stop(prompt: str, generated: str) -> bool:
         reply = generated[len(prompt) :]
     else:
         reply = generated
-    return any(marker in reply for marker in ("\nUser:", "\nUSER:", "\nAGI:", "\n"))
+    return any(marker in reply for marker in (*CHAT_STOP_MARKERS, *LEGACY_CHAT_STOP_MARKERS))
+
+
+def _chat_stop_token_ids(checkpoint: LoadedCheckpoint) -> set[int]:
+    token_id_lookup = getattr(checkpoint.tokenizer, "special_token_id", None)
+    if token_id_lookup is None:
+        return set()
+
+    token_ids = set()
+    for token in CHAT_STOP_MARKERS:
+        try:
+            token_ids.add(int(token_id_lookup(token)))
+        except ValueError:
+            continue
+    return token_ids

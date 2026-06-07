@@ -16,23 +16,31 @@ class ChatSessionTests(unittest.TestCase):
 
         self.assertEqual(
             prompt,
-            "User: What are you?\n"
-            "AGI: I am a small model.\n"
-            "User: Can you chat?\n"
-            "AGI:",
+            "<bos><user> What are you?\n"
+            "<agi> I am a small model.<eos>\n"
+            "<user> Can you chat?\n"
+            "<agi> ",
         )
 
     def test_extracts_reply_before_next_user_turn(self) -> None:
-        prompt = "User: Hello\nAGI: "
-        generated = "User: Hello\nAGI: Hi there.\nUser: Another turn"
+        prompt = "<bos><user> Hello\n<agi> "
+        generated = "<bos><user> Hello\n<agi> Hi there.<user> Another turn"
 
         reply = extract_chat_reply(prompt, generated)
 
         self.assertEqual(reply, "Hi there.")
 
-    def test_extracts_reply_before_extra_newline_text(self) -> None:
+    def test_extracts_reply_before_eos(self) -> None:
+        prompt = "<bos><user> Hello\n<agi> "
+        generated = "<bos><user> Hello\n<agi> Hi there.<eos>\n<user> Another turn"
+
+        reply = extract_chat_reply(prompt, generated)
+
+        self.assertEqual(reply, "Hi there.")
+
+    def test_extracts_reply_before_legacy_next_user_turn(self) -> None:
         prompt = "User: Hello\nAGI: "
-        generated = "User: Hello\nAGI: Hi there.\nThis should not become chat history."
+        generated = "User: Hello\nAGI: Hi there.\nUser: Another turn"
 
         reply = extract_chat_reply(prompt, generated)
 

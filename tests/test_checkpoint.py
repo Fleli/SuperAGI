@@ -10,7 +10,7 @@ from unittest import mock
 
 import torch
 
-from superagi.ingestion.tokenizer import BpeTokenizer
+from superagi.ingestion.tokenizer import EOS_TOKEN, BpeTokenizer
 from superagi.model.checkpoint import (
     generate_from_checkpoint,
     load_checkpoint,
@@ -100,6 +100,43 @@ class CheckpointTests(unittest.TestCase):
             )
 
         self.assertEqual("".join(streamed_chunks), generated[1:])
+
+    def test_generate_from_checkpoint_stops_at_eos_token(self) -> None:
+        tokenizer = self._tiny_tokenizer()
+        eos_id = tokenizer.special_token_id(EOS_TOKEN)
+        prompt_ids = tokenizer.encode("a")
+        new_ids = tokenizer.encode(" b")
+        streamed_chunks: list[str] = []
+        test_case = self
+
+        class FakeModel:
+            def to(self, device):
+                return self
+
+            def generate(self, *, input_ids, stop_token_ids=None, on_token=None, **kwargs):
+                test_case.assertIn(eos_id, stop_token_ids)
+                for token_id in new_ids:
+                    if on_token is not None:
+                        on_token(token_id)
+                return torch.tensor([prompt_ids + new_ids + [eos_id]])
+
+        fake_checkpoint = mock.Mock()
+        fake_checkpoint.model = FakeModel()
+        fake_checkpoint.tokenizer = tokenizer
+
+        with mock.patch(
+            "superagi.model.checkpoint.load_checkpoint",
+            return_value=fake_checkpoint,
+        ):
+            generated = generate_from_checkpoint(
+                "unused.pt",
+                prompt="a",
+                max_new_tokens=10,
+                on_text=streamed_chunks.append,
+            )
+
+        self.assertEqual(generated, "a b")
+        self.assertEqual("".join(streamed_chunks), " b")
 
     def test_run_model_script_generates_from_checkpoint(self) -> None:
         tokenizer = self._tiny_tokenizer()
@@ -235,8 +272,8 @@ class CheckpointTests(unittest.TestCase):
         run_model = self._load_run_model_module()
 
         def fake_generate_from_checkpoint(*args, prompt=None, **kwargs):
-            self.assertEqual(prompt, "User: What are you?\nAGI:")
-            return "User: What are you?\nAGI: I am a small model."
+            self.assertEqual(prompt, "<bos><user> What are you?\n<agi> ")
+            return "<bos><user> What are you?\n<agi> I am a small model.<eos>"
 
         output = io.StringIO()
         with mock.patch.object(

@@ -80,7 +80,7 @@ def _coerce_chat_message(
         raise ValueError(f"SFT line {line_number} messages must be objects")
     role = message.get("role")
     content = message.get("content")
-    if role not in {"user", "agi"}:
+    if role not in {"system", "user", "agi"}:
         raise ValueError(f"SFT line {line_number} has unknown role: {role!r}")
     if not isinstance(content, str):
         raise ValueError(f"SFT line {line_number} content must be a string")

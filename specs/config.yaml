@@ -1,10 +1,10 @@
 
 init:
-  range_min: -1
-  range_max: 1
+  weight_std: 0.02
+  scale_residual_projections: true
 
 parameters:
-  n_layers: 12
-  dim_embedding: 512
+  n_layers: 16
+  dim_embedding: 1024
   dim_key: 64
-  ctx_window: 768
+  ctx_window: 1024

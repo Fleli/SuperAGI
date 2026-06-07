@@ -7,6 +7,7 @@ from typing import Any, Callable, Iterable
 import torch
 
 from superagi.ingestion.tokenizer import (
+    EOS_TOKEN,
     TokenizerLike,
     normalize_tokenizer_payload,
     tokenizer_from_payload,
@@ -162,6 +163,7 @@ def generate_from_checkpoint(
     )
     streamed_token_ids = list(prompt_ids)
     streamed_text = checkpoint.tokenizer.decode(streamed_token_ids)
+    eos_token_id = _special_token_id(checkpoint.tokenizer, EOS_TOKEN)
 
     def emit_text(token_id: int) -> None:
         nonlocal streamed_text
@@ -181,9 +183,16 @@ def generate_from_checkpoint(
         top_k=top_k,
         repetition_penalty=repetition_penalty,
         repetition_window=repetition_window,
+        stop_token_ids={eos_token_id} if eos_token_id is not None else None,
         on_token=emit_text if on_text is not None else None,
     )
-    return checkpoint.tokenizer.decode(generated[0].cpu().tolist())
+    generated_ids = generated[0].cpu().tolist()
+    generated_ids = _trim_after_token(
+        generated_ids,
+        token_id=eos_token_id,
+        start_index=len(prompt_ids),
+    )
+    return checkpoint.tokenizer.decode(generated_ids)
 
 
 def _normalize_vocab(vocab: dict[str, Any]) -> dict[str, Any]:
@@ -220,3 +229,27 @@ def _resolve_device(device: torch.device | str) -> torch.device:
     if mps is not None and mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
+
+
+def _special_token_id(tokenizer: TokenizerLike, token: str) -> int | None:
+    token_id_lookup = getattr(tokenizer, "special_token_id", None)
+    if token_id_lookup is None:
+        return None
+    try:
+        return int(token_id_lookup(token))
+    except ValueError:
+        return None
+
+
+def _trim_after_token(
+    token_ids: list[int],
+    *,
+    token_id: int | None,
+    start_index: int,
+) -> list[int]:
+    if token_id is None:
+        return token_ids
+    for index, current_token_id in enumerate(token_ids[start_index:], start=start_index):
+        if current_token_id == token_id:
+            return token_ids[:index]
+    return token_ids

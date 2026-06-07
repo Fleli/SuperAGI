@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 
-from superagi.ingestion.tokenizer import BpeTokenizer
+from superagi.ingestion.tokenizer import BOS_TOKEN, EOS_TOKEN, BpeTokenizer
 
 
 @dataclass(frozen=True)
@@ -133,7 +133,9 @@ def build_token_shards_from_stream(
         max_documents=max_documents,
         min_chars=min_chars,
     ):
-        document_ids = tokenizer.encode(text) + separator_ids
+        document_ids = (
+            tokenizer.encode(f"{BOS_TOKEN}{text}{EOS_TOKEN}") + separator_ids
+        )
         documents_tokenized += 1
 
         if len(validation_buffer) < validation_token_count:

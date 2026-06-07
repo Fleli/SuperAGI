@@ -11,7 +11,7 @@ class ChatFormattingTests(unittest.TestCase):
     def test_formats_user_prompt_for_generation(self) -> None:
         formatted = format_user_prompt("What are you?")
 
-        self.assertEqual(formatted.text, "User: What are you?\nAGI:")
+        self.assertEqual(formatted.text, "<bos><user> What are you?\n<agi> ")
         self.assertEqual(formatted.agi_spans, ())
 
     def test_formats_chat_messages_with_agi_spans_for_sft(self) -> None:
@@ -27,11 +27,11 @@ class ChatFormattingTests(unittest.TestCase):
 
         self.assertEqual(
             formatted.text,
-            "User: What are you?\nAGI: I am a small experimental model.\n",
+            "<bos><user> What are you?\n<agi> I am a small experimental model.<eos>\n",
         )
         self.assertEqual(
             formatted.text[formatted.agi_spans[0].start : formatted.agi_spans[0].end],
-            "I am a small experimental model.",
+            "I am a small experimental model.<eos>",
         )
 
     def test_accepts_chat_message_instances(self) -> None:
@@ -44,7 +44,7 @@ class ChatFormattingTests(unittest.TestCase):
 
         self.assertEqual(
             formatted.text,
-            "User: Explain ML.\nAGI: ML learns patterns from data.\n",
+            "<bos><user> Explain ML.\n<agi> ML learns patterns from data.<eos>\n",
         )
 
     def test_can_append_generation_prompt_after_history(self) -> None:
@@ -59,10 +59,10 @@ class ChatFormattingTests(unittest.TestCase):
 
         self.assertEqual(
             formatted.text,
-            "User: What is AI?\n"
-            "AGI: AI is software that performs intelligent tasks.\n"
-            "User: One sentence?\n"
-            "AGI:",
+            "<bos><user> What is AI?\n"
+            "<agi> AI is software that performs intelligent tasks.<eos>\n"
+            "<user> One sentence?\n"
+            "<agi> ",
         )
 
     def test_rejects_unknown_roles(self) -> None:
