@@ -350,6 +350,8 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("TRAIN_H100_START_TOKENS :=", contents)
         self.assertIn("TRAIN_H100_STREAM_SHARD_TOKENS :=", contents)
         self.assertIn("TRAIN_H100_TOTAL_TRAINING_TOKENS := 20000000000", contents)
+        self.assertIn("TRAIN_H100_BATCH := 1", contents)
+        self.assertIn("TRAIN_H100_GRAD_ACCUM_STEPS := 128", contents)
         self.assertIn("TRAIN_H100_MIXED_PRECISION := bfloat16", contents)
         self.assertIn("TRAIN_H100_SHARD_REFRESH_INTERVAL :=", contents)
         self.assertIn("$(MAKE) setup", contents)
