@@ -28,6 +28,7 @@ STREAM_C4_MIN_CHARS := 1000
 STREAM_TOKENIZER_SAMPLE := 1000
 STREAM_SHARD_TOKENS := 1000000
 STREAM_VALIDATION_TOKENS := 200000
+STREAM_TARGET_TOKENS := 0
 
 TRAIN_4090_RAW_DIR := data/raw/c4-4090-night
 TRAIN_4090_C4_MAX := 150000
@@ -39,9 +40,14 @@ TRAIN_4090_ACTIVATION_CHECKPOINTING := 0
 TRAIN_4090_DEVICE := cuda
 TRAIN_4090_MIXED_PRECISION := auto
 TRAIN_4090_PARAMETER_DTYPE := float32
+TRAIN_4090_FUSED_ADAMW := auto
+TRAIN_4090_COMPILE_MODEL := 0
+TRAIN_4090_DROPOUT := 0.0
+TRAIN_4090_SHARD_REFRESH_INTERVAL := 0
 TRAIN_4090_EVAL_INTERVAL := 1000
 TRAIN_4090_VAL_BATCHES := 20
 TRAIN_4090_CHECKPOINT_INTERVAL := 1000
+TRAIN_4090_CHECKPOINT_KEEP := 5
 TRAIN_4090_PROMPT := In machine learning,
 TRAIN_4090_NEW_TOKENS := 500
 TRAIN_4090_TEMPERATURE := 0.6
@@ -61,16 +67,54 @@ TRAIN_200M_ACTIVATION_CHECKPOINTING := 0
 TRAIN_200M_DEVICE := cuda
 TRAIN_200M_MIXED_PRECISION := auto
 TRAIN_200M_PARAMETER_DTYPE := float32
+TRAIN_200M_FUSED_ADAMW := auto
+TRAIN_200M_COMPILE_MODEL := 0
+TRAIN_200M_DROPOUT := 0.0
+TRAIN_200M_SHARD_REFRESH_INTERVAL := 0
 TRAIN_200M_LR := 3e-4
 TRAIN_200M_LR_MIN := 3e-5
 TRAIN_200M_LR_WARMUP_STEPS := 3000
 TRAIN_200M_EVAL_INTERVAL := 1000
 TRAIN_200M_VAL_BATCHES := 20
 TRAIN_200M_CHECKPOINT_INTERVAL := 1000
+TRAIN_200M_CHECKPOINT_KEEP := 5
 TRAIN_200M_PROMPT := In machine learning,
 TRAIN_200M_NEW_TOKENS := 500
 TRAIN_200M_TEMPERATURE := 0.7
 TRAIN_200M_TOP_K := 30
+
+TRAIN_H100_STREAM_C4_MAX := 50000000
+TRAIN_H100_STREAM_C4_MIN_CHARS := 1000
+TRAIN_H100_STREAM_TOKENIZER_SAMPLE := 50000
+TRAIN_H100_STREAM_SHARD_TOKENS := 10000000
+TRAIN_H100_STREAM_VALIDATION_TOKENS := 5000000
+TRAIN_H100_BPE_VOCAB_SIZE := 32000
+TRAIN_H100_BPE_MIN_FREQUENCY := 2
+TRAIN_H100_CORPUS_TARGET_TOKENS := 20000000000
+TRAIN_H100_START_TOKENS := 500000000
+TRAIN_H100_READY_POLL_SECONDS := 30
+TRAIN_H100_TOTAL_TRAINING_TOKENS := 20000000000
+TRAIN_H100_BATCH := 8
+TRAIN_H100_GRAD_ACCUM_STEPS := 64
+TRAIN_H100_ACTIVATION_CHECKPOINTING := 1
+TRAIN_H100_DEVICE := cuda
+TRAIN_H100_MIXED_PRECISION := bfloat16
+TRAIN_H100_PARAMETER_DTYPE := float32
+TRAIN_H100_FUSED_ADAMW := auto
+TRAIN_H100_COMPILE_MODEL := 1
+TRAIN_H100_DROPOUT := 0.0
+TRAIN_H100_SHARD_REFRESH_INTERVAL := 500
+TRAIN_H100_LR := 3e-4
+TRAIN_H100_LR_MIN := 3e-5
+TRAIN_H100_LR_WARMUP_STEPS := 2000
+TRAIN_H100_EVAL_INTERVAL := 1000
+TRAIN_H100_VAL_BATCHES := 20
+TRAIN_H100_CHECKPOINT_INTERVAL := 1000
+TRAIN_H100_CHECKPOINT_KEEP := 5
+TRAIN_H100_PROMPT := In machine learning,
+TRAIN_H100_NEW_TOKENS := 500
+TRAIN_H100_TEMPERATURE := 0.7
+TRAIN_H100_TOP_K := 40
 
 BATCH := 32
 GRAD_ACCUM_STEPS := 1
@@ -80,6 +124,10 @@ LR_MIN := 3e-5
 LR_WARMUP_STEPS := 100
 MIXED_PRECISION := auto
 PARAMETER_DTYPE := float32
+FUSED_ADAMW := auto
+COMPILE_MODEL := 0
+DROPOUT := 0.0
+SHARD_REFRESH_INTERVAL := 0
 STEPS := 1000
 DEVICE := auto
 PROMPT := The
@@ -97,6 +145,7 @@ EVAL_INTERVAL := 500
 VAL_BATCHES := 10
 METRICS := $(CHECKPOINT_DIR)/metrics.jsonl
 CHECKPOINT_INTERVAL := 1000
+CHECKPOINT_KEEP := 5
 SFT_DATA := data/sft/seed.jsonl
 SFT_BASE_CHECKPOINT := $(CHECKPOINT)
 SFT_OUT := data/sft/runs/chat-sft.pt
@@ -173,7 +222,7 @@ SFT_STYLE_WEIGHT_DECAY := 0.01
 SFT_STYLE_CHECKPOINT_INTERVAL := 200
 SFT_STAGED_OUT := $(SFT_STYLE_OUT)
 
-.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 train sft-import-public sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged params train-export-run train-4090 train-200m std-train export-model generate run-model chat smoke-train clean-generated
+.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 train sft-import-public sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged params train-export-run train-4090 train-200m train-h100 std-train export-model generate run-model chat smoke-train clean-generated
 
 help:
 	@echo "SuperAGI pipeline targets"
@@ -194,7 +243,7 @@ help:
 	@echo "  make ingest TOKENIZER=char"
 	@echo "  make ingest-stream-c4  Stream C4 directly into token shards"
 	@echo "  make params            Count params using data/processed vocab"
-	@echo "  make train STEPS=100 BATCH=16 GRAD_ACCUM_STEPS=4 ACTIVATION_CHECKPOINTING=1 LR=3e-4 LR_MIN=3e-5 LR_WARMUP_STEPS=100 MIXED_PRECISION=bfloat16 PARAMETER_DTYPE=float32"
+	@echo "  make train STEPS=100 BATCH=16 GRAD_ACCUM_STEPS=4 ACTIVATION_CHECKPOINTING=1 DROPOUT=0.05 SHARD_REFRESH_INTERVAL=500 LR=3e-4 LR_MIN=3e-5 LR_WARMUP_STEPS=100 MIXED_PRECISION=bfloat16 PARAMETER_DTYPE=float32 FUSED_ADAMW=auto COMPILE_MODEL=1"
 	@echo "  make train RESUME=data/checkpoints/latest.pt STEPS=1000 CHECKPOINT_INTERVAL=1000"
 	@echo "  make train-export-run RESUME=data/checkpoints/latest.pt STEPS=1000 PROMPT=\"Attention is\""
 	@echo "  make sft-import-public SFT_IMPORT_CHECKPOINT=./best-200m-current.pt"
@@ -203,6 +252,7 @@ help:
 	@echo "  make sft-staged SFT_STAGED_BASE_CHECKPOINT=./best-current-cloud.pt  # run sft-import-public first"
 	@echo "  make train-4090        Fetch C4, rebuild artifacts, and start the RTX 4090 night run"
 	@echo "  make train-200m        Clean, stream C4 shards, and start the 200M training run"
+	@echo "  make train-h100        Zero-setup dynamic H100 C4 ingest/training run"
 	@echo "  make run-model CHECKPOINT=data/checkpoints/best.pt PROMPT=\"The\""
 	@echo "  make std-train         Resume latest, train 5k steps, export, sample"
 	@echo "  make export-model      Validate/copy latest checkpoint to a portable .pt file"
@@ -296,12 +346,14 @@ ingest-stream-c4: setup data-dirs
 		'    tokenizer_sample_documents=int("$(STREAM_TOKENIZER_SAMPLE)"),' \
 		'    shard_token_count=int("$(STREAM_SHARD_TOKENS)"),' \
 		'    validation_token_count=int("$(STREAM_VALIDATION_TOKENS)"),' \
+		'    target_train_tokens=int("$(STREAM_TARGET_TOKENS)") or None,' \
 		'    min_chars=int("$(STREAM_C4_MIN_CHARS)"),' \
 		'    bpe_vocab_size=int("$(BPE_VOCAB_SIZE)"),' \
 		'    bpe_min_frequency=int("$(BPE_MIN_FREQUENCY)"),' \
 		')' \
 		'print(f"Tokenized {result.train_tokens} train tokens into {len(result.train_shard_paths)} shards")' \
 		'print(f"Validation tokens: {result.validation_tokens}")' \
+		'print(f"Target train tokens: {result.target_train_tokens}")' \
 		'print(f"Vocab size: {result.tokenizer.vocab_size}")' \
 		'print(f"Manifest: {result.manifest_path}")' \
 		'print(f"Vocab: {result.vocab_path}")' \
@@ -334,7 +386,7 @@ train: setup data-dirs
 		'' \
 		'import torch' \
 		'' \
-		'from superagi.model.checkpoint import prepare_model_for_training, save_checkpoint' \
+		'from superagi.model.checkpoint import prepare_model_for_training, retain_checkpoint_snapshot, save_checkpoint' \
 		'from superagi.initialization.read_config import load_project_config' \
 		'from superagi.training.train import TokenShardDataset, TrainConfig, append_metrics_jsonl, train_model_with_metrics' \
 		'' \
@@ -357,7 +409,7 @@ train: setup data-dirs
 		'    raise SystemExit("Missing vocab artifact. Run `make ingest` or `make ingest-stream-c4` first.")' \
 		'' \
 		'if token_path.exists():' \
-		'    token_ids = torch.load(token_path).tolist()' \
+		'    token_ids = torch.load(token_path)' \
 		'elif shard_manifest_path.exists():' \
 		'    token_ids = TokenShardDataset.from_manifest(shard_manifest_path)' \
 		'    print(f"Training shards: {token_ids.shard_count} shards, {token_ids.total_tokens} tokens")' \
@@ -365,14 +417,19 @@ train: setup data-dirs
 		'    raise SystemExit("Missing train tokens. Run `make ingest` or `make ingest-stream-c4` first. Expected train_tokens.pt or train_shards/manifest.json.")' \
 		'validation_token_ids = None' \
 		'if val_token_path.exists():' \
-		'    validation_token_ids = torch.load(val_token_path).tolist()' \
+		'    validation_token_ids = torch.load(val_token_path)' \
 		'    print(f"Validation tokens: {len(validation_token_ids)}")' \
 		'else:' \
 		'    print("Validation tokens: not found; validation_loss will be null")' \
 		'activation_checkpointing = "$(ACTIVATION_CHECKPOINTING)".lower() in {"1", "true", "yes", "on"}' \
+		'compile_model = "$(COMPILE_MODEL)".lower() in {"1", "true", "yes", "on"}' \
 		'vocab = json.loads(vocab_path.read_text(encoding="utf-8"))' \
 		'model_config = load_project_config().to_transformer_config(vocab_size=int(vocab["vocab_size"]))' \
-		'model_config = replace(model_config, activation_checkpointing=activation_checkpointing)' \
+		'model_config = replace(' \
+		'    model_config,' \
+		'    activation_checkpointing=activation_checkpointing,' \
+		'    dropout=float("$(DROPOUT)"),' \
+		')' \
 		'training_state = prepare_model_for_training(' \
 		'    vocab=vocab,' \
 		'    config=model_config,' \
@@ -383,6 +440,7 @@ train: setup data-dirs
 		'else:' \
 		'    print("Training from scratch")' \
 		'checkpoint_interval = int("$(CHECKPOINT_INTERVAL)")' \
+		'checkpoint_keep = int("$(CHECKPOINT_KEEP)")' \
 		'best_state = {"validation_loss": None, "step": None}' \
 		'for previous_metric in training_state.previous_metrics:' \
 		'    validation_loss = previous_metric.get("validation_loss")' \
@@ -407,14 +465,19 @@ train: setup data-dirs
 		'            "grad_accum_steps": int("$(GRAD_ACCUM_STEPS)"),' \
 		'            "effective_batch_size": int("$(BATCH)") * int("$(GRAD_ACCUM_STEPS)"),' \
 		'            "activation_checkpointing": activation_checkpointing,' \
+		'            "shard_refresh_interval": int("$(SHARD_REFRESH_INTERVAL)"),' \
 		'            "learning_rate": float("$(LR)"),' \
 		'            "min_learning_rate": float("$(LR_MIN)"),' \
 		'            "warmup_steps": int("$(LR_WARMUP_STEPS)"),' \
 		'            "mixed_precision": "$(MIXED_PRECISION)",' \
 		'            "parameter_dtype": "$(PARAMETER_DTYPE)",' \
+		'            "fused_adamw": "$(FUSED_ADAMW)",' \
+		'            "compile_model": compile_model,' \
+		'            "dropout": float("$(DROPOUT)"),' \
 		'            "eval_interval": int("$(EVAL_INTERVAL)"),' \
 		'            "validation_batches": int("$(VAL_BATCHES)"),' \
 		'            "checkpoint_interval": checkpoint_interval,' \
+		'            "checkpoint_keep": checkpoint_keep,' \
 		'            "metrics_path": "$(METRICS)",' \
 		'            "status": status,' \
 		'        }' \
@@ -461,6 +524,14 @@ train: setup data-dirs
 		'        metadata=build_training_metadata(len(periodic_losses), "in_progress", step),' \
 		'    )' \
 		'    print(f"Periodic checkpoint: {checkpoint_path} at step {step}", flush=True)' \
+		'    retained_path = retain_checkpoint_snapshot(' \
+		'        checkpoint_path,' \
+		'        Path("$(CHECKPOINT_DIR)") / "snapshots",' \
+		'        step=step,' \
+		'        keep=checkpoint_keep,' \
+		'    )' \
+		'    if retained_path is not None:' \
+		'        print(f"Retained checkpoint: {retained_path}", flush=True)' \
 		'checkpoint_callback = save_periodic_checkpoint if checkpoint_interval > 0 else None' \
 		'new_losses, new_metrics = train_model_with_metrics(' \
 		'    model=training_state.model,' \
@@ -473,6 +544,9 @@ train: setup data-dirs
 		'        warmup_steps=int("$(LR_WARMUP_STEPS)"),' \
 		'        mixed_precision="$(MIXED_PRECISION)",' \
 		'        parameter_dtype="$(PARAMETER_DTYPE)",' \
+		'        fused_adamw="$(FUSED_ADAMW)",' \
+		'        compile_model=compile_model,' \
+		'        shard_refresh_interval=int("$(SHARD_REFRESH_INTERVAL)"),' \
 		'        max_steps=int("$(STEPS)"),' \
 		'    ),' \
 		'    device=choose_device(),' \
@@ -660,9 +734,14 @@ train-4090:
 		DEVICE="$(TRAIN_4090_DEVICE)" \
 		MIXED_PRECISION="$(TRAIN_4090_MIXED_PRECISION)" \
 		PARAMETER_DTYPE="$(TRAIN_4090_PARAMETER_DTYPE)" \
+		FUSED_ADAMW="$(TRAIN_4090_FUSED_ADAMW)" \
+		COMPILE_MODEL="$(TRAIN_4090_COMPILE_MODEL)" \
+		DROPOUT="$(TRAIN_4090_DROPOUT)" \
+		SHARD_REFRESH_INTERVAL="$(TRAIN_4090_SHARD_REFRESH_INTERVAL)" \
 		EVAL_INTERVAL="$(TRAIN_4090_EVAL_INTERVAL)" \
 		VAL_BATCHES="$(TRAIN_4090_VAL_BATCHES)" \
 		CHECKPOINT_INTERVAL="$(TRAIN_4090_CHECKPOINT_INTERVAL)" \
+		CHECKPOINT_KEEP="$(TRAIN_4090_CHECKPOINT_KEEP)" \
 		PROMPT="$(TRAIN_4090_PROMPT)" \
 		NEW_TOKENS="$(TRAIN_4090_NEW_TOKENS)" \
 		TEMPERATURE="$(TRAIN_4090_TEMPERATURE)" \
@@ -692,17 +771,106 @@ train-200m:
 		DEVICE="$(TRAIN_200M_DEVICE)" \
 		MIXED_PRECISION="$(TRAIN_200M_MIXED_PRECISION)" \
 		PARAMETER_DTYPE="$(TRAIN_200M_PARAMETER_DTYPE)" \
+		FUSED_ADAMW="$(TRAIN_200M_FUSED_ADAMW)" \
+		COMPILE_MODEL="$(TRAIN_200M_COMPILE_MODEL)" \
+		DROPOUT="$(TRAIN_200M_DROPOUT)" \
+		SHARD_REFRESH_INTERVAL="$(TRAIN_200M_SHARD_REFRESH_INTERVAL)" \
 		LR="$(TRAIN_200M_LR)" \
 		LR_MIN="$(TRAIN_200M_LR_MIN)" \
 		LR_WARMUP_STEPS="$(TRAIN_200M_LR_WARMUP_STEPS)" \
 		EVAL_INTERVAL="$(TRAIN_200M_EVAL_INTERVAL)" \
 		VAL_BATCHES="$(TRAIN_200M_VAL_BATCHES)" \
 		CHECKPOINT_INTERVAL="$(TRAIN_200M_CHECKPOINT_INTERVAL)" \
+		CHECKPOINT_KEEP="$(TRAIN_200M_CHECKPOINT_KEEP)" \
 		PROMPT="$(TRAIN_200M_PROMPT)" \
 		NEW_TOKENS="$(TRAIN_200M_NEW_TOKENS)" \
 		TEMPERATURE="$(TRAIN_200M_TEMPERATURE)" \
 		TOP_K="$(TRAIN_200M_TOP_K)"
 	@printf '==> [train-200m] Finished 200M training pipeline\n'
+
+train-h100:
+	@printf '==> [train-h100] Starting zero-setup H100 dynamic training pipeline\n'
+	$(MAKE) setup
+	@printf '==> [train-h100] Clearing generated processed artifacts and checkpoints\n'
+	$(MAKE) clean-generated
+	@set -e; \
+	manifest_path="$(PROCESSED_DIR)/train_shards/manifest.json"; \
+	printf '==> [train-h100] Starting background C4 streaming/tokenization\n'; \
+	$(MAKE) ingest-stream-c4 \
+		STREAM_C4_MAX="$(TRAIN_H100_STREAM_C4_MAX)" \
+		STREAM_C4_MIN_CHARS="$(TRAIN_H100_STREAM_C4_MIN_CHARS)" \
+		STREAM_TOKENIZER_SAMPLE="$(TRAIN_H100_STREAM_TOKENIZER_SAMPLE)" \
+		STREAM_SHARD_TOKENS="$(TRAIN_H100_STREAM_SHARD_TOKENS)" \
+		STREAM_VALIDATION_TOKENS="$(TRAIN_H100_STREAM_VALIDATION_TOKENS)" \
+		STREAM_TARGET_TOKENS="$(TRAIN_H100_CORPUS_TARGET_TOKENS)" \
+		BPE_VOCAB_SIZE="$(TRAIN_H100_BPE_VOCAB_SIZE)" \
+		BPE_MIN_FREQUENCY="$(TRAIN_H100_BPE_MIN_FREQUENCY)" & \
+	ingest_pid=$$!; \
+	cleanup() { \
+		if kill -0 "$$ingest_pid" 2>/dev/null; then \
+			printf '==> [train-h100] Stopping background ingestion\n'; \
+			kill "$$ingest_pid" 2>/dev/null || true; \
+			wait "$$ingest_pid" 2>/dev/null || true; \
+		fi; \
+	}; \
+	trap cleanup EXIT INT TERM; \
+	printf '==> [train-h100] Waiting for %s prepared train tokens before training\n' "$(TRAIN_H100_START_TOKENS)"; \
+	while true; do \
+		if [ -f "$$manifest_path" ]; then \
+			ready_tokens=$$($(PYTHON) -c 'import json, sys; from pathlib import Path; print(int(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")).get("train_tokens", 0)))' "$$manifest_path"); \
+			printf '==> [train-h100] Prepared train tokens: %s / %s\n' "$$ready_tokens" "$(TRAIN_H100_START_TOKENS)"; \
+			if [ "$$ready_tokens" -ge "$(TRAIN_H100_START_TOKENS)" ]; then \
+				break; \
+			fi; \
+		else \
+			printf '==> [train-h100] Waiting for first token shard manifest\n'; \
+		fi; \
+		if ! kill -0 "$$ingest_pid" 2>/dev/null; then \
+			wait "$$ingest_pid"; \
+			printf '==> [train-h100] Ingestion exited before start-token threshold was reached\n'; \
+			exit 1; \
+		fi; \
+		sleep "$(TRAIN_H100_READY_POLL_SECONDS)"; \
+	done; \
+	train_steps=$$($(PYTHON) -c 'import math, yaml; from pathlib import Path; config = yaml.safe_load(Path("specs/config.yaml").read_text(encoding="utf-8")); ctx = int(config["parameters"]["ctx_window"]); tokens_per_step = int("$(TRAIN_H100_BATCH)") * int("$(TRAIN_H100_GRAD_ACCUM_STEPS)") * ctx; print(max(1, math.ceil(int("$(TRAIN_H100_TOTAL_TRAINING_TOKENS)") / tokens_per_step)))'); \
+	printf '==> [train-h100] Computed training steps: %s for %s target training tokens\n' "$$train_steps" "$(TRAIN_H100_TOTAL_TRAINING_TOKENS)"; \
+	set +e; \
+	$(MAKE) train-export-run \
+		RESUME= \
+		STEPS="$$train_steps" \
+		BATCH="$(TRAIN_H100_BATCH)" \
+		GRAD_ACCUM_STEPS="$(TRAIN_H100_GRAD_ACCUM_STEPS)" \
+		ACTIVATION_CHECKPOINTING="$(TRAIN_H100_ACTIVATION_CHECKPOINTING)" \
+		DEVICE="$(TRAIN_H100_DEVICE)" \
+		MIXED_PRECISION="$(TRAIN_H100_MIXED_PRECISION)" \
+		PARAMETER_DTYPE="$(TRAIN_H100_PARAMETER_DTYPE)" \
+		FUSED_ADAMW="$(TRAIN_H100_FUSED_ADAMW)" \
+		COMPILE_MODEL="$(TRAIN_H100_COMPILE_MODEL)" \
+		DROPOUT="$(TRAIN_H100_DROPOUT)" \
+		SHARD_REFRESH_INTERVAL="$(TRAIN_H100_SHARD_REFRESH_INTERVAL)" \
+		LR="$(TRAIN_H100_LR)" \
+		LR_MIN="$(TRAIN_H100_LR_MIN)" \
+		LR_WARMUP_STEPS="$(TRAIN_H100_LR_WARMUP_STEPS)" \
+		EVAL_INTERVAL="$(TRAIN_H100_EVAL_INTERVAL)" \
+		VAL_BATCHES="$(TRAIN_H100_VAL_BATCHES)" \
+		CHECKPOINT_INTERVAL="$(TRAIN_H100_CHECKPOINT_INTERVAL)" \
+		CHECKPOINT_KEEP="$(TRAIN_H100_CHECKPOINT_KEEP)" \
+		PROMPT="$(TRAIN_H100_PROMPT)" \
+		NEW_TOKENS="$(TRAIN_H100_NEW_TOKENS)" \
+		TEMPERATURE="$(TRAIN_H100_TEMPERATURE)" \
+		TOP_K="$(TRAIN_H100_TOP_K)"; \
+	train_status=$$?; \
+	set -e; \
+	if kill -0 "$$ingest_pid" 2>/dev/null; then \
+		printf '==> [train-h100] Training finished before ingestion target; stopping ingestion\n'; \
+		kill "$$ingest_pid" 2>/dev/null || true; \
+		wait "$$ingest_pid" 2>/dev/null || true; \
+	else \
+		wait "$$ingest_pid" || true; \
+	fi; \
+	trap - EXIT INT TERM; \
+	printf '==> [train-h100] Finished H100 dynamic training pipeline\n'; \
+	exit "$$train_status"
 
 std-train:
 	$(MAKE) train-export-run \

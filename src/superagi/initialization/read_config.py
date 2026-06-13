@@ -28,6 +28,7 @@ class ModelParameters:
     dim_embedding: int
     dim_key: int
     ctx_window: int
+    dropout: float = 0.0
 
     def __post_init__(self) -> None:
         if self.n_layers <= 0:
@@ -40,6 +41,8 @@ class ModelParameters:
             raise ValueError("ctx_window must be positive")
         if self.dim_embedding % self.dim_key != 0:
             raise ValueError("dim_embedding must be divisible by dim_key")
+        if not 0.0 <= self.dropout < 1.0:
+            raise ValueError("dropout must be in the range [0.0, 1.0)")
 
     @property
     def n_heads(self) -> int:
@@ -58,6 +61,7 @@ class ProjectConfig:
             dim_embedding=self.parameters.dim_embedding,
             n_layers=self.parameters.n_layers,
             n_heads=self.parameters.n_heads,
+            dropout=self.parameters.dropout,
             init_std=self.init.weight_std,
             scale_residual_projections=self.init.scale_residual_projections,
         )
@@ -84,6 +88,7 @@ def load_project_config(path: Path | str = DEFAULT_CONFIG_PATH) -> ProjectConfig
             dim_embedding=_required_int(parameters, "dim_embedding"),
             dim_key=_required_int(parameters, "dim_key"),
             ctx_window=_required_int(parameters, "ctx_window"),
+            dropout=_optional_number(parameters, "dropout", 0.0),
         ),
     )
 
@@ -107,6 +112,13 @@ def _required_number(payload: dict[str, Any], key: str) -> float:
     if not isinstance(value, int | float):
         raise ValueError(f"config field {key!r} must be numeric")
     return value
+
+
+def _optional_number(payload: dict[str, Any], key: str, default: float) -> float:
+    value = payload.get(key, default)
+    if not isinstance(value, int | float):
+        raise ValueError(f"config field {key!r} must be numeric")
+    return float(value)
 
 
 def _required_bool(payload: dict[str, Any], key: str) -> bool:

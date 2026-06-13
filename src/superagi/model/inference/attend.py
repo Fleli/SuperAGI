@@ -17,22 +17,18 @@ class CausalSelfAttention(nn.Module):
 
         self.n_heads = n_heads
         self.head_dim = dim_embedding // n_heads
-        self.q_proj = nn.Linear(dim_embedding, dim_embedding)
-        self.k_proj = nn.Linear(dim_embedding, dim_embedding)
-        self.v_proj = nn.Linear(dim_embedding, dim_embedding)
+        self.qkv_proj = nn.Linear(dim_embedding, 3 * dim_embedding)
         self.out_proj = nn.Linear(dim_embedding, dim_embedding)
         self.dropout_probability = dropout
-        self.register_buffer(
-            "causal_mask",
-            torch.tril(torch.ones(context_length, context_length, dtype=torch.bool)),
-        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, dim_embedding = x.shape
 
-        q = self._split_heads(self.q_proj(x))
-        k = self._split_heads(self.k_proj(x))
-        v = self._split_heads(self.v_proj(x))
+        qkv = self.qkv_proj(x)
+        q, k, v = qkv.chunk(3, dim=-1)
+        q = self._split_heads(q)
+        k = self._split_heads(k)
+        v = self._split_heads(v)
 
         out = F.scaled_dot_product_attention(
             q,

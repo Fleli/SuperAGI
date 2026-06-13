@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import asdict
 from pathlib import Path
 from unittest import mock
 
@@ -15,6 +16,7 @@ from superagi.model.checkpoint import (
     generate_from_checkpoint,
     load_checkpoint,
     prepare_model_for_training,
+    retain_checkpoint_snapshot,
     save_checkpoint,
 )
 from superagi.model.transformer import TransformerConfig, TransformerLM
@@ -332,6 +334,90 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(state.previous_metrics[0]["step"], 2)
         self.assertEqual(state.metadata["steps"], 2)
         self.assertEqual(state.resumed_from, checkpoint_path)
+
+    def test_load_checkpoint_migrates_legacy_split_attention_projections(self) -> None:
+        tokenizer = self._tiny_tokenizer()
+        model = self._tiny_model(vocab_size=tokenizer.vocab_size)
+        current_state = model.state_dict()
+        legacy_state = dict(current_state)
+        q_weight, k_weight, v_weight = legacy_state.pop(
+            "blocks.0.attention.qkv_proj.weight"
+        ).chunk(3, dim=0)
+        q_bias, k_bias, v_bias = legacy_state.pop(
+            "blocks.0.attention.qkv_proj.bias"
+        ).chunk(3, dim=0)
+        legacy_state["blocks.0.attention.q_proj.weight"] = q_weight
+        legacy_state["blocks.0.attention.k_proj.weight"] = k_weight
+        legacy_state["blocks.0.attention.v_proj.weight"] = v_weight
+        legacy_state["blocks.0.attention.q_proj.bias"] = q_bias
+        legacy_state["blocks.0.attention.k_proj.bias"] = k_bias
+        legacy_state["blocks.0.attention.v_proj.bias"] = v_bias
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            checkpoint_path = Path(tmp_dir) / "legacy.pt"
+            torch.save(
+                {
+                    "model_state": legacy_state,
+                    "model_config": asdict(model.config),
+                    "vocab": tokenizer.to_payload(),
+                },
+                checkpoint_path,
+            )
+
+            loaded = load_checkpoint(checkpoint_path)
+
+        self.assertTrue(
+            torch.equal(
+                loaded.model.blocks[0].attention.qkv_proj.weight,
+                current_state["blocks.0.attention.qkv_proj.weight"],
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                loaded.model.blocks[0].attention.qkv_proj.bias,
+                current_state["blocks.0.attention.qkv_proj.bias"],
+            )
+        )
+
+    def test_retain_checkpoint_snapshot_keeps_most_recent_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            source_path = root / "latest.pt"
+            snapshot_dir = root / "snapshots"
+
+            for step in (10, 20, 30):
+                source_path.write_text(f"checkpoint {step}", encoding="utf-8")
+                retained_path = retain_checkpoint_snapshot(
+                    source_path,
+                    snapshot_dir,
+                    step=step,
+                    keep=2,
+                )
+                self.assertIsNotNone(retained_path)
+
+            retained_names = sorted(path.name for path in snapshot_dir.glob("*.pt"))
+
+        self.assertEqual(
+            retained_names,
+            ["checkpoint-step-000000020.pt", "checkpoint-step-000000030.pt"],
+        )
+
+    def test_retain_checkpoint_snapshot_zero_keep_disables_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            source_path = root / "latest.pt"
+            snapshot_dir = root / "snapshots"
+            source_path.write_text("checkpoint", encoding="utf-8")
+
+            retained_path = retain_checkpoint_snapshot(
+                source_path,
+                snapshot_dir,
+                step=10,
+                keep=0,
+            )
+
+            self.assertIsNone(retained_path)
+            self.assertFalse(snapshot_dir.exists())
 
     def test_prepare_model_for_training_rejects_vocab_mismatch(self) -> None:
         tokenizer = self._tiny_tokenizer()

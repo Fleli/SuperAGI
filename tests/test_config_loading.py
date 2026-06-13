@@ -26,8 +26,43 @@ class ConfigLoadingTests(unittest.TestCase):
         )
         self.assertEqual(transformer_config.n_layers, config.parameters.n_layers)
         self.assertEqual(transformer_config.n_heads, config.parameters.n_heads)
+        self.assertEqual(transformer_config.dropout, config.parameters.dropout)
 
     def test_loads_model_config_from_yaml(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "config.yaml"
+            config_path.write_text(
+                """
+init:
+  weight_std: 0.02
+  scale_residual_projections: true
+
+parameters:
+  n_layers: 2
+  dim_embedding: 12
+  dim_key: 4
+  ctx_window: 16
+  dropout: 0.05
+""",
+                encoding="utf-8",
+            )
+
+            config = load_project_config(config_path)
+            transformer_config = config.to_transformer_config(vocab_size=10)
+
+        self.assertEqual(config.init.weight_std, 0.02)
+        self.assertTrue(config.init.scale_residual_projections)
+        self.assertEqual(config.parameters.n_heads, 3)
+        self.assertEqual(transformer_config.vocab_size, 10)
+        self.assertEqual(transformer_config.context_length, 16)
+        self.assertEqual(transformer_config.dim_embedding, 12)
+        self.assertEqual(transformer_config.n_layers, 2)
+        self.assertEqual(transformer_config.n_heads, 3)
+        self.assertEqual(transformer_config.init_std, 0.02)
+        self.assertEqual(transformer_config.dropout, 0.05)
+        self.assertTrue(transformer_config.scale_residual_projections)
+
+    def test_dropout_defaults_to_zero_when_omitted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "config.yaml"
             config_path.write_text(
@@ -48,16 +83,30 @@ parameters:
             config = load_project_config(config_path)
             transformer_config = config.to_transformer_config(vocab_size=10)
 
-        self.assertEqual(config.init.weight_std, 0.02)
-        self.assertTrue(config.init.scale_residual_projections)
-        self.assertEqual(config.parameters.n_heads, 3)
-        self.assertEqual(transformer_config.vocab_size, 10)
-        self.assertEqual(transformer_config.context_length, 16)
-        self.assertEqual(transformer_config.dim_embedding, 12)
-        self.assertEqual(transformer_config.n_layers, 2)
-        self.assertEqual(transformer_config.n_heads, 3)
-        self.assertEqual(transformer_config.init_std, 0.02)
-        self.assertTrue(transformer_config.scale_residual_projections)
+        self.assertEqual(config.parameters.dropout, 0.0)
+        self.assertEqual(transformer_config.dropout, 0.0)
+
+    def test_rejects_dropout_outside_supported_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "config.yaml"
+            config_path.write_text(
+                """
+init:
+  weight_std: 0.02
+  scale_residual_projections: true
+
+parameters:
+  n_layers: 2
+  dim_embedding: 12
+  dim_key: 4
+  ctx_window: 16
+  dropout: 1.0
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "dropout"):
+                load_project_config(config_path)
 
     def test_rejects_embedding_dimension_not_divisible_by_key_dimension(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

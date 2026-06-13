@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -66,6 +67,50 @@ def save_checkpoint(
     return checkpoint_path
 
 
+def retain_checkpoint_snapshot(
+    source_path: Path | str,
+    snapshot_dir: Path | str,
+    *,
+    step: int,
+    keep: int = 5,
+) -> Path | None:
+    if step < 0:
+        raise ValueError("step must be non-negative")
+    if keep < 0:
+        raise ValueError("keep must be non-negative")
+    if keep == 0:
+        return None
+
+    checkpoint_path = Path(source_path)
+    snapshots_path = Path(snapshot_dir)
+    snapshots_path.mkdir(parents=True, exist_ok=True)
+    retained_path = snapshots_path / f"checkpoint-step-{step:09d}.pt"
+    temporary_path = retained_path.with_suffix(f"{retained_path.suffix}.tmp")
+    shutil.copy2(checkpoint_path, temporary_path)
+    temporary_path.replace(retained_path)
+    prune_checkpoint_snapshots(snapshots_path, keep=keep)
+    return retained_path
+
+
+def prune_checkpoint_snapshots(
+    snapshot_dir: Path | str,
+    *,
+    keep: int,
+    pattern: str = "checkpoint-step-*.pt",
+) -> list[Path]:
+    if keep < 0:
+        raise ValueError("keep must be non-negative")
+
+    snapshots_path = Path(snapshot_dir)
+    snapshots = sorted(snapshots_path.glob(pattern), key=lambda path: path.name)
+    stale_snapshots = snapshots if keep == 0 else snapshots[:-keep]
+    deleted_paths = []
+    for snapshot_path in stale_snapshots:
+        snapshot_path.unlink(missing_ok=True)
+        deleted_paths.append(snapshot_path)
+    return deleted_paths
+
+
 def prepare_model_for_training(
     *,
     vocab: dict[str, Any],
@@ -117,7 +162,7 @@ def load_checkpoint(
     vocab = _normalize_vocab(_required_mapping(payload, "vocab"))
     _validate_config_vocab_size(config, vocab)
     model = TransformerLM(config)
-    model.load_state_dict(payload["model_state"])
+    model.load_state_dict(_migrate_model_state_dict(payload["model_state"]))
     model.eval()
 
     return LoadedCheckpoint(
@@ -209,6 +254,54 @@ def _validate_config_vocab_size(
 ) -> None:
     if config.vocab_size != int(vocab["vocab_size"]):
         raise ValueError("config vocab_size must match vocab size")
+
+
+def _migrate_model_state_dict(model_state: Any) -> dict[str, torch.Tensor]:
+    if not isinstance(model_state, dict):
+        raise ValueError("checkpoint field 'model_state' must be a mapping")
+
+    migrated_state = dict(model_state)
+    qkv_suffix = ".attention.qkv_proj.weight"
+    qkv_weight_keys = [
+        key for key in migrated_state if isinstance(key, str) and key.endswith(qkv_suffix)
+    ]
+    block_prefixes = [key[: -len(qkv_suffix)] for key in qkv_weight_keys]
+    legacy_q_suffix = ".attention.q_proj.weight"
+    legacy_q_weight_keys = [
+        key
+        for key in migrated_state
+        if isinstance(key, str) and key.endswith(legacy_q_suffix)
+    ]
+    block_prefixes.extend(key[: -len(legacy_q_suffix)] for key in legacy_q_weight_keys)
+
+    for block_prefix in sorted(set(block_prefixes)):
+        qkv_weight_key = f"{block_prefix}.attention.qkv_proj.weight"
+        if qkv_weight_key in migrated_state:
+            continue
+
+        q_weight_key = f"{block_prefix}.attention.q_proj.weight"
+        k_weight_key = f"{block_prefix}.attention.k_proj.weight"
+        v_weight_key = f"{block_prefix}.attention.v_proj.weight"
+        legacy_weight_keys = (q_weight_key, k_weight_key, v_weight_key)
+        if not all(key in migrated_state for key in legacy_weight_keys):
+            continue
+
+        migrated_state[qkv_weight_key] = torch.cat(
+            [migrated_state.pop(key) for key in legacy_weight_keys],
+            dim=0,
+        )
+
+        q_bias_key = f"{block_prefix}.attention.q_proj.bias"
+        k_bias_key = f"{block_prefix}.attention.k_proj.bias"
+        v_bias_key = f"{block_prefix}.attention.v_proj.bias"
+        legacy_bias_keys = (q_bias_key, k_bias_key, v_bias_key)
+        if all(key in migrated_state for key in legacy_bias_keys):
+            migrated_state[f"{block_prefix}.attention.qkv_proj.bias"] = torch.cat(
+                [migrated_state.pop(key) for key in legacy_bias_keys],
+                dim=0,
+            )
+
+    return migrated_state
 
 
 def _required_mapping(payload: dict[str, Any], key: str) -> dict[str, Any]:

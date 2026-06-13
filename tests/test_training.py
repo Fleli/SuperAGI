@@ -19,6 +19,7 @@ from superagi.training.train import (
     train_model_with_metrics,
     train_step,
     _estimate_remaining_seconds,
+    _optimizer_adamw_kwargs,
     _resolve_parameter_dtype,
 )
 
@@ -172,7 +173,7 @@ class TrainingTests(unittest.TestCase):
         )
 
         self.assertEqual(model.embeddings.token_embedding.weight.dtype, torch.bfloat16)
-        self.assertEqual(model.blocks[0].attention.q_proj.weight.dtype, torch.bfloat16)
+        self.assertEqual(model.blocks[0].attention.qkv_proj.weight.dtype, torch.bfloat16)
 
     def test_train_config_rejects_unknown_parameter_dtype(self) -> None:
         with self.assertRaisesRegex(ValueError, "parameter_dtype"):
@@ -183,6 +184,68 @@ class TrainingTests(unittest.TestCase):
 
         self.assertEqual(_resolve_parameter_dtype("float32", device), torch.float32)
         self.assertEqual(_resolve_parameter_dtype("bfloat16", device), torch.bfloat16)
+
+    def test_train_config_rejects_unknown_fused_adamw_mode(self) -> None:
+        with self.assertRaisesRegex(ValueError, "fused_adamw"):
+            TrainConfig(fused_adamw="sometimes")
+
+    def test_optimizer_adamw_kwargs_enable_fused_only_for_cuda(self) -> None:
+        self.assertEqual(
+            _optimizer_adamw_kwargs(
+                TrainConfig(fused_adamw="auto"),
+                torch.device("cuda"),
+            ),
+            {"fused": True},
+        )
+        self.assertEqual(
+            _optimizer_adamw_kwargs(
+                TrainConfig(fused_adamw="auto"),
+                torch.device("cpu"),
+            ),
+            {},
+        )
+        self.assertEqual(
+            _optimizer_adamw_kwargs(
+                TrainConfig(fused_adamw="off"),
+                torch.device("cuda"),
+            ),
+            {},
+        )
+
+    def test_train_model_compiles_model_when_configured(self) -> None:
+        torch.manual_seed(0)
+        model = TransformerLM(
+            TransformerConfig(
+                vocab_size=6,
+                context_length=4,
+                dim_embedding=8,
+                n_layers=1,
+                n_heads=2,
+                dropout=0.0,
+            )
+        )
+        compile_calls = []
+
+        def fake_compile(module):
+            compile_calls.append(module)
+            return module
+
+        with (
+            mock.patch("superagi.training.train.torch.compile", side_effect=fake_compile),
+            redirect_stdout(StringIO()),
+        ):
+            train_model_with_metrics(
+                model,
+                token_ids=[0, 1, 2, 3, 4, 5, 0],
+                config=TrainConfig(
+                    batch_size=2,
+                    learning_rate=1e-2,
+                    max_steps=1,
+                    compile_model=True,
+                ),
+            )
+
+        self.assertEqual(compile_calls, [model])
 
     def test_train_model_accumulates_microbatches_before_optimizer_step(self) -> None:
         torch.manual_seed(0)
@@ -305,6 +368,168 @@ class TrainingTests(unittest.TestCase):
         self.assertEqual(len(losses), 2)
         self.assertTrue(all(loss > 0.0 for loss in losses))
 
+    def test_token_shard_dataset_refreshes_appended_manifest_shards(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            shard_dir = Path(tmp_dir) / "train_shards"
+            shard_dir.mkdir()
+            torch.save(
+                torch.tensor([0, 1, 2, 3, 4, 5] * 4, dtype=torch.long),
+                shard_dir / "train-000001.pt",
+            )
+            manifest_path = shard_dir / "manifest.json"
+            manifest_path.write_text(
+                """
+{
+  "format": "superagi-token-shards-v1",
+  "train_tokens": 24,
+  "shards": [
+    {"path": "train-000001.pt", "tokens": 24}
+  ]
+}
+""",
+                encoding="utf-8",
+            )
+            dataset = TokenShardDataset.from_manifest(manifest_path)
+
+            torch.save(
+                torch.tensor([5, 4, 3, 2, 1, 0] * 5, dtype=torch.long),
+                shard_dir / "train-000002.pt",
+            )
+            manifest_path.write_text(
+                """
+{
+  "format": "superagi-token-shards-v1",
+  "train_tokens": 54,
+  "shards": [
+    {"path": "train-000001.pt", "tokens": 24},
+    {"path": "train-000002.pt", "tokens": 30}
+  ]
+}
+""",
+                encoding="utf-8",
+            )
+
+            refreshed = dataset.refresh_from_manifest()
+
+        self.assertTrue(refreshed)
+        self.assertEqual(dataset.shard_count, 2)
+        self.assertEqual(dataset.total_tokens, 54)
+
+    def test_token_shard_dataset_rejects_non_append_manifest_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            shard_dir = Path(tmp_dir) / "train_shards"
+            shard_dir.mkdir()
+            torch.save(
+                torch.tensor([0, 1, 2, 3, 4, 5] * 4, dtype=torch.long),
+                shard_dir / "train-000001.pt",
+            )
+            manifest_path = shard_dir / "manifest.json"
+            manifest_path.write_text(
+                """
+{
+  "format": "superagi-token-shards-v1",
+  "train_tokens": 24,
+  "shards": [
+    {"path": "train-000001.pt", "tokens": 24}
+  ]
+}
+""",
+                encoding="utf-8",
+            )
+            dataset = TokenShardDataset.from_manifest(manifest_path)
+            manifest_path.write_text(
+                """
+{
+  "format": "superagi-token-shards-v1",
+  "train_tokens": 18,
+  "shards": [
+    {"path": "train-000001.pt", "tokens": 18}
+  ]
+}
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "append-only"):
+                dataset.refresh_from_manifest()
+
+    def test_train_model_refreshes_token_shards_on_configured_interval(self) -> None:
+        torch.manual_seed(0)
+        model = TransformerLM(
+            TransformerConfig(
+                vocab_size=6,
+                context_length=4,
+                dim_embedding=8,
+                n_layers=1,
+                n_heads=2,
+                dropout=0.0,
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            shard_dir = Path(tmp_dir) / "train_shards"
+            shard_dir.mkdir()
+            torch.save(
+                torch.tensor([0, 1, 2, 3, 4, 5] * 4, dtype=torch.long),
+                shard_dir / "train-000001.pt",
+            )
+            manifest_path = shard_dir / "manifest.json"
+            manifest_path.write_text(
+                """
+{
+  "format": "superagi-token-shards-v1",
+  "train_tokens": 24,
+  "shards": [
+    {"path": "train-000001.pt", "tokens": 24}
+  ]
+}
+""",
+                encoding="utf-8",
+            )
+            dataset = TokenShardDataset.from_manifest(manifest_path)
+            refresh_calls = []
+
+            def append_shard_once() -> bool:
+                refresh_calls.append(1)
+                if len(refresh_calls) == 2:
+                    torch.save(
+                        torch.tensor([5, 4, 3, 2, 1, 0] * 5, dtype=torch.long),
+                        shard_dir / "train-000002.pt",
+                    )
+                    manifest_path.write_text(
+                        """
+{
+  "format": "superagi-token-shards-v1",
+  "train_tokens": 54,
+  "shards": [
+    {"path": "train-000001.pt", "tokens": 24},
+    {"path": "train-000002.pt", "tokens": 30}
+  ]
+}
+""",
+                        encoding="utf-8",
+                    )
+                return original_refresh()
+
+            original_refresh = dataset.refresh_from_manifest
+            dataset.refresh_from_manifest = append_shard_once
+
+            with redirect_stdout(StringIO()):
+                losses, _ = train_model_with_metrics(
+                    model,
+                    token_ids=dataset,
+                    config=TrainConfig(
+                        batch_size=2,
+                        learning_rate=1e-2,
+                        max_steps=3,
+                        shard_refresh_interval=1,
+                    ),
+                )
+
+        self.assertEqual(len(losses), 3)
+        self.assertEqual(dataset.shard_count, 2)
+        self.assertGreaterEqual(len(refresh_calls), 2)
+
     def test_train_model_with_metrics_records_validation_loss(self) -> None:
         torch.manual_seed(0)
         model = TransformerLM(
@@ -398,6 +623,51 @@ class TrainingTests(unittest.TestCase):
         self.assertIn("learning_rate=", printed)
         self.assertIn("elapsed_seconds=", printed)
         self.assertIn("estimated_remaining_seconds=", printed)
+
+    def test_train_model_with_metrics_records_throughput_fields(self) -> None:
+        torch.manual_seed(0)
+        model = TransformerLM(
+            TransformerConfig(
+                vocab_size=6,
+                context_length=4,
+                dim_embedding=8,
+                n_layers=1,
+                n_heads=2,
+                dropout=0.0,
+            )
+        )
+        output = StringIO()
+
+        with redirect_stdout(output):
+            _, metrics = train_model_with_metrics(
+                model,
+                token_ids=[0, 1, 2, 3, 4, 5, 0, 1, 2],
+                config=TrainConfig(
+                    batch_size=2,
+                    grad_accum_steps=2,
+                    learning_rate=1e-2,
+                    max_steps=2,
+                ),
+                eval_interval=1,
+            )
+
+        self.assertEqual([metric.tokens_per_step for metric in metrics], [16, 16])
+        self.assertEqual([metric.run_tokens_seen for metric in metrics], [16, 32])
+        self.assertEqual(
+            [metric.total_estimated_tokens_seen for metric in metrics],
+            [16, 32],
+        )
+        self.assertTrue(all(metric.tokens_per_second > 0.0 for metric in metrics))
+        self.assertTrue(all(metric.examples_per_second > 0.0 for metric in metrics))
+        self.assertTrue(all(metric.epoch_fraction is not None for metric in metrics))
+        self.assertGreater(metrics[-1].epoch_fraction, 1.0)
+        self.assertIsNone(metrics[-1].gpu_memory_allocated_mb)
+        self.assertIsNone(metrics[-1].gpu_memory_reserved_mb)
+
+        printed = output.getvalue()
+        self.assertIn("tokens_per_second=", printed)
+        self.assertIn("examples_per_second=", printed)
+        self.assertIn("epoch_fraction=", printed)
 
     def test_estimate_remaining_seconds_uses_average_step_time(self) -> None:
         self.assertEqual(

@@ -39,6 +39,21 @@ class TransformerLMTests(unittest.TestCase):
         self.assertTrue(calls[0]["is_causal"])
         self.assertEqual(calls[0]["dropout_p"], 0.25)
 
+    def test_attention_uses_fused_qkv_projection_without_unused_mask(self) -> None:
+        attention = CausalSelfAttention(
+            dim_embedding=8,
+            n_heads=2,
+            context_length=4,
+            dropout=0.0,
+        )
+
+        self.assertEqual(attention.qkv_proj.in_features, 8)
+        self.assertEqual(attention.qkv_proj.out_features, 24)
+        self.assertFalse(hasattr(attention, "q_proj"))
+        self.assertFalse(hasattr(attention, "k_proj"))
+        self.assertFalse(hasattr(attention, "v_proj"))
+        self.assertNotIn("causal_mask", dict(attention.named_buffers()))
+
     def test_forward_returns_logits_and_loss(self) -> None:
         config = TransformerConfig(
             vocab_size=11,
@@ -123,7 +138,7 @@ class TransformerLMTests(unittest.TestCase):
         parameter_names = set(dict(model.named_parameters()))
 
         self.assertIn("embeddings.token_embedding.weight", parameter_names)
-        self.assertIn("blocks.0.attention.q_proj.weight", parameter_names)
+        self.assertIn("blocks.0.attention.qkv_proj.weight", parameter_names)
         self.assertIn("blocks.0.feed_forward.net.0.weight", parameter_names)
         self.assertGreater(sum(param.numel() for param in model.parameters()), 0)
 
@@ -166,17 +181,17 @@ class TransformerLMTests(unittest.TestCase):
         model = TransformerLM(config)
 
         token_std = model.embeddings.token_embedding.weight.std().item()
-        q_std = model.blocks[0].attention.q_proj.weight.std().item()
+        qkv_std = model.blocks[0].attention.qkv_proj.weight.std().item()
         residual_std = model.blocks[0].attention.out_proj.weight.std().item()
         expected_residual_std = config.init_std / sqrt(2 * config.n_layers)
 
         self.assertLess(abs(token_std - config.init_std), 0.003)
-        self.assertLess(abs(q_std - config.init_std), 0.003)
+        self.assertLess(abs(qkv_std - config.init_std), 0.003)
         self.assertLess(abs(residual_std - expected_residual_std), 0.003)
         self.assertTrue(
             torch.allclose(
-                model.blocks[0].attention.q_proj.bias,
-                torch.zeros_like(model.blocks[0].attention.q_proj.bias),
+                model.blocks[0].attention.qkv_proj.bias,
+                torch.zeros_like(model.blocks[0].attention.qkv_proj.bias),
             )
         )
         self.assertTrue(

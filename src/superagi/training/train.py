@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import math
 import time
+from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 import torch
 from torch import nn
@@ -40,42 +41,41 @@ class TokenShard:
 
 
 class TokenShardDataset:
-    def __init__(self, shards: Sequence[TokenShard]) -> None:
+    def __init__(
+        self,
+        shards: Sequence[TokenShard],
+        *,
+        manifest_path: Path | None = None,
+        shard_cache_size: int = 2,
+    ) -> None:
         if not shards:
             raise ValueError("at least one token shard is required")
+        if shard_cache_size <= 0:
+            raise ValueError("shard_cache_size must be positive")
         self.shards = tuple(shards)
         self.total_tokens = sum(shard.token_count for shard in self.shards)
-        self._loaded_path: Path | None = None
-        self._loaded_device: torch.device | None = None
-        self._loaded_tokens: torch.Tensor | None = None
+        self.manifest_path = manifest_path
+        self.shard_cache_size = shard_cache_size
+        self._loaded_tokens: OrderedDict[tuple[Path, str], torch.Tensor] = OrderedDict()
 
     @classmethod
     def from_manifest(cls, manifest_path: Path | str) -> "TokenShardDataset":
         path = Path(manifest_path)
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if payload.get("format") != "superagi-token-shards-v1":
-            raise ValueError("token shard manifest has unknown format")
-        shard_records = payload.get("shards")
-        if not isinstance(shard_records, list):
-            raise ValueError("token shard manifest must contain shards")
+        return cls(_read_token_shards_manifest(path), manifest_path=path)
 
-        shards = []
-        for record in shard_records:
-            if not isinstance(record, dict):
-                raise ValueError("token shard records must be mappings")
-            relative_path = record.get("path")
-            token_count = record.get("tokens")
-            if not isinstance(relative_path, str):
-                raise ValueError("token shard path must be a string")
-            if not isinstance(token_count, int) or token_count <= 0:
-                raise ValueError("token shard token count must be positive")
-            shards.append(
-                TokenShard(
-                    path=path.parent / relative_path,
-                    token_count=token_count,
-                )
-            )
-        return cls(shards)
+    def refresh_from_manifest(self) -> bool:
+        if self.manifest_path is None:
+            return False
+
+        refreshed_shards = tuple(_read_token_shards_manifest(self.manifest_path))
+        if refreshed_shards == self.shards:
+            return False
+        if refreshed_shards[: len(self.shards)] != self.shards:
+            raise ValueError("token shard manifest refresh only supports append-only updates")
+
+        self.shards = refreshed_shards
+        self.total_tokens = sum(shard.token_count for shard in self.shards)
+        return True
 
     @property
     def shard_count(self) -> int:
@@ -104,22 +104,56 @@ class TokenShardDataset:
         )
 
     def _load_shard(self, path: Path, device: torch.device) -> torch.Tensor:
-        if (
-            self._loaded_tokens is not None
-            and self._loaded_path == path
-            and self._loaded_device == device
-        ):
-            return self._loaded_tokens
+        cache_key = (path, str(device))
+        if cache_key in self._loaded_tokens:
+            tokens = self._loaded_tokens.pop(cache_key)
+            self._loaded_tokens[cache_key] = tokens
+            return tokens
 
         tokens = torch.load(path, map_location="cpu")
         if not isinstance(tokens, torch.Tensor):
             raise ValueError(f"token shard must contain a tensor: {path}")
         if tokens.ndim != 1:
             raise ValueError(f"token shard must contain a 1D tensor: {path}")
-        self._loaded_path = path
-        self._loaded_device = device
-        self._loaded_tokens = tokens.to(device=device, dtype=torch.long)
-        return self._loaded_tokens
+        loaded_tokens = tokens.to(device=device, dtype=torch.long)
+        self._loaded_tokens[cache_key] = loaded_tokens
+        while len(self._loaded_tokens) > self.shard_cache_size:
+            self._loaded_tokens.popitem(last=False)
+        return loaded_tokens
+
+
+def _read_token_shards_manifest(path: Path) -> tuple[TokenShard, ...]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return _token_shards_from_manifest_payload(path, payload)
+
+
+def _token_shards_from_manifest_payload(
+    path: Path,
+    payload: dict[str, Any],
+) -> tuple[TokenShard, ...]:
+    if payload.get("format") != "superagi-token-shards-v1":
+        raise ValueError("token shard manifest has unknown format")
+    shard_records = payload.get("shards")
+    if not isinstance(shard_records, list):
+        raise ValueError("token shard manifest must contain shards")
+
+    shards = []
+    for record in shard_records:
+        if not isinstance(record, dict):
+            raise ValueError("token shard records must be mappings")
+        relative_path = record.get("path")
+        token_count = record.get("tokens")
+        if not isinstance(relative_path, str):
+            raise ValueError("token shard path must be a string")
+        if not isinstance(token_count, int) or token_count <= 0:
+            raise ValueError("token shard token count must be positive")
+        shards.append(
+            TokenShard(
+                path=path.parent / relative_path,
+                token_count=token_count,
+            )
+        )
+    return tuple(shards)
 
 
 @dataclass(frozen=True)
@@ -135,6 +169,9 @@ class TrainConfig:
     shuffle: bool = True
     mixed_precision: str = "none"
     parameter_dtype: str = "float32"
+    fused_adamw: str = "auto"
+    compile_model: bool = False
+    shard_refresh_interval: int = 0
 
     def __post_init__(self) -> None:
         if self.batch_size <= 0:
@@ -159,6 +196,10 @@ class TrainConfig:
             raise ValueError("mixed_precision must be one of: none, auto, float16, bfloat16")
         if self.parameter_dtype not in {"float32", "bfloat16"}:
             raise ValueError("parameter_dtype must be one of: float32, bfloat16")
+        if self.fused_adamw not in {"auto", "on", "off"}:
+            raise ValueError("fused_adamw must be one of: auto, on, off")
+        if self.shard_refresh_interval < 0:
+            raise ValueError("shard_refresh_interval must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -168,6 +209,14 @@ class MetricSnapshot:
     validation_loss: float | None
     learning_rate: float
     elapsed_seconds: float
+    tokens_per_step: int = 0
+    run_tokens_seen: int = 0
+    total_estimated_tokens_seen: int = 0
+    tokens_per_second: float = 0.0
+    examples_per_second: float = 0.0
+    epoch_fraction: float | None = None
+    gpu_memory_allocated_mb: float | None = None
+    gpu_memory_reserved_mb: float | None = None
 
 
 def train_step(
@@ -360,11 +409,13 @@ def train_model_with_metrics(
     device = torch.device(device)
     parameter_dtype = _resolve_parameter_dtype(config.parameter_dtype, device)
     model.to(device=device, dtype=parameter_dtype)
+    training_model = torch.compile(model) if config.compile_model else model
     tokens = None if isinstance(token_ids, TokenShardDataset) else _tokens_to_device(token_ids, device)
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        training_model.parameters(),
         lr=config.learning_rate,
         weight_decay=config.weight_decay,
+        **_optimizer_adamw_kwargs(config, device),
     )
     mixed_precision_dtype = _resolve_mixed_precision_dtype(
         config.mixed_precision,
@@ -374,15 +425,21 @@ def train_model_with_metrics(
 
     losses = []
     metrics = []
+    _reset_cuda_peak_memory_stats(device)
     start_time = time.perf_counter()
     for step_index in range(1, config.max_steps + 1):
+        _refresh_token_shards_for_step(
+            token_ids=token_ids,
+            step_index=step_index,
+            refresh_interval=config.shard_refresh_interval,
+        )
         current_learning_rate = learning_rate_for_step(config, step_index)
         _set_optimizer_learning_rate(optimizer, current_learning_rate)
         def iter_microbatches() -> Iterable[tuple[torch.Tensor, torch.Tensor]]:
             for _ in range(config.grad_accum_steps):
                 if isinstance(token_ids, TokenShardDataset):
                     yield token_ids.sample_next_token_batch(
-                        context_length=model.config.context_length,
+                        context_length=training_model.config.context_length,
                         batch_size=config.batch_size,
                         device=device,
                     )
@@ -392,12 +449,12 @@ def train_model_with_metrics(
                     raise RuntimeError("tokens were not initialized")
                 yield sample_next_token_batch(
                     tokens=tokens,
-                    context_length=model.config.context_length,
+                    context_length=training_model.config.context_length,
                     batch_size=config.batch_size,
                 )
 
         train_loss = train_accumulated_step(
-            model=model,
+            model=training_model,
             optimizer=optimizer,
             batches=iter_microbatches(),
             microbatch_count=config.grad_accum_steps,
@@ -414,22 +471,27 @@ def train_model_with_metrics(
             validation_loss = None
             if validation_token_ids is not None:
                 validation_loss = evaluate_loss(
-                    model=model,
+                    model=training_model,
                     token_ids=validation_token_ids,
                     batch_size=config.batch_size,
                     max_batches=validation_batches,
                     device=device,
                     mixed_precision_dtype=mixed_precision_dtype,
                 )
-            metrics.append(
-                MetricSnapshot(
-                    step=start_step + step_index,
-                    train_loss=train_loss,
-                    validation_loss=validation_loss,
-                    learning_rate=current_learning_rate,
-                    elapsed_seconds=time.perf_counter() - start_time,
-                )
+            metric = _build_metric_snapshot(
+                model=training_model,
+                token_ids=token_ids,
+                tokens=tokens,
+                config=config,
+                device=device,
+                step_index=step_index,
+                start_step=start_step,
+                train_loss=train_loss,
+                validation_loss=validation_loss,
+                learning_rate=current_learning_rate,
+                elapsed_seconds=time.perf_counter() - start_time,
             )
+            metrics.append(metric)
             print(
                 "step="
                 f"{metrics[-1].step} "
@@ -437,7 +499,10 @@ def train_model_with_metrics(
                 f"validation_loss={_format_loss(metrics[-1].validation_loss)} "
                 f"learning_rate={metrics[-1].learning_rate:.8f} "
                 f"elapsed_seconds={metrics[-1].elapsed_seconds:.2f} "
-                f"estimated_remaining_seconds={_estimate_remaining_seconds(metrics[-1].elapsed_seconds, step_index, config.max_steps):.2f}",
+                f"estimated_remaining_seconds={_estimate_remaining_seconds(metrics[-1].elapsed_seconds, step_index, config.max_steps):.2f} "
+                f"tokens_per_second={metrics[-1].tokens_per_second:.2f} "
+                f"examples_per_second={metrics[-1].examples_per_second:.2f} "
+                f"epoch_fraction={_format_optional_float(metrics[-1].epoch_fraction)}",
                 flush=True,
             )
             if metric_callback is not None:
@@ -450,6 +515,103 @@ def train_model_with_metrics(
         if should_checkpoint:
             checkpoint_callback(start_step + step_index, list(losses), list(metrics))
     return losses, metrics
+
+
+def _build_metric_snapshot(
+    *,
+    model: nn.Module,
+    token_ids: Sequence[int] | torch.Tensor | TokenShardDataset,
+    tokens: torch.Tensor | None,
+    config: TrainConfig,
+    device: torch.device,
+    step_index: int,
+    start_step: int,
+    train_loss: float,
+    validation_loss: float | None,
+    learning_rate: float,
+    elapsed_seconds: float,
+) -> MetricSnapshot:
+    tokens_per_step = config.batch_size * config.grad_accum_steps * model.config.context_length
+    run_tokens_seen = step_index * tokens_per_step
+    total_estimated_tokens_seen = (start_step + step_index) * tokens_per_step
+    examples_seen = step_index * config.batch_size * config.grad_accum_steps
+    training_token_count = _training_token_count(token_ids=token_ids, tokens=tokens)
+    gpu_memory_allocated_mb, gpu_memory_reserved_mb = _cuda_peak_memory_stats_mb(device)
+
+    return MetricSnapshot(
+        step=start_step + step_index,
+        train_loss=train_loss,
+        validation_loss=validation_loss,
+        learning_rate=learning_rate,
+        elapsed_seconds=elapsed_seconds,
+        tokens_per_step=tokens_per_step,
+        run_tokens_seen=run_tokens_seen,
+        total_estimated_tokens_seen=total_estimated_tokens_seen,
+        tokens_per_second=_divide_or_zero(run_tokens_seen, elapsed_seconds),
+        examples_per_second=_divide_or_zero(examples_seen, elapsed_seconds),
+        epoch_fraction=(
+            total_estimated_tokens_seen / training_token_count
+            if training_token_count is not None and training_token_count > 0
+            else None
+        ),
+        gpu_memory_allocated_mb=gpu_memory_allocated_mb,
+        gpu_memory_reserved_mb=gpu_memory_reserved_mb,
+    )
+
+
+def _training_token_count(
+    *,
+    token_ids: Sequence[int] | torch.Tensor | TokenShardDataset,
+    tokens: torch.Tensor | None,
+) -> int | None:
+    if isinstance(token_ids, TokenShardDataset):
+        return token_ids.total_tokens
+    if tokens is None:
+        return None
+    return int(len(tokens))
+
+
+def _divide_or_zero(numerator: float, denominator: float) -> float:
+    if denominator <= 0.0:
+        return 0.0
+    return numerator / denominator
+
+
+def _reset_cuda_peak_memory_stats(device: torch.device) -> None:
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return
+    torch.cuda.reset_peak_memory_stats(device)
+
+
+def _cuda_peak_memory_stats_mb(
+    device: torch.device,
+) -> tuple[float | None, float | None]:
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return None, None
+    return (
+        torch.cuda.max_memory_allocated(device) / (1024 * 1024),
+        torch.cuda.max_memory_reserved(device) / (1024 * 1024),
+    )
+
+
+def _refresh_token_shards_for_step(
+    *,
+    token_ids: Sequence[int] | torch.Tensor | TokenShardDataset,
+    step_index: int,
+    refresh_interval: int,
+) -> None:
+    if refresh_interval <= 0 or not isinstance(token_ids, TokenShardDataset):
+        return
+    if step_index % refresh_interval != 0:
+        return
+
+    refreshed = token_ids.refresh_from_manifest()
+    if refreshed:
+        print(
+            "Refreshed training shards: "
+            f"{token_ids.shard_count} shards, {token_ids.total_tokens} tokens",
+            flush=True,
+        )
 
 
 def append_metrics_jsonl(
@@ -513,6 +675,12 @@ def _format_loss(loss: float | None) -> str:
     return f"{loss:.6f}"
 
 
+def _format_optional_float(value: float | None) -> str:
+    if value is None:
+        return "null"
+    return f"{value:.6f}"
+
+
 def _estimate_remaining_seconds(
     elapsed_seconds: float,
     completed_steps: int,
@@ -557,3 +725,14 @@ def _build_grad_scaler(
     if mixed_precision_dtype != torch.float16 or device.type != "cuda":
         return None
     return torch.amp.GradScaler(device.type, enabled=True)
+
+
+def _optimizer_adamw_kwargs(
+    config: TrainConfig,
+    device: torch.device,
+) -> dict[str, bool]:
+    if config.fused_adamw == "off":
+        return {}
+    if device.type != "cuda":
+        return {}
+    return {"fused": True}

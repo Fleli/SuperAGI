@@ -246,6 +246,38 @@ class MakefileTests(unittest.TestCase):
         self.assertIn('"parameter_dtype": "$(PARAMETER_DTYPE)"', contents)
         self.assertIn('PARAMETER_DTYPE="$(TRAIN_200M_PARAMETER_DTYPE)"', contents)
 
+    def test_train_target_wires_configurable_dropout(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("DROPOUT := 0.0", contents)
+        self.assertIn("TRAIN_200M_DROPOUT :=", contents)
+        self.assertIn("dropout=float(\"$(DROPOUT)\")", contents)
+        self.assertIn('"dropout": float("$(DROPOUT)")', contents)
+        self.assertIn('DROPOUT="$(TRAIN_200M_DROPOUT)"', contents)
+
+    def test_train_target_wires_gpu_speed_flags(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("FUSED_ADAMW := auto", contents)
+        self.assertIn("COMPILE_MODEL := 0", contents)
+        self.assertIn('fused_adamw="$(FUSED_ADAMW)"', contents)
+        self.assertIn('compile_model=compile_model', contents)
+        self.assertIn('"fused_adamw": "$(FUSED_ADAMW)"', contents)
+        self.assertIn('"compile_model": compile_model', contents)
+        self.assertIn('FUSED_ADAMW="$(TRAIN_200M_FUSED_ADAMW)"', contents)
+        self.assertIn('COMPILE_MODEL="$(TRAIN_H100_COMPILE_MODEL)"', contents)
+
+    def test_train_target_keeps_token_artifacts_as_tensors(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("token_ids = torch.load(token_path)", contents)
+        self.assertIn("validation_token_ids = torch.load(val_token_path)", contents)
+        self.assertNotIn("torch.load(token_path).tolist()", contents)
+        self.assertNotIn("torch.load(val_token_path).tolist()", contents)
+
     def test_train_target_wires_gradient_accumulation(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
         contents = makefile.read_text(encoding="utf-8")
@@ -292,16 +324,58 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("train_shards/manifest.json", contents)
         self.assertIn("TokenShardDataset.from_manifest", contents)
 
+    def test_train_target_wires_dynamic_shard_refresh(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("SHARD_REFRESH_INTERVAL := 0", contents)
+        self.assertIn("TRAIN_200M_SHARD_REFRESH_INTERVAL :=", contents)
+        self.assertIn(
+            'shard_refresh_interval=int("$(SHARD_REFRESH_INTERVAL)")',
+            contents,
+        )
+        self.assertIn('"shard_refresh_interval": int("$(SHARD_REFRESH_INTERVAL)")', contents)
+        self.assertIn(
+            'SHARD_REFRESH_INTERVAL="$(TRAIN_200M_SHARD_REFRESH_INTERVAL)"',
+            contents,
+        )
+
+    def test_train_h100_target_runs_zero_setup_dynamic_pipeline(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("train-h100", contents)
+        self.assertIn("TRAIN_H100_CORPUS_TARGET_TOKENS := 20000000000", contents)
+        self.assertIn("TRAIN_H100_START_TOKENS :=", contents)
+        self.assertIn("TRAIN_H100_STREAM_SHARD_TOKENS :=", contents)
+        self.assertIn("TRAIN_H100_TOTAL_TRAINING_TOKENS := 20000000000", contents)
+        self.assertIn("TRAIN_H100_MIXED_PRECISION := bfloat16", contents)
+        self.assertIn("TRAIN_H100_SHARD_REFRESH_INTERVAL :=", contents)
+        self.assertIn("$(MAKE) setup", contents)
+        self.assertIn("$(MAKE) ingest-stream-c4", contents)
+        self.assertIn('STREAM_TARGET_TOKENS="$(TRAIN_H100_CORPUS_TARGET_TOKENS)"', contents)
+        self.assertIn("ingest_pid=$$!", contents)
+        self.assertIn("Waiting for", contents)
+        self.assertIn("TRAIN_H100_TOTAL_TRAINING_TOKENS", contents)
+        self.assertIn('SHARD_REFRESH_INTERVAL="$(TRAIN_H100_SHARD_REFRESH_INTERVAL)"', contents)
+        self.assertIn('MIXED_PRECISION="$(TRAIN_H100_MIXED_PRECISION)"', contents)
+
     def test_train_target_wires_periodic_checkpointing(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
         contents = makefile.read_text(encoding="utf-8")
 
         self.assertIn("CHECKPOINT_INTERVAL := 1000", contents)
+        self.assertIn("CHECKPOINT_KEEP := 5", contents)
         self.assertIn('checkpoint_interval = int("$(CHECKPOINT_INTERVAL)")', contents)
+        self.assertIn('checkpoint_keep = int("$(CHECKPOINT_KEEP)")', contents)
+        self.assertIn("retain_checkpoint_snapshot", contents)
+        self.assertIn('"checkpoint_keep": checkpoint_keep', contents)
         self.assertIn("def save_periodic_checkpoint", contents)
         self.assertIn("checkpoint_interval=checkpoint_interval", contents)
         self.assertIn("checkpoint_callback=checkpoint_callback", contents)
         self.assertIn("Periodic checkpoint:", contents)
+        self.assertIn("Retained checkpoint:", contents)
+        self.assertIn('CHECKPOINT_KEEP="$(TRAIN_200M_CHECKPOINT_KEEP)"', contents)
 
     def test_train_target_wires_best_validation_checkpointing(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"

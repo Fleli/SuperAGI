@@ -60,6 +60,70 @@ class StreamingShardTests(unittest.TestCase):
             self.assertTrue(train_shard_paths_exist)
             self.assertEqual(raw_text_files, [])
 
+    def test_build_publishes_manifest_after_each_completed_shard(self) -> None:
+        examples = [
+            {"text": "machine learning systems learn useful patterns"},
+            {"text": "deep learning models use attention mechanisms"},
+            {"text": "optimization adjusts parameters during training"},
+            {"text": "validation loss estimates generalization"},
+        ]
+        published_manifest_counts = []
+
+        def record_manifest(manifest_path: Path) -> None:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            validation_tokens = torch.load(manifest_path.parents[1] / "val_tokens.pt")
+            published_manifest_counts.append(len(manifest["shards"]))
+            self.assertEqual(len(validation_tokens), 4)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            processed_dir = Path(tmp_dir) / "processed"
+            build_token_shards_from_stream(
+                examples_factory=lambda: iter(examples),
+                processed_dir=processed_dir,
+                max_documents=4,
+                tokenizer_sample_documents=2,
+                shard_token_count=8,
+                validation_token_count=4,
+                bpe_vocab_size=300,
+                bpe_min_frequency=1,
+                shard_published_callback=record_manifest,
+            )
+
+        self.assertGreaterEqual(len(published_manifest_counts), 2)
+        self.assertEqual(published_manifest_counts[0], 1)
+        self.assertEqual(published_manifest_counts, sorted(published_manifest_counts))
+
+    def test_build_stops_after_target_train_tokens_are_published(self) -> None:
+        examples = [
+            {"text": "machine learning systems learn useful patterns " * 5},
+            {"text": "deep learning models use attention mechanisms " * 5},
+            {"text": "optimization adjusts parameters during training " * 5},
+            {"text": "validation loss estimates generalization " * 5},
+            {"text": "this document should not be needed for the target " * 5},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            processed_dir = Path(tmp_dir) / "processed"
+            result = build_token_shards_from_stream(
+                examples_factory=lambda: iter(examples),
+                processed_dir=processed_dir,
+                max_documents=5,
+                tokenizer_sample_documents=2,
+                shard_token_count=8,
+                validation_token_count=4,
+                target_train_tokens=16,
+                bpe_vocab_size=300,
+                bpe_min_frequency=1,
+            )
+
+            manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+
+        self.assertGreaterEqual(result.train_tokens, 16)
+        self.assertEqual(result.train_tokens % 8, 0)
+        self.assertLess(result.documents_tokenized, len(examples))
+        self.assertEqual(manifest["target_train_tokens"], 16)
+        self.assertEqual(manifest["train_tokens"], result.train_tokens)
+
     def test_token_shard_dataset_samples_shifted_windows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
