@@ -6,6 +6,7 @@ from superagi.ingestion.tokenizer import (
     SPECIAL_TOKENS,
     BpeTokenizer,
     CharTokenizer,
+    normalize_tokenizer_payload,
 )
 
 
@@ -72,6 +73,30 @@ class BpeTokenizerTests(unittest.TestCase):
         self.assertEqual(len(encoded.ids), len(encoded.offsets))
         self.assertEqual(encoded.offsets[0][0], 0)
         self.assertEqual(encoded.offsets[-1][1], len("AGI: I am a model."))
+
+    def test_normalized_bpe_payload_preserves_corpus_provenance(self) -> None:
+        tokenizer = BpeTokenizer.from_text(
+            "machine learning systems",
+            vocab_size=300,
+            min_frequency=1,
+        )
+        payload = {
+            **tokenizer.to_payload(),
+            "source": "mixed",
+            "sources": ["fineweb", "wikipedia"],
+            "source_specs": [{"name": "fineweb", "dataset": "HuggingFaceFW/fineweb"}],
+            "target_train_tokens": 20_000,
+            "train_shard_manifest": "data/processed/train_shards/manifest.json",
+            "documents_tokenized": 100,
+        }
+
+        normalized = normalize_tokenizer_payload(payload)
+
+        self.assertEqual(normalized["source"], "mixed")
+        self.assertEqual(normalized["sources"], ["fineweb", "wikipedia"])
+        self.assertEqual(normalized["source_specs"][0]["name"], "fineweb")
+        self.assertEqual(normalized["target_train_tokens"], 20_000)
+        self.assertEqual(normalized["documents_tokenized"], 100)
 
 
 if __name__ == "__main__":

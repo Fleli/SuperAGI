@@ -235,7 +235,17 @@ def tokenizer_from_payload(payload: dict[str, Any]) -> TokenizerLike:
 
 def normalize_tokenizer_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = tokenizer_from_payload(payload).to_payload()
-    for key in ("source_paths", "train_tokens", "validation_tokens"):
+    for key in (
+        "source",
+        "sources",
+        "source_specs",
+        "source_paths",
+        "train_tokens",
+        "validation_tokens",
+        "target_train_tokens",
+        "train_shard_manifest",
+        "documents_tokenized",
+    ):
         if key in payload:
             normalized[key] = payload[key]
     return normalized

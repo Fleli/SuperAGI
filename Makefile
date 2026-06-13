@@ -29,6 +29,8 @@ STREAM_TOKENIZER_SAMPLE := 1000
 STREAM_SHARD_TOKENS := 1000000
 STREAM_VALIDATION_TOKENS := 200000
 STREAM_TARGET_TOKENS := 0
+SOURCES := fineweb,wikipedia,dolma,openwebmath,arxiv,pmc,stackexchange,gutenberg
+STREAM_MAX_DOCUMENTS_PER_SOURCE := 10000
 
 TRAIN_4090_RAW_DIR := data/raw/c4-4090-night
 TRAIN_4090_C4_MAX := 150000
@@ -88,6 +90,8 @@ TRAIN_H100_STREAM_C4_MIN_CHARS := 1000
 TRAIN_H100_STREAM_TOKENIZER_SAMPLE := 50000
 TRAIN_H100_STREAM_SHARD_TOKENS := 10000000
 TRAIN_H100_STREAM_VALIDATION_TOKENS := 5000000
+TRAIN_H100_SOURCES := fineweb,wikipedia,dolma,openwebmath,arxiv,pmc,stackexchange,gutenberg
+TRAIN_H100_STREAM_MAX_DOCUMENTS_PER_SOURCE := 6250000
 TRAIN_H100_BPE_VOCAB_SIZE := 32000
 TRAIN_H100_BPE_MIN_FREQUENCY := 2
 TRAIN_H100_CORPUS_TARGET_TOKENS := 20000000000
@@ -222,7 +226,7 @@ SFT_STYLE_WEIGHT_DECAY := 0.01
 SFT_STYLE_CHECKPOINT_INTERVAL := 200
 SFT_STAGED_OUT := $(SFT_STYLE_OUT)
 
-.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 train sft-import-public sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged params train-export-run train-4090 train-200m train-h100 std-train export-model generate run-model chat smoke-train clean-generated
+.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 ingest-stream-sources train sft-import-public sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged params train-export-run train-4090 train-200m train-h100 std-train export-model generate run-model chat smoke-train clean-generated
 
 help:
 	@echo "SuperAGI pipeline targets"
@@ -242,6 +246,7 @@ help:
 	@echo "  make ingest TOKENIZER=bpe BPE_VOCAB_SIZE=8000 BPE_MIN_FREQUENCY=2"
 	@echo "  make ingest TOKENIZER=char"
 	@echo "  make ingest-stream-c4  Stream C4 directly into token shards"
+	@echo "  make ingest-stream-sources SOURCES=\"fineweb,wikipedia,openwebmath\""
 	@echo "  make params            Count params using data/processed vocab"
 	@echo "  make train STEPS=100 BATCH=16 GRAD_ACCUM_STEPS=4 ACTIVATION_CHECKPOINTING=1 DROPOUT=0.05 SHARD_REFRESH_INTERVAL=500 LR=3e-4 LR_MIN=3e-5 LR_WARMUP_STEPS=100 MIXED_PRECISION=bfloat16 PARAMETER_DTYPE=float32 FUSED_ADAMW=auto COMPILE_MODEL=1"
 	@echo "  make train RESUME=data/checkpoints/latest.pt STEPS=1000 CHECKPOINT_INTERVAL=1000"
@@ -360,6 +365,33 @@ ingest-stream-c4: setup data-dirs
 	| $(PYTHON)
 	@printf '==> [ingest-stream-c4] Finished streaming C4 into token shards\n'
 
+ingest-stream-sources: setup data-dirs
+	@printf '==> [ingest-stream-sources] Streaming mixed sources into token shards\n'
+	@printf '%s\n' \
+		'from superagi.ingestion.sources import build_multi_source_token_shards' \
+		'' \
+		'result = build_multi_source_token_shards(' \
+		'    processed_dir="$(PROCESSED_DIR)",' \
+		'    sources="$(SOURCES)",' \
+		'    max_documents_per_source=int("$(STREAM_MAX_DOCUMENTS_PER_SOURCE)"),' \
+		'    tokenizer_sample_documents=int("$(STREAM_TOKENIZER_SAMPLE)"),' \
+		'    shard_token_count=int("$(STREAM_SHARD_TOKENS)"),' \
+		'    validation_token_count=int("$(STREAM_VALIDATION_TOKENS)"),' \
+		'    target_train_tokens=int("$(STREAM_TARGET_TOKENS)") or None,' \
+		'    min_chars=int("$(STREAM_C4_MIN_CHARS)"),' \
+		'    bpe_vocab_size=int("$(BPE_VOCAB_SIZE)"),' \
+		'    bpe_min_frequency=int("$(BPE_MIN_FREQUENCY)"),' \
+		')' \
+		'print(f"Tokenized {result.train_tokens} train tokens into {len(result.train_shard_paths)} shards")' \
+		'print(f"Validation tokens: {result.validation_tokens}")' \
+		'print(f"Target train tokens: {result.target_train_tokens}")' \
+		'print(f"Documents tokenized: {result.documents_tokenized}")' \
+		'print(f"Vocab size: {result.tokenizer.vocab_size}")' \
+		'print(f"Manifest: {result.manifest_path}")' \
+		'print(f"Vocab: {result.vocab_path}")' \
+	| $(PYTHON)
+	@printf '==> [ingest-stream-sources] Finished streaming mixed sources into token shards\n'
+
 params: setup
 	@printf '%s\n' \
 		'import json' \
@@ -406,7 +438,7 @@ train: setup data-dirs
 		'vocab_path = Path("$(PROCESSED_DIR)") / "$(ARTIFACT)_vocab.json"' \
 		'val_token_path = Path("$(VAL_TOKENS)")' \
 		'if not vocab_path.exists():' \
-		'    raise SystemExit("Missing vocab artifact. Run `make ingest` or `make ingest-stream-c4` first.")' \
+		'    raise SystemExit("Missing vocab artifact. Run `make ingest`, `make ingest-stream-c4`, or `make ingest-stream-sources` first.")' \
 		'' \
 		'if token_path.exists():' \
 		'    token_ids = torch.load(token_path)' \
@@ -414,7 +446,7 @@ train: setup data-dirs
 		'    token_ids = TokenShardDataset.from_manifest(shard_manifest_path)' \
 		'    print(f"Training shards: {token_ids.shard_count} shards, {token_ids.total_tokens} tokens")' \
 		'else:' \
-		'    raise SystemExit("Missing train tokens. Run `make ingest` or `make ingest-stream-c4` first. Expected train_tokens.pt or train_shards/manifest.json.")' \
+		'    raise SystemExit("Missing train tokens. Run `make ingest`, `make ingest-stream-c4`, or `make ingest-stream-sources` first. Expected train_tokens.pt or train_shards/manifest.json.")' \
 		'validation_token_ids = None' \
 		'if val_token_path.exists():' \
 		'    validation_token_ids = torch.load(val_token_path)' \
@@ -795,12 +827,14 @@ train-h100:
 	$(MAKE) clean-generated
 	@set -e; \
 	manifest_path="$(PROCESSED_DIR)/train_shards/manifest.json"; \
-	printf '==> [train-h100] Starting background C4 streaming/tokenization\n'; \
-	$(MAKE) ingest-stream-c4 \
-		STREAM_C4_MAX="$(TRAIN_H100_STREAM_C4_MAX)" \
-		STREAM_C4_MIN_CHARS="$(TRAIN_H100_STREAM_C4_MIN_CHARS)" \
-		STREAM_TOKENIZER_SAMPLE="$(TRAIN_H100_STREAM_TOKENIZER_SAMPLE)" \
-		STREAM_SHARD_TOKENS="$(TRAIN_H100_STREAM_SHARD_TOKENS)" \
+		printf '==> [train-h100] Starting background mixed-source streaming/tokenization\n'; \
+		$(MAKE) ingest-stream-sources \
+			SOURCES="$(TRAIN_H100_SOURCES)" \
+			STREAM_MAX_DOCUMENTS_PER_SOURCE="$(TRAIN_H100_STREAM_MAX_DOCUMENTS_PER_SOURCE)" \
+			STREAM_C4_MAX="$(TRAIN_H100_STREAM_C4_MAX)" \
+			STREAM_C4_MIN_CHARS="$(TRAIN_H100_STREAM_C4_MIN_CHARS)" \
+			STREAM_TOKENIZER_SAMPLE="$(TRAIN_H100_STREAM_TOKENIZER_SAMPLE)" \
+			STREAM_SHARD_TOKENS="$(TRAIN_H100_STREAM_SHARD_TOKENS)" \
 		STREAM_VALIDATION_TOKENS="$(TRAIN_H100_STREAM_VALIDATION_TOKENS)" \
 		STREAM_TARGET_TOKENS="$(TRAIN_H100_CORPUS_TARGET_TOKENS)" \
 		BPE_VOCAB_SIZE="$(TRAIN_H100_BPE_VOCAB_SIZE)" \

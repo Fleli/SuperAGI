@@ -345,6 +345,7 @@ class MakefileTests(unittest.TestCase):
         contents = makefile.read_text(encoding="utf-8")
 
         self.assertIn("train-h100", contents)
+        self.assertIn("TRAIN_H100_SOURCES :=", contents)
         self.assertIn("TRAIN_H100_CORPUS_TARGET_TOKENS := 20000000000", contents)
         self.assertIn("TRAIN_H100_START_TOKENS :=", contents)
         self.assertIn("TRAIN_H100_STREAM_SHARD_TOKENS :=", contents)
@@ -352,12 +353,24 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("TRAIN_H100_MIXED_PRECISION := bfloat16", contents)
         self.assertIn("TRAIN_H100_SHARD_REFRESH_INTERVAL :=", contents)
         self.assertIn("$(MAKE) setup", contents)
-        self.assertIn("$(MAKE) ingest-stream-c4", contents)
+        self.assertIn("$(MAKE) ingest-stream-sources", contents)
+        self.assertIn('SOURCES="$(TRAIN_H100_SOURCES)"', contents)
         self.assertIn('STREAM_TARGET_TOKENS="$(TRAIN_H100_CORPUS_TARGET_TOKENS)"', contents)
         self.assertIn("ingest_pid=$$!", contents)
         self.assertIn("Waiting for", contents)
         self.assertIn("TRAIN_H100_TOTAL_TRAINING_TOKENS", contents)
         self.assertIn('SHARD_REFRESH_INTERVAL="$(TRAIN_H100_SHARD_REFRESH_INTERVAL)"', contents)
+
+    def test_ingest_stream_sources_target_wires_multiple_corpus_sources(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("ingest-stream-sources", contents)
+        self.assertIn("SOURCES := fineweb,wikipedia,dolma,openwebmath,arxiv,pmc,stackexchange,gutenberg", contents)
+        self.assertIn("STREAM_MAX_DOCUMENTS_PER_SOURCE :=", contents)
+        self.assertIn("build_multi_source_token_shards", contents)
+        self.assertIn('sources="$(SOURCES)"', contents)
+        self.assertIn('max_documents_per_source=int("$(STREAM_MAX_DOCUMENTS_PER_SOURCE)")', contents)
         self.assertIn('MIXED_PRECISION="$(TRAIN_H100_MIXED_PRECISION)"', contents)
 
     def test_train_target_wires_periodic_checkpointing(self) -> None:
