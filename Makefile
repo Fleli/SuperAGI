@@ -34,8 +34,11 @@ TRAIN_4090_C4_MAX := 150000
 TRAIN_4090_C4_MIN_CHARS := 1000
 TRAIN_4090_STEPS := 120000
 TRAIN_4090_BATCH := 16
+TRAIN_4090_GRAD_ACCUM_STEPS := 1
+TRAIN_4090_ACTIVATION_CHECKPOINTING := 0
 TRAIN_4090_DEVICE := cuda
 TRAIN_4090_MIXED_PRECISION := auto
+TRAIN_4090_PARAMETER_DTYPE := float32
 TRAIN_4090_EVAL_INTERVAL := 1000
 TRAIN_4090_VAL_BATCHES := 20
 TRAIN_4090_CHECKPOINT_INTERVAL := 1000
@@ -53,8 +56,11 @@ TRAIN_200M_BPE_VOCAB_SIZE := 8000
 TRAIN_200M_BPE_MIN_FREQUENCY := 2
 TRAIN_200M_STEPS := 300000
 TRAIN_200M_BATCH := 8
+TRAIN_200M_GRAD_ACCUM_STEPS := 1
+TRAIN_200M_ACTIVATION_CHECKPOINTING := 0
 TRAIN_200M_DEVICE := cuda
 TRAIN_200M_MIXED_PRECISION := auto
+TRAIN_200M_PARAMETER_DTYPE := float32
 TRAIN_200M_LR := 3e-4
 TRAIN_200M_LR_MIN := 3e-5
 TRAIN_200M_LR_WARMUP_STEPS := 3000
@@ -67,10 +73,13 @@ TRAIN_200M_TEMPERATURE := 0.7
 TRAIN_200M_TOP_K := 30
 
 BATCH := 32
+GRAD_ACCUM_STEPS := 1
+ACTIVATION_CHECKPOINTING := 0
 LR := 3e-4
 LR_MIN := 3e-5
 LR_WARMUP_STEPS := 100
 MIXED_PRECISION := auto
+PARAMETER_DTYPE := float32
 STEPS := 1000
 DEVICE := auto
 PROMPT := The
@@ -185,7 +194,7 @@ help:
 	@echo "  make ingest TOKENIZER=char"
 	@echo "  make ingest-stream-c4  Stream C4 directly into token shards"
 	@echo "  make params            Count params using data/processed vocab"
-	@echo "  make train STEPS=100 BATCH=16 LR=3e-4 LR_MIN=3e-5 LR_WARMUP_STEPS=100 MIXED_PRECISION=auto"
+	@echo "  make train STEPS=100 BATCH=16 GRAD_ACCUM_STEPS=4 ACTIVATION_CHECKPOINTING=1 LR=3e-4 LR_MIN=3e-5 LR_WARMUP_STEPS=100 MIXED_PRECISION=bfloat16 PARAMETER_DTYPE=float32"
 	@echo "  make train RESUME=data/checkpoints/latest.pt STEPS=1000 CHECKPOINT_INTERVAL=1000"
 	@echo "  make train-export-run RESUME=data/checkpoints/latest.pt STEPS=1000 PROMPT=\"Attention is\""
 	@echo "  make sft-import-public SFT_IMPORT_CHECKPOINT=./best-200m-current.pt"
@@ -320,7 +329,7 @@ train: setup data-dirs
 	@printf '==> [train] Training model\n'
 	@printf '%s\n' \
 		'import json' \
-		'from dataclasses import asdict' \
+		'from dataclasses import asdict, replace' \
 		'from pathlib import Path' \
 		'' \
 		'import torch' \
@@ -360,8 +369,10 @@ train: setup data-dirs
 		'    print(f"Validation tokens: {len(validation_token_ids)}")' \
 		'else:' \
 		'    print("Validation tokens: not found; validation_loss will be null")' \
+		'activation_checkpointing = "$(ACTIVATION_CHECKPOINTING)".lower() in {"1", "true", "yes", "on"}' \
 		'vocab = json.loads(vocab_path.read_text(encoding="utf-8"))' \
 		'model_config = load_project_config().to_transformer_config(vocab_size=int(vocab["vocab_size"]))' \
+		'model_config = replace(model_config, activation_checkpointing=activation_checkpointing)' \
 		'training_state = prepare_model_for_training(' \
 		'    vocab=vocab,' \
 		'    config=model_config,' \
@@ -392,10 +403,15 @@ train: setup data-dirs
 		'            "artifact": "$(ARTIFACT)",' \
 		'            "steps": total_losses,' \
 		'            "last_run_steps": int("$(STEPS)"),' \
+		'            "batch_size": int("$(BATCH)"),' \
+		'            "grad_accum_steps": int("$(GRAD_ACCUM_STEPS)"),' \
+		'            "effective_batch_size": int("$(BATCH)") * int("$(GRAD_ACCUM_STEPS)"),' \
+		'            "activation_checkpointing": activation_checkpointing,' \
 		'            "learning_rate": float("$(LR)"),' \
 		'            "min_learning_rate": float("$(LR_MIN)"),' \
 		'            "warmup_steps": int("$(LR_WARMUP_STEPS)"),' \
 		'            "mixed_precision": "$(MIXED_PRECISION)",' \
+		'            "parameter_dtype": "$(PARAMETER_DTYPE)",' \
 		'            "eval_interval": int("$(EVAL_INTERVAL)"),' \
 		'            "validation_batches": int("$(VAL_BATCHES)"),' \
 		'            "checkpoint_interval": checkpoint_interval,' \
@@ -451,10 +467,12 @@ train: setup data-dirs
 		'    token_ids=token_ids,' \
 		'    config=TrainConfig(' \
 		'        batch_size=int("$(BATCH)"),' \
+		'        grad_accum_steps=int("$(GRAD_ACCUM_STEPS)"),' \
 		'        learning_rate=float("$(LR)"),' \
 		'        min_learning_rate=float("$(LR_MIN)"),' \
 		'        warmup_steps=int("$(LR_WARMUP_STEPS)"),' \
 		'        mixed_precision="$(MIXED_PRECISION)",' \
+		'        parameter_dtype="$(PARAMETER_DTYPE)",' \
 		'        max_steps=int("$(STEPS)"),' \
 		'    ),' \
 		'    device=choose_device(),' \
@@ -637,8 +655,11 @@ train-4090:
 		RESUME= \
 		STEPS="$(TRAIN_4090_STEPS)" \
 		BATCH="$(TRAIN_4090_BATCH)" \
+		GRAD_ACCUM_STEPS="$(TRAIN_4090_GRAD_ACCUM_STEPS)" \
+		ACTIVATION_CHECKPOINTING="$(TRAIN_4090_ACTIVATION_CHECKPOINTING)" \
 		DEVICE="$(TRAIN_4090_DEVICE)" \
 		MIXED_PRECISION="$(TRAIN_4090_MIXED_PRECISION)" \
+		PARAMETER_DTYPE="$(TRAIN_4090_PARAMETER_DTYPE)" \
 		EVAL_INTERVAL="$(TRAIN_4090_EVAL_INTERVAL)" \
 		VAL_BATCHES="$(TRAIN_4090_VAL_BATCHES)" \
 		CHECKPOINT_INTERVAL="$(TRAIN_4090_CHECKPOINT_INTERVAL)" \
@@ -666,8 +687,11 @@ train-200m:
 		RESUME= \
 		STEPS="$(TRAIN_200M_STEPS)" \
 		BATCH="$(TRAIN_200M_BATCH)" \
+		GRAD_ACCUM_STEPS="$(TRAIN_200M_GRAD_ACCUM_STEPS)" \
+		ACTIVATION_CHECKPOINTING="$(TRAIN_200M_ACTIVATION_CHECKPOINTING)" \
 		DEVICE="$(TRAIN_200M_DEVICE)" \
 		MIXED_PRECISION="$(TRAIN_200M_MIXED_PRECISION)" \
+		PARAMETER_DTYPE="$(TRAIN_200M_PARAMETER_DTYPE)" \
 		LR="$(TRAIN_200M_LR)" \
 		LR_MIN="$(TRAIN_200M_LR_MIN)" \
 		LR_WARMUP_STEPS="$(TRAIN_200M_LR_WARMUP_STEPS)" \

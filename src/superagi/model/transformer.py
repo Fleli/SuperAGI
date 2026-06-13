@@ -7,6 +7,7 @@ from typing import Callable
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 
 from superagi.model.embedding import TokenAndPositionEmbedding
 from superagi.model.inference.attend import CausalSelfAttention
@@ -24,6 +25,7 @@ class TransformerConfig:
     dropout: float = 0.0
     init_std: float = 0.02
     scale_residual_projections: bool = True
+    activation_checkpointing: bool = False
 
     def __post_init__(self) -> None:
         if self.vocab_size <= 0:
@@ -130,7 +132,10 @@ class TransformerLM(nn.Module):
 
         x = self.embeddings(input_ids)
         for block in self.blocks:
-            x = block(x)
+            if self.config.activation_checkpointing and self.training:
+                x = checkpoint(block, x, use_reentrant=False)
+            else:
+                x = block(x)
         x = self.ln_final(x)
         logits = self.output_projection(x)
 

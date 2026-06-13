@@ -19,6 +19,7 @@ from superagi.training.train import (
     train_model_with_metrics,
     train_step,
     _estimate_remaining_seconds,
+    _resolve_parameter_dtype,
 )
 
 
@@ -146,6 +147,106 @@ class TrainingTests(unittest.TestCase):
 
         self.assertEqual(len(losses), 3)
         self.assertTrue(all(loss > 0.0 for loss in losses))
+
+    def test_train_model_casts_parameters_to_requested_dtype(self) -> None:
+        model = TransformerLM(
+            TransformerConfig(
+                vocab_size=6,
+                context_length=4,
+                dim_embedding=8,
+                n_layers=1,
+                n_heads=2,
+                dropout=0.0,
+            )
+        )
+
+        train_model(
+            model,
+            token_ids=[0, 1, 2, 3, 4, 5, 0],
+            config=TrainConfig(
+                batch_size=2,
+                learning_rate=1e-2,
+                max_steps=0,
+                parameter_dtype="bfloat16",
+            ),
+        )
+
+        self.assertEqual(model.embeddings.token_embedding.weight.dtype, torch.bfloat16)
+        self.assertEqual(model.blocks[0].attention.q_proj.weight.dtype, torch.bfloat16)
+
+    def test_train_config_rejects_unknown_parameter_dtype(self) -> None:
+        with self.assertRaisesRegex(ValueError, "parameter_dtype"):
+            TrainConfig(parameter_dtype="float64")
+
+    def test_resolve_parameter_dtype_supports_float32_and_bfloat16(self) -> None:
+        device = torch.device("cpu")
+
+        self.assertEqual(_resolve_parameter_dtype("float32", device), torch.float32)
+        self.assertEqual(_resolve_parameter_dtype("bfloat16", device), torch.bfloat16)
+
+    def test_train_model_accumulates_microbatches_before_optimizer_step(self) -> None:
+        torch.manual_seed(0)
+        model = TransformerLM(
+            TransformerConfig(
+                vocab_size=6,
+                context_length=4,
+                dim_embedding=8,
+                n_layers=1,
+                n_heads=2,
+                dropout=0.0,
+            )
+        )
+        optimizer_steps = []
+        zero_grad_calls = []
+        sample_calls = []
+        original_sample_next_token_batch = sample_next_token_batch
+
+        class CountingAdamW(torch.optim.SGD):
+            def __init__(self, params, lr, weight_decay):
+                super().__init__(params, lr=lr, weight_decay=weight_decay)
+
+            def step(self, closure=None):
+                optimizer_steps.append(1)
+                return super().step(closure)
+
+            def zero_grad(self, set_to_none=True):
+                zero_grad_calls.append(1)
+                return super().zero_grad(set_to_none=set_to_none)
+
+        def count_sample_call(**kwargs):
+            sample_calls.append(1)
+            return original_sample_next_token_batch(**kwargs)
+
+        with (
+            mock.patch("superagi.training.train.torch.optim.AdamW", CountingAdamW),
+            mock.patch(
+                "superagi.training.train.sample_next_token_batch",
+                side_effect=count_sample_call,
+            ),
+            redirect_stdout(StringIO()),
+        ):
+            losses, metrics = train_model_with_metrics(
+                model,
+                token_ids=[0, 1, 2, 3, 4, 5, 0, 1, 2],
+                config=TrainConfig(
+                    batch_size=2,
+                    learning_rate=1e-2,
+                    max_steps=3,
+                    grad_accum_steps=2,
+                ),
+                eval_interval=1,
+            )
+
+        self.assertEqual(len(losses), 3)
+        self.assertEqual([metric.step for metric in metrics], [1, 2, 3])
+        self.assertEqual(len(sample_calls), 6)
+        self.assertEqual(len(zero_grad_calls), 3)
+        self.assertEqual(len(optimizer_steps), 3)
+        self.assertTrue(all(loss > 0.0 for loss in losses))
+
+    def test_train_config_requires_positive_gradient_accumulation_steps(self) -> None:
+        with self.assertRaisesRegex(ValueError, "grad_accum_steps must be positive"):
+            TrainConfig(grad_accum_steps=0)
 
     def test_learning_rate_schedule_warms_up_then_cosine_decays(self) -> None:
         config = TrainConfig(

@@ -58,6 +58,58 @@ class TransformerLMTests(unittest.TestCase):
         self.assertEqual(loss.shape, ())
         self.assertTrue(torch.isfinite(loss))
 
+    def test_forward_checkpoints_transformer_blocks_during_training_when_enabled(self) -> None:
+        config = TransformerConfig(
+            vocab_size=11,
+            context_length=8,
+            dim_embedding=16,
+            n_layers=2,
+            n_heads=4,
+            dropout=0.0,
+            activation_checkpointing=True,
+        )
+        model = TransformerLM(config)
+        model.train()
+        input_ids = torch.tensor([[1, 2, 3, 4]])
+        target_ids = torch.tensor([[2, 3, 4, 5]])
+        checkpoint_calls = []
+
+        def fake_checkpoint(function, x, **kwargs):
+            checkpoint_calls.append(kwargs)
+            return function(x)
+
+        with mock.patch(
+            "superagi.model.transformer.checkpoint",
+            side_effect=fake_checkpoint,
+        ):
+            logits, loss = model(input_ids, target_ids)
+
+        self.assertEqual(logits.shape, (1, 4, 11))
+        self.assertIsNotNone(loss)
+        self.assertEqual(len(checkpoint_calls), config.n_layers)
+        self.assertTrue(all(call == {"use_reentrant": False} for call in checkpoint_calls))
+
+    def test_forward_skips_activation_checkpointing_during_eval(self) -> None:
+        config = TransformerConfig(
+            vocab_size=11,
+            context_length=8,
+            dim_embedding=16,
+            n_layers=2,
+            n_heads=4,
+            dropout=0.0,
+            activation_checkpointing=True,
+        )
+        model = TransformerLM(config)
+        model.eval()
+        input_ids = torch.tensor([[1, 2, 3, 4]])
+
+        with mock.patch("superagi.model.transformer.checkpoint") as checkpoint_mock:
+            logits, loss = model(input_ids)
+
+        self.assertEqual(logits.shape, (1, 4, 11))
+        self.assertIsNone(loss)
+        checkpoint_mock.assert_not_called()
+
     def test_parameters_are_registered_recursively(self) -> None:
         config = TransformerConfig(
             vocab_size=7,

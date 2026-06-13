@@ -236,6 +236,39 @@ class MakefileTests(unittest.TestCase):
         self.assertIn('"mixed_precision": "$(MIXED_PRECISION)"', contents)
         self.assertIn('MIXED_PRECISION="$(TRAIN_4090_MIXED_PRECISION)"', contents)
 
+    def test_train_target_wires_parameter_dtype(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("PARAMETER_DTYPE := float32", contents)
+        self.assertIn("TRAIN_200M_PARAMETER_DTYPE :=", contents)
+        self.assertIn('parameter_dtype="$(PARAMETER_DTYPE)"', contents)
+        self.assertIn('"parameter_dtype": "$(PARAMETER_DTYPE)"', contents)
+        self.assertIn('PARAMETER_DTYPE="$(TRAIN_200M_PARAMETER_DTYPE)"', contents)
+
+    def test_train_target_wires_gradient_accumulation(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("GRAD_ACCUM_STEPS := 1", contents)
+        self.assertIn("TRAIN_200M_GRAD_ACCUM_STEPS :=", contents)
+        self.assertIn('grad_accum_steps=int("$(GRAD_ACCUM_STEPS)")', contents)
+        self.assertIn('"grad_accum_steps": int("$(GRAD_ACCUM_STEPS)")', contents)
+        self.assertIn('GRAD_ACCUM_STEPS="$(TRAIN_200M_GRAD_ACCUM_STEPS)"', contents)
+
+    def test_train_target_wires_activation_checkpointing(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("ACTIVATION_CHECKPOINTING := 0", contents)
+        self.assertIn("TRAIN_200M_ACTIVATION_CHECKPOINTING :=", contents)
+        self.assertIn('activation_checkpointing=activation_checkpointing', contents)
+        self.assertIn('"activation_checkpointing": activation_checkpointing', contents)
+        self.assertIn(
+            'ACTIVATION_CHECKPOINTING="$(TRAIN_200M_ACTIVATION_CHECKPOINTING)"',
+            contents,
+        )
+
     def test_ingest_defaults_to_bpe_tokenization(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
         contents = makefile.read_text(encoding="utf-8")

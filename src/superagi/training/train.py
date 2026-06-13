@@ -5,7 +5,7 @@ import math
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Iterable, Sequence
 
 import torch
 from torch import nn
@@ -125,6 +125,7 @@ class TokenShardDataset:
 @dataclass(frozen=True)
 class TrainConfig:
     batch_size: int = 32
+    grad_accum_steps: int = 1
     learning_rate: float = 3e-4
     min_learning_rate: float = 0.0
     warmup_steps: int = 0
@@ -133,10 +134,13 @@ class TrainConfig:
     grad_clip: float | None = 1.0
     shuffle: bool = True
     mixed_precision: str = "none"
+    parameter_dtype: str = "float32"
 
     def __post_init__(self) -> None:
         if self.batch_size <= 0:
             raise ValueError("batch_size must be positive")
+        if self.grad_accum_steps <= 0:
+            raise ValueError("grad_accum_steps must be positive")
         if self.learning_rate <= 0:
             raise ValueError("learning_rate must be positive")
         if self.min_learning_rate < 0:
@@ -153,6 +157,8 @@ class TrainConfig:
             raise ValueError("grad_clip must be positive when set")
         if self.mixed_precision not in {"none", "auto", "float16", "bfloat16"}:
             raise ValueError("mixed_precision must be one of: none, auto, float16, bfloat16")
+        if self.parameter_dtype not in {"float32", "bfloat16"}:
+            raise ValueError("parameter_dtype must be one of: float32, bfloat16")
 
 
 @dataclass(frozen=True)
@@ -173,30 +179,70 @@ def train_step(
     mixed_precision_dtype: torch.dtype | None = None,
     grad_scaler: torch.amp.GradScaler | None = None,
 ) -> float:
+    return train_accumulated_step(
+        model=model,
+        optimizer=optimizer,
+        batches=[(input_ids, target_ids)],
+        grad_clip=grad_clip,
+        mixed_precision_dtype=mixed_precision_dtype,
+        grad_scaler=grad_scaler,
+    )
+
+
+def train_accumulated_step(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    batches: Iterable[tuple[torch.Tensor, torch.Tensor]],
+    microbatch_count: int | None = None,
+    grad_clip: float | None = 1.0,
+    mixed_precision_dtype: torch.dtype | None = None,
+    grad_scaler: torch.amp.GradScaler | None = None,
+) -> float:
+    if microbatch_count is None:
+        if not isinstance(batches, Sequence):
+            raise ValueError("microbatch_count is required for non-sequence batches")
+        microbatch_count = len(batches)
+    if microbatch_count <= 0:
+        raise ValueError("at least one microbatch is required")
+
     model.train()
     optimizer.zero_grad(set_to_none=True)
-    with torch.amp.autocast(
-        device_type=input_ids.device.type,
-        dtype=mixed_precision_dtype,
-        enabled=mixed_precision_dtype is not None,
-    ):
-        _, loss = model(input_ids, target_ids)
-    if loss is None:
-        raise RuntimeError("model did not return a loss")
+    total_loss = 0.0
+    observed_batches = 0
+    loss_scale = 1.0 / microbatch_count
+
+    for input_ids, target_ids in batches:
+        observed_batches += 1
+        with torch.amp.autocast(
+            device_type=input_ids.device.type,
+            dtype=mixed_precision_dtype,
+            enabled=mixed_precision_dtype is not None,
+        ):
+            _, loss = model(input_ids, target_ids)
+        if loss is None:
+            raise RuntimeError("model did not return a loss")
+
+        total_loss += float(loss.detach().item())
+        scaled_loss = loss * loss_scale
+        if grad_scaler is not None and grad_scaler.is_enabled():
+            grad_scaler.scale(scaled_loss).backward()
+        else:
+            scaled_loss.backward()
+
+    if observed_batches != microbatch_count:
+        raise ValueError("microbatch_count did not match yielded batches")
 
     if grad_scaler is not None and grad_scaler.is_enabled():
-        grad_scaler.scale(loss).backward()
         if grad_clip is not None:
             grad_scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         grad_scaler.step(optimizer)
         grad_scaler.update()
     else:
-        loss.backward()
         if grad_clip is not None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
-    return float(loss.detach().item())
+    return total_loss / microbatch_count
 
 
 def sample_next_token_batch(
@@ -312,7 +358,8 @@ def train_model_with_metrics(
         raise ValueError("checkpoint_interval must be non-negative")
 
     device = torch.device(device)
-    model.to(device)
+    parameter_dtype = _resolve_parameter_dtype(config.parameter_dtype, device)
+    model.to(device=device, dtype=parameter_dtype)
     tokens = None if isinstance(token_ids, TokenShardDataset) else _tokens_to_device(token_ids, device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -331,25 +378,29 @@ def train_model_with_metrics(
     for step_index in range(1, config.max_steps + 1):
         current_learning_rate = learning_rate_for_step(config, step_index)
         _set_optimizer_learning_rate(optimizer, current_learning_rate)
-        if isinstance(token_ids, TokenShardDataset):
-            input_ids, target_ids = token_ids.sample_next_token_batch(
-                context_length=model.config.context_length,
-                batch_size=config.batch_size,
-                device=device,
-            )
-        else:
-            if tokens is None:
-                raise RuntimeError("tokens were not initialized")
-            input_ids, target_ids = sample_next_token_batch(
-                tokens=tokens,
-                context_length=model.config.context_length,
-                batch_size=config.batch_size,
-            )
-        train_loss = train_step(
+        def iter_microbatches() -> Iterable[tuple[torch.Tensor, torch.Tensor]]:
+            for _ in range(config.grad_accum_steps):
+                if isinstance(token_ids, TokenShardDataset):
+                    yield token_ids.sample_next_token_batch(
+                        context_length=model.config.context_length,
+                        batch_size=config.batch_size,
+                        device=device,
+                    )
+                    continue
+
+                if tokens is None:
+                    raise RuntimeError("tokens were not initialized")
+                yield sample_next_token_batch(
+                    tokens=tokens,
+                    context_length=model.config.context_length,
+                    batch_size=config.batch_size,
+                )
+
+        train_loss = train_accumulated_step(
             model=model,
             optimizer=optimizer,
-            input_ids=input_ids,
-            target_ids=target_ids,
+            batches=iter_microbatches(),
+            microbatch_count=config.grad_accum_steps,
             grad_clip=config.grad_clip,
             mixed_precision_dtype=mixed_precision_dtype,
             grad_scaler=grad_scaler,
@@ -486,6 +537,17 @@ def _resolve_mixed_precision_dtype(
     if mixed_precision == "bfloat16":
         return torch.bfloat16
     raise ValueError("mixed_precision must be one of: none, auto, float16, bfloat16")
+
+
+def _resolve_parameter_dtype(
+    parameter_dtype: str,
+    device: torch.device,
+) -> torch.dtype:
+    if parameter_dtype == "float32":
+        return torch.float32
+    if parameter_dtype == "bfloat16":
+        return torch.bfloat16
+    raise ValueError("parameter_dtype must be one of: float32, bfloat16")
 
 
 def _build_grad_scaler(
