@@ -363,6 +363,24 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("TRAIN_H100_TOTAL_TRAINING_TOKENS", contents)
         self.assertIn('SHARD_REFRESH_INTERVAL="$(TRAIN_H100_SHARD_REFRESH_INTERVAL)"', contents)
 
+    def test_train_300m_target_runs_weighted_mixed_source_pipeline(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("train-300m", contents)
+        self.assertIn("runpod-train-300m", contents)
+        self.assertIn("TRAIN_300M_SOURCES :=", contents)
+        self.assertIn("TRAIN_300M_SOURCE_WEIGHTS :=", contents)
+        self.assertIn("TRAIN_300M_BPE_VOCAB_SIZE := 16000", contents)
+        self.assertIn("TRAIN_300M_CORPUS_TARGET_TOKENS := 6000000000", contents)
+        self.assertIn("TRAIN_300M_START_TOKENS := 250000000", contents)
+        self.assertIn("TRAIN_300M_TOTAL_TRAINING_TOKENS := 6000000000", contents)
+        self.assertIn("$(MAKE) ingest-stream-sources", contents)
+        self.assertIn('SOURCES="$(TRAIN_300M_SOURCES)"', contents)
+        self.assertIn('SOURCE_WEIGHTS="$(TRAIN_300M_SOURCE_WEIGHTS)"', contents)
+        self.assertIn('STREAM_TARGET_TOKENS="$(TRAIN_300M_CORPUS_TARGET_TOKENS)"', contents)
+        self.assertIn('SHARD_REFRESH_INTERVAL="$(TRAIN_300M_SHARD_REFRESH_INTERVAL)"', contents)
+
     def test_ingest_stream_sources_target_wires_multiple_corpus_sources(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
         contents = makefile.read_text(encoding="utf-8")
@@ -372,7 +390,10 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("STREAM_MAX_DOCUMENTS_PER_SOURCE :=", contents)
         self.assertIn("build_multi_source_token_shards", contents)
         self.assertIn('sources="$(SOURCES)"', contents)
+        self.assertIn('source_weights="$(SOURCE_WEIGHTS)"', contents)
         self.assertIn('max_documents_per_source=int("$(STREAM_MAX_DOCUMENTS_PER_SOURCE)")', contents)
+        self.assertIn("Source documents:", contents)
+        self.assertIn("Source tokens:", contents)
         self.assertIn('MIXED_PRECISION="$(TRAIN_H100_MIXED_PRECISION)"', contents)
 
     def test_train_target_wires_periodic_checkpointing(self) -> None:

@@ -9,6 +9,7 @@ from superagi.ingestion.sources import (
     build_multi_source_token_shards,
     clean_source_example,
     iter_mixed_source_examples,
+    parse_source_weights,
     parse_source_names,
 )
 
@@ -141,6 +142,39 @@ class SourceIngestionTests(unittest.TestCase):
         self.assertEqual([example["source"] for example in examples], ["alpha", "beta", "alpha"])
         self.assertEqual([example["text"] for example in examples], ["alpha one", "beta one", "alpha two"])
 
+    def test_mixed_source_iterator_uses_source_weights(self) -> None:
+        specs = (
+            SourceSpec(name="alpha", dataset_name="unused-alpha", cleaner="generic"),
+            SourceSpec(name="beta", dataset_name="unused-beta", cleaner="generic"),
+        )
+        source_examples = {
+            "alpha": [{"text": f"alpha {index}"} for index in range(1, 5)],
+            "beta": [{"text": f"beta {index}"} for index in range(1, 5)],
+        }
+
+        examples = list(
+            iter_mixed_source_examples(
+                specs=specs,
+                max_documents_per_source=4,
+                source_examples=source_examples,
+                source_weights={"alpha": 2.0, "beta": 1.0},
+            )
+        )
+
+        self.assertEqual(
+            [example["source"] for example in examples[:6]],
+            ["alpha", "beta", "alpha", "alpha", "beta", "alpha"],
+        )
+
+    def test_parse_source_weights_accepts_source_weight_pairs(self) -> None:
+        weights = parse_source_weights("wikipedia=3, fineweb=0.5, default=1")
+
+        self.assertEqual(weights, {"wikipedia": 3.0, "fineweb": 0.5, "default": 1.0})
+
+    def test_parse_source_weights_rejects_negative_weights(self) -> None:
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            parse_source_weights("fineweb=-1")
+
     def test_build_multi_source_token_shards_records_source_metadata(self) -> None:
         specs = (
             SourceSpec(name="fineweb", dataset_name="unused", cleaner="generic"),
@@ -174,8 +208,45 @@ class SourceIngestionTests(unittest.TestCase):
 
         self.assertEqual(vocab["source"], "mixed")
         self.assertEqual(vocab["sources"], ["fineweb", "openwebmath"])
+        self.assertEqual(vocab["source_weights"], {})
+        self.assertEqual(vocab["source_documents"], {"fineweb": 2, "openwebmath": 2})
+        self.assertGreater(vocab["source_tokens"]["fineweb"], 0)
+        self.assertGreater(vocab["source_tokens"]["openwebmath"], 0)
         self.assertGreaterEqual(result.documents_tokenized, 2)
         self.assertGreater(result.train_tokens, 0)
+
+    def test_build_multi_source_token_shards_records_source_weights(self) -> None:
+        specs = (
+            SourceSpec(name="fineweb", dataset_name="unused", cleaner="generic"),
+            SourceSpec(name="wikipedia", dataset_name="unused", cleaner="generic"),
+        )
+        source_examples = {
+            "fineweb": [{"text": f"fineweb document {index}"} for index in range(1, 5)],
+            "wikipedia": [{"text": f"wikipedia document {index}"} for index in range(1, 5)],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            result = build_multi_source_token_shards(
+                processed_dir=Path(tmp_dir) / "processed",
+                specs=specs,
+                max_documents_per_source=4,
+                tokenizer_sample_documents=2,
+                shard_token_count=8,
+                validation_token_count=4,
+                target_train_tokens=16,
+                min_chars=1,
+                bpe_vocab_size=300,
+                bpe_min_frequency=1,
+                source_examples=source_examples,
+                source_weights={"wikipedia": 2.0, "fineweb": 0.5},
+            )
+            vocab = json.loads(result.vocab_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(vocab["source_weights"], {"fineweb": 0.5, "wikipedia": 2.0})
+        self.assertGreaterEqual(
+            vocab["source_documents"]["wikipedia"],
+            vocab["source_documents"]["fineweb"],
+        )
 
 
 if __name__ == "__main__":

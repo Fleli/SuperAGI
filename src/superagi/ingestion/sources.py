@@ -23,6 +23,15 @@ class SourceSpec:
     cleaner: str | None = None
 
 
+@dataclass
+class _WeightedSourceState:
+    name: str
+    iterator: Iterator[dict[str, Any]]
+    weight: float
+    current: float = 0.0
+    active: bool = True
+
+
 DEFAULT_SOURCE_SPECS: dict[str, SourceSpec] = {
     "fineweb": SourceSpec(
         name="fineweb",
@@ -85,11 +94,38 @@ def parse_source_names(source_names: str) -> tuple[SourceSpec, ...]:
     return tuple(specs)
 
 
+def parse_source_weights(source_weights: str | None) -> dict[str, float]:
+    if source_weights is None or not source_weights.strip():
+        return {}
+
+    weights: dict[str, float] = {}
+    for raw_entry in source_weights.split(","):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        if "=" not in entry:
+            raise ValueError("source weights must use source=weight entries")
+
+        raw_source, raw_weight = entry.split("=", 1)
+        source = raw_source.strip().lower()
+        if not source:
+            raise ValueError("source weight entries must include a source name")
+        try:
+            weight = float(raw_weight.strip())
+        except ValueError as exc:
+            raise ValueError(f"invalid weight for source {source}: {raw_weight}") from exc
+        if weight < 0:
+            raise ValueError("source weights must be non-negative")
+        weights[source] = weight
+    return weights
+
+
 def build_multi_source_token_shards(
     *,
     processed_dir: Path | str = Path("data/processed"),
     specs: Iterable[SourceSpec] | None = None,
     sources: str | None = None,
+    source_weights: Mapping[str, float] | str | None = None,
     max_documents_per_source: int = 1000,
     tokenizer_sample_documents: int = 500,
     shard_token_count: int = 1_000_000,
@@ -103,12 +139,14 @@ def build_multi_source_token_shards(
     resolved_specs = tuple(specs or parse_source_names(sources or "fineweb"))
     if not resolved_specs:
         raise ValueError("at least one source spec is required")
+    resolved_source_weights = _normalize_source_weights(source_weights)
 
     def examples_factory() -> Iterable[dict[str, Any]]:
         return iter_mixed_source_examples(
             specs=resolved_specs,
             max_documents_per_source=max_documents_per_source,
             source_examples=source_examples,
+            source_weights=resolved_source_weights,
         )
 
     return build_token_shards_from_stream(
@@ -125,6 +163,7 @@ def build_multi_source_token_shards(
         metadata={
             "source": "mixed",
             "sources": [spec.name for spec in resolved_specs],
+            "source_weights": resolved_source_weights,
             "source_specs": [
                 {
                     "name": spec.name,
@@ -145,18 +184,29 @@ def iter_mixed_source_examples(
     specs: Iterable[SourceSpec],
     max_documents_per_source: int,
     source_examples: Mapping[str, Iterable[Mapping[str, Any]]] | None = None,
+    source_weights: Mapping[str, float] | str | None = None,
 ) -> Iterator[dict[str, Any]]:
     if max_documents_per_source <= 0:
         raise ValueError("max_documents_per_source must be positive")
 
+    resolved_specs = tuple(specs)
     iterators = [
         _iter_clean_source_examples(
             spec,
             max_documents=max_documents_per_source,
             examples=None if source_examples is None else source_examples.get(spec.name),
         )
-        for spec in specs
+        for spec in resolved_specs
     ]
+    resolved_source_weights = _normalize_source_weights(source_weights)
+    if resolved_source_weights:
+        yield from _iter_weighted_source_examples(
+            specs=resolved_specs,
+            iterators=iterators,
+            source_weights=resolved_source_weights,
+        )
+        return
+
     active = [True for _ in iterators]
     while any(active):
         for index, iterator in enumerate(iterators):
@@ -166,6 +216,64 @@ def iter_mixed_source_examples(
                 yield next(iterator)
             except StopIteration:
                 active[index] = False
+
+
+def _normalize_source_weights(
+    source_weights: Mapping[str, float] | str | None,
+) -> dict[str, float]:
+    if isinstance(source_weights, str) or source_weights is None:
+        return parse_source_weights(source_weights)
+
+    weights: dict[str, float] = {}
+    for raw_source, raw_weight in source_weights.items():
+        source = str(raw_source).strip().lower()
+        if not source:
+            raise ValueError("source weight entries must include a source name")
+        weight = float(raw_weight)
+        if weight < 0:
+            raise ValueError("source weights must be non-negative")
+        weights[source] = weight
+    return weights
+
+
+def _iter_weighted_source_examples(
+    *,
+    specs: tuple[SourceSpec, ...],
+    iterators: list[Iterator[dict[str, Any]]],
+    source_weights: Mapping[str, float],
+) -> Iterator[dict[str, Any]]:
+    states = [
+        _WeightedSourceState(
+            name=spec.name,
+            iterator=iterator,
+            weight=_source_weight(spec.name, source_weights),
+        )
+        for spec, iterator in zip(specs, iterators, strict=True)
+    ]
+
+    for state in states:
+        if state.weight <= 0:
+            state.active = False
+
+    while any(state.active for state in states):
+        active_states = [state for state in states if state.active]
+        total_weight = sum(state.weight for state in active_states)
+        if total_weight <= 0:
+            break
+
+        for state in active_states:
+            state.current += state.weight
+        selected = max(active_states, key=lambda state: state.current)
+        selected.current -= total_weight
+
+        try:
+            yield next(selected.iterator)
+        except StopIteration:
+            selected.active = False
+
+
+def _source_weight(source: str, source_weights: Mapping[str, float]) -> float:
+    return float(source_weights.get(source, source_weights.get("default", 1.0)))
 
 
 def clean_source_example(source: str, example: Mapping[str, Any]) -> str:

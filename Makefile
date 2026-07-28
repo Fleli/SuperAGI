@@ -30,6 +30,7 @@ STREAM_SHARD_TOKENS := 1000000
 STREAM_VALIDATION_TOKENS := 200000
 STREAM_TARGET_TOKENS := 0
 SOURCES := fineweb,wikipedia,dolma,openwebmath,arxiv,pmc,stackexchange,gutenberg
+SOURCE_WEIGHTS :=
 STREAM_MAX_DOCUMENTS_PER_SOURCE := 10000
 
 TRAIN_4090_RAW_DIR := data/raw/c4-4090-night
@@ -91,6 +92,7 @@ TRAIN_H100_STREAM_TOKENIZER_SAMPLE := 50000
 TRAIN_H100_STREAM_SHARD_TOKENS := 10000000
 TRAIN_H100_STREAM_VALIDATION_TOKENS := 5000000
 TRAIN_H100_SOURCES := fineweb,wikipedia,dolma,openwebmath,arxiv,pmc,stackexchange,gutenberg
+TRAIN_H100_SOURCE_WEIGHTS := wikipedia=3,openwebmath=2,arxiv=2,stackexchange=2,gutenberg=1.5,pmc=1,dolma=0.75,fineweb=0.5,default=1
 TRAIN_H100_STREAM_MAX_DOCUMENTS_PER_SOURCE := 6250000
 TRAIN_H100_BPE_VOCAB_SIZE := 32000
 TRAIN_H100_BPE_MIN_FREQUENCY := 2
@@ -119,6 +121,40 @@ TRAIN_H100_PROMPT := In machine learning,
 TRAIN_H100_NEW_TOKENS := 500
 TRAIN_H100_TEMPERATURE := 0.7
 TRAIN_H100_TOP_K := 40
+
+TRAIN_300M_SOURCES := wikipedia,openwebmath,arxiv,stackexchange,gutenberg,pmc,dolma,fineweb
+TRAIN_300M_SOURCE_WEIGHTS := wikipedia=3,openwebmath=2,arxiv=2,stackexchange=2,gutenberg=1.5,pmc=1,dolma=0.75,fineweb=0.5,default=1
+TRAIN_300M_STREAM_MAX_DOCUMENTS_PER_SOURCE := 2500000
+TRAIN_300M_STREAM_TOKENIZER_SAMPLE := 50000
+TRAIN_300M_STREAM_SHARD_TOKENS := 10000000
+TRAIN_300M_STREAM_VALIDATION_TOKENS := 5000000
+TRAIN_300M_BPE_VOCAB_SIZE := 16000
+TRAIN_300M_BPE_MIN_FREQUENCY := 2
+TRAIN_300M_CORPUS_TARGET_TOKENS := 6000000000
+TRAIN_300M_START_TOKENS := 250000000
+TRAIN_300M_READY_POLL_SECONDS := 30
+TRAIN_300M_TOTAL_TRAINING_TOKENS := 6000000000
+TRAIN_300M_BATCH := 4
+TRAIN_300M_GRAD_ACCUM_STEPS := 16
+TRAIN_300M_ACTIVATION_CHECKPOINTING := 0
+TRAIN_300M_DEVICE := cuda
+TRAIN_300M_MIXED_PRECISION := float16
+TRAIN_300M_PARAMETER_DTYPE := float32
+TRAIN_300M_FUSED_ADAMW := auto
+TRAIN_300M_COMPILE_MODEL := 0
+TRAIN_300M_DROPOUT := 0.05
+TRAIN_300M_SHARD_REFRESH_INTERVAL := 500
+TRAIN_300M_LR := 3e-4
+TRAIN_300M_LR_MIN := 3e-5
+TRAIN_300M_LR_WARMUP_STEPS := 2000
+TRAIN_300M_EVAL_INTERVAL := 1000
+TRAIN_300M_VAL_BATCHES := 20
+TRAIN_300M_CHECKPOINT_INTERVAL := 1000
+TRAIN_300M_CHECKPOINT_KEEP := 5
+TRAIN_300M_PROMPT := In machine learning,
+TRAIN_300M_NEW_TOKENS := 500
+TRAIN_300M_TEMPERATURE := 0.7
+TRAIN_300M_TOP_K := 40
 
 BATCH := 32
 GRAD_ACCUM_STEPS := 1
@@ -226,7 +262,7 @@ SFT_STYLE_WEIGHT_DECAY := 0.01
 SFT_STYLE_CHECKPOINT_INTERVAL := 200
 SFT_STAGED_OUT := $(SFT_STYLE_OUT)
 
-.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 ingest-stream-sources train sft-import-public sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged params train-export-run train-4090 train-200m train-h100 std-train export-model generate run-model chat smoke-train clean-generated
+.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 ingest-stream-sources train sft-import-public sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged params train-export-run train-4090 train-200m train-h100 train-300m runpod-train-300m std-train export-model generate run-model chat smoke-train clean-generated
 
 help:
 	@echo "SuperAGI pipeline targets"
@@ -258,6 +294,7 @@ help:
 	@echo "  make train-4090        Fetch C4, rebuild artifacts, and start the RTX 4090 night run"
 	@echo "  make train-200m        Clean, stream C4 shards, and start the 200M training run"
 	@echo "  make train-h100        Zero-setup dynamic H100 C4 ingest/training run"
+	@echo "  make runpod-train-300m Zero-setup weighted mixed-source 300M RunPod run"
 	@echo "  make run-model CHECKPOINT=data/checkpoints/best.pt PROMPT=\"The\""
 	@echo "  make std-train         Resume latest, train 5k steps, export, sample"
 	@echo "  make export-model      Validate/copy latest checkpoint to a portable .pt file"
@@ -373,6 +410,7 @@ ingest-stream-sources: setup data-dirs
 		'result = build_multi_source_token_shards(' \
 		'    processed_dir="$(PROCESSED_DIR)",' \
 		'    sources="$(SOURCES)",' \
+		'    source_weights="$(SOURCE_WEIGHTS)",' \
 		'    max_documents_per_source=int("$(STREAM_MAX_DOCUMENTS_PER_SOURCE)"),' \
 		'    tokenizer_sample_documents=int("$(STREAM_TOKENIZER_SAMPLE)"),' \
 		'    shard_token_count=int("$(STREAM_SHARD_TOKENS)"),' \
@@ -386,6 +424,8 @@ ingest-stream-sources: setup data-dirs
 		'print(f"Validation tokens: {result.validation_tokens}")' \
 		'print(f"Target train tokens: {result.target_train_tokens}")' \
 		'print(f"Documents tokenized: {result.documents_tokenized}")' \
+		'print(f"Source documents: {result.source_documents}")' \
+		'print(f"Source tokens: {result.source_tokens}")' \
 		'print(f"Vocab size: {result.tokenizer.vocab_size}")' \
 		'print(f"Manifest: {result.manifest_path}")' \
 		'print(f"Vocab: {result.vocab_path}")' \
@@ -830,6 +870,7 @@ train-h100:
 		printf '==> [train-h100] Starting background mixed-source streaming/tokenization\n'; \
 		$(MAKE) ingest-stream-sources \
 			SOURCES="$(TRAIN_H100_SOURCES)" \
+			SOURCE_WEIGHTS="$(TRAIN_H100_SOURCE_WEIGHTS)" \
 			STREAM_MAX_DOCUMENTS_PER_SOURCE="$(TRAIN_H100_STREAM_MAX_DOCUMENTS_PER_SOURCE)" \
 			STREAM_C4_MAX="$(TRAIN_H100_STREAM_C4_MAX)" \
 			STREAM_C4_MIN_CHARS="$(TRAIN_H100_STREAM_C4_MIN_CHARS)" \
@@ -905,6 +946,94 @@ train-h100:
 	trap - EXIT INT TERM; \
 	printf '==> [train-h100] Finished H100 dynamic training pipeline\n'; \
 	exit "$$train_status"
+
+train-300m:
+	@printf '==> [train-300m] Starting zero-setup weighted mixed-source 300M training pipeline\n'
+	$(MAKE) setup
+	@printf '==> [train-300m] Clearing generated processed artifacts and checkpoints\n'
+	$(MAKE) clean-generated
+	@set -e; \
+	manifest_path="$(PROCESSED_DIR)/train_shards/manifest.json"; \
+	printf '==> [train-300m] Starting background weighted mixed-source streaming/tokenization\n'; \
+	$(MAKE) ingest-stream-sources \
+		SOURCES="$(TRAIN_300M_SOURCES)" \
+		SOURCE_WEIGHTS="$(TRAIN_300M_SOURCE_WEIGHTS)" \
+		STREAM_MAX_DOCUMENTS_PER_SOURCE="$(TRAIN_300M_STREAM_MAX_DOCUMENTS_PER_SOURCE)" \
+		STREAM_C4_MIN_CHARS="$(STREAM_C4_MIN_CHARS)" \
+		STREAM_TOKENIZER_SAMPLE="$(TRAIN_300M_STREAM_TOKENIZER_SAMPLE)" \
+		STREAM_SHARD_TOKENS="$(TRAIN_300M_STREAM_SHARD_TOKENS)" \
+		STREAM_VALIDATION_TOKENS="$(TRAIN_300M_STREAM_VALIDATION_TOKENS)" \
+		STREAM_TARGET_TOKENS="$(TRAIN_300M_CORPUS_TARGET_TOKENS)" \
+		BPE_VOCAB_SIZE="$(TRAIN_300M_BPE_VOCAB_SIZE)" \
+		BPE_MIN_FREQUENCY="$(TRAIN_300M_BPE_MIN_FREQUENCY)" & \
+	ingest_pid=$$!; \
+	cleanup() { \
+		if kill -0 "$$ingest_pid" 2>/dev/null; then \
+			printf '==> [train-300m] Stopping background ingestion\n'; \
+			kill "$$ingest_pid" 2>/dev/null || true; \
+			wait "$$ingest_pid" 2>/dev/null || true; \
+		fi; \
+	}; \
+	trap cleanup EXIT INT TERM; \
+	printf '==> [train-300m] Waiting for %s prepared train tokens before training\n' "$(TRAIN_300M_START_TOKENS)"; \
+	while true; do \
+		if [ -f "$$manifest_path" ]; then \
+			ready_tokens=$$($(PYTHON) -c 'import json, sys; from pathlib import Path; print(int(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")).get("train_tokens", 0)))' "$$manifest_path"); \
+			printf '==> [train-300m] Prepared train tokens: %s / %s\n' "$$ready_tokens" "$(TRAIN_300M_START_TOKENS)"; \
+			if [ "$$ready_tokens" -ge "$(TRAIN_300M_START_TOKENS)" ]; then \
+				break; \
+			fi; \
+		else \
+			printf '==> [train-300m] Waiting for first token shard manifest\n'; \
+		fi; \
+		if ! kill -0 "$$ingest_pid" 2>/dev/null; then \
+			wait "$$ingest_pid"; \
+			printf '==> [train-300m] Ingestion exited before start-token threshold was reached\n'; \
+			exit 1; \
+		fi; \
+		sleep "$(TRAIN_300M_READY_POLL_SECONDS)"; \
+	done; \
+	train_steps=$$($(PYTHON) -c 'import math, yaml; from pathlib import Path; config = yaml.safe_load(Path("specs/config.yaml").read_text(encoding="utf-8")); ctx = int(config["parameters"]["ctx_window"]); tokens_per_step = int("$(TRAIN_300M_BATCH)") * int("$(TRAIN_300M_GRAD_ACCUM_STEPS)") * ctx; print(max(1, math.ceil(int("$(TRAIN_300M_TOTAL_TRAINING_TOKENS)") / tokens_per_step)))'); \
+	printf '==> [train-300m] Computed training steps: %s for %s target training tokens\n' "$$train_steps" "$(TRAIN_300M_TOTAL_TRAINING_TOKENS)"; \
+	set +e; \
+	$(MAKE) train-export-run \
+		RESUME= \
+		STEPS="$$train_steps" \
+		BATCH="$(TRAIN_300M_BATCH)" \
+		GRAD_ACCUM_STEPS="$(TRAIN_300M_GRAD_ACCUM_STEPS)" \
+		ACTIVATION_CHECKPOINTING="$(TRAIN_300M_ACTIVATION_CHECKPOINTING)" \
+		DEVICE="$(TRAIN_300M_DEVICE)" \
+		MIXED_PRECISION="$(TRAIN_300M_MIXED_PRECISION)" \
+		PARAMETER_DTYPE="$(TRAIN_300M_PARAMETER_DTYPE)" \
+		FUSED_ADAMW="$(TRAIN_300M_FUSED_ADAMW)" \
+		COMPILE_MODEL="$(TRAIN_300M_COMPILE_MODEL)" \
+		DROPOUT="$(TRAIN_300M_DROPOUT)" \
+		SHARD_REFRESH_INTERVAL="$(TRAIN_300M_SHARD_REFRESH_INTERVAL)" \
+		LR="$(TRAIN_300M_LR)" \
+		LR_MIN="$(TRAIN_300M_LR_MIN)" \
+		LR_WARMUP_STEPS="$(TRAIN_300M_LR_WARMUP_STEPS)" \
+		EVAL_INTERVAL="$(TRAIN_300M_EVAL_INTERVAL)" \
+		VAL_BATCHES="$(TRAIN_300M_VAL_BATCHES)" \
+		CHECKPOINT_INTERVAL="$(TRAIN_300M_CHECKPOINT_INTERVAL)" \
+		CHECKPOINT_KEEP="$(TRAIN_300M_CHECKPOINT_KEEP)" \
+		PROMPT="$(TRAIN_300M_PROMPT)" \
+		NEW_TOKENS="$(TRAIN_300M_NEW_TOKENS)" \
+		TEMPERATURE="$(TRAIN_300M_TEMPERATURE)" \
+		TOP_K="$(TRAIN_300M_TOP_K)"; \
+	train_status=$$?; \
+	set -e; \
+	if kill -0 "$$ingest_pid" 2>/dev/null; then \
+		printf '==> [train-300m] Training finished before ingestion target; stopping ingestion\n'; \
+		kill "$$ingest_pid" 2>/dev/null || true; \
+		wait "$$ingest_pid" 2>/dev/null || true; \
+	else \
+		wait "$$ingest_pid" || true; \
+	fi; \
+	trap - EXIT INT TERM; \
+	printf '==> [train-300m] Finished 300M dynamic training pipeline\n'; \
+	exit "$$train_status"
+
+runpod-train-300m: train-300m
 
 std-train:
 	$(MAKE) train-export-run \

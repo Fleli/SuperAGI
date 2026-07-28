@@ -28,14 +28,15 @@ class ConfigLoadingTests(unittest.TestCase):
         self.assertEqual(transformer_config.n_heads, config.parameters.n_heads)
         self.assertEqual(transformer_config.dropout, config.parameters.dropout)
 
-    def test_project_config_targets_large_h100_run(self) -> None:
+    def test_project_config_targets_practical_300m_run(self) -> None:
         config = load_project_config()
 
-        self.assertEqual(config.parameters.n_layers, 24)
-        self.assertEqual(config.parameters.dim_embedding, 2304)
-        self.assertEqual(config.parameters.dim_key, 128)
+        self.assertEqual(config.parameters.n_layers, 18)
+        self.assertEqual(config.parameters.dim_embedding, 1152)
+        self.assertEqual(config.parameters.dim_key, 64)
         self.assertEqual(config.parameters.n_heads, 18)
-        self.assertEqual(config.parameters.ctx_window, 4096)
+        self.assertEqual(config.parameters.ctx_window, 1024)
+        self.assertEqual(config.parameters.dropout, 0.05)
 
     def test_loads_model_config_from_yaml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

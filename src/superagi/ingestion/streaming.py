@@ -22,6 +22,8 @@ class TokenShardBuildResult:
     train_tokens: int
     validation_tokens: int
     documents_tokenized: int
+    source_documents: dict[str, int]
+    source_tokens: dict[str, int]
     target_train_tokens: int | None = None
 
 
@@ -134,6 +136,8 @@ def build_token_shards_from_stream(
     shard_records: list[dict[str, Any]] = []
     train_tokens = 0
     documents_tokenized = 0
+    source_documents: dict[str, int] = {}
+    source_tokens: dict[str, int] = {}
     separator_ids = tokenizer.encode("\n")
     validation_tokens_published = validation_token_count == 0
     vocab_path = processed_path / "train_vocab.json"
@@ -146,19 +150,25 @@ def build_token_shards_from_stream(
         target_train_tokens=target_train_tokens,
         shard_dir=shard_dir,
         documents_tokenized=0,
+        source_documents=source_documents,
+        source_tokens=source_tokens,
         metadata=metadata,
     )
 
     target_reached = False
-    for text in _iter_normalized_texts(
+    for example in _iter_normalized_examples(
         examples_factory(),
         max_documents=max_documents,
         min_chars=min_chars,
     ):
+        text = str(example["text"])
+        source = str(example.get("source", "unknown")).strip() or "unknown"
         document_ids = (
             tokenizer.encode(f"{BOS_TOKEN}{text}{EOS_TOKEN}") + separator_ids
         )
         documents_tokenized += 1
+        source_documents[source] = source_documents.get(source, 0) + 1
+        source_tokens[source] = source_tokens.get(source, 0) + len(document_ids)
 
         if len(validation_buffer) < validation_token_count:
             needed = validation_token_count - len(validation_buffer)
@@ -188,6 +198,8 @@ def build_token_shards_from_stream(
                 target_train_tokens=target_train_tokens,
                 shard_token_count=shard_token_count,
                 documents_tokenized=documents_tokenized,
+                source_documents=source_documents,
+                source_tokens=source_tokens,
                 shard_records=shard_records,
             )
             if shard_published_callback is not None:
@@ -217,6 +229,8 @@ def build_token_shards_from_stream(
             target_train_tokens=target_train_tokens,
             shard_token_count=shard_token_count,
             documents_tokenized=documents_tokenized,
+            source_documents=source_documents,
+            source_tokens=source_tokens,
             shard_records=shard_records,
         )
         if shard_published_callback is not None:
@@ -236,6 +250,8 @@ def build_token_shards_from_stream(
         target_train_tokens=target_train_tokens,
         shard_dir=shard_dir,
         documents_tokenized=documents_tokenized,
+        source_documents=source_documents,
+        source_tokens=source_tokens,
         metadata=metadata,
     )
     _write_manifest_payload(
@@ -245,6 +261,8 @@ def build_token_shards_from_stream(
         target_train_tokens=target_train_tokens,
         shard_token_count=shard_token_count,
         documents_tokenized=documents_tokenized,
+        source_documents=source_documents,
+        source_tokens=source_tokens,
         shard_records=shard_records,
     )
 
@@ -258,6 +276,8 @@ def build_token_shards_from_stream(
         train_tokens=train_tokens,
         validation_tokens=len(validation_buffer),
         documents_tokenized=documents_tokenized,
+        source_documents=dict(source_documents),
+        source_tokens=dict(source_tokens),
         target_train_tokens=target_train_tokens,
     )
 
@@ -268,12 +288,28 @@ def _iter_normalized_texts(
     max_documents: int,
     min_chars: int,
 ) -> Iterable[str]:
+    for example in _iter_normalized_examples(
+        examples,
+        max_documents=max_documents,
+        min_chars=min_chars,
+    ):
+        yield str(example["text"])
+
+
+def _iter_normalized_examples(
+    examples: Iterable[dict[str, Any]],
+    *,
+    max_documents: int,
+    min_chars: int,
+) -> Iterable[dict[str, Any]]:
     yielded = 0
     for example in examples:
         text = normalize_stream_document_text(str(example.get("text", "")))
         if len(text) < min_chars:
             continue
-        yield text
+        normalized_example = dict(example)
+        normalized_example["text"] = text
+        yield normalized_example
         yielded += 1
         if yielded >= max_documents:
             break
@@ -304,6 +340,8 @@ def _write_vocab_payload(
     target_train_tokens: int | None,
     shard_dir: Path,
     documents_tokenized: int,
+    source_documents: dict[str, int],
+    source_tokens: dict[str, int],
     metadata: dict[str, Any] | None,
 ) -> None:
     vocab_payload = {
@@ -314,9 +352,13 @@ def _write_vocab_payload(
         "target_train_tokens": target_train_tokens,
         "train_shard_manifest": str(shard_dir / "manifest.json"),
         "documents_tokenized": documents_tokenized,
+        "source_documents": dict(sorted(source_documents.items())),
+        "source_tokens": dict(sorted(source_tokens.items())),
     }
     if metadata:
         vocab_payload.update(metadata)
+    vocab_payload["source_documents"] = dict(sorted(source_documents.items()))
+    vocab_payload["source_tokens"] = dict(sorted(source_tokens.items()))
     _write_json_atomic(vocab_path, vocab_payload)
 
 
@@ -328,6 +370,8 @@ def _write_manifest_payload(
     target_train_tokens: int | None,
     shard_token_count: int,
     documents_tokenized: int,
+    source_documents: dict[str, int],
+    source_tokens: dict[str, int],
     shard_records: list[dict[str, Any]],
 ) -> None:
     manifest_payload = {
@@ -337,6 +381,8 @@ def _write_manifest_payload(
         "target_train_tokens": target_train_tokens,
         "shard_token_count": shard_token_count,
         "documents_tokenized": documents_tokenized,
+        "source_documents": dict(sorted(source_documents.items())),
+        "source_tokens": dict(sorted(source_tokens.items())),
         "shards": list(shard_records),
     }
     _write_json_atomic(manifest_path, manifest_payload)
