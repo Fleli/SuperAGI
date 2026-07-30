@@ -92,6 +92,23 @@ class MakefileTests(unittest.TestCase):
         self.assertIn('--seed "$(SFT_IMPORT_SEED)"', contents)
         self.assertIn("==> [sft-import-public] Importing public SFT datasets", contents)
 
+    def test_sft_audit_target_wires_machine_enforced_corpus_audit(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("sft-audit", contents)
+        self.assertIn("SFT_AUDIT_DATA :=", contents)
+        self.assertIn("SFT_AUDIT_CHECKPOINT :=", contents)
+        self.assertIn("SFT_AUDIT_SOURCE_WEIGHTS :=", contents)
+        self.assertIn("SFT_AUDIT_MODE :=", contents)
+        self.assertIn("SFT_AUDIT_REPORT :=", contents)
+        self.assertIn("scripts/audit_sft.py", contents)
+        self.assertIn('--data "$(SFT_AUDIT_DATA)"', contents)
+        self.assertIn('--checkpoint "$(SFT_AUDIT_CHECKPOINT)"', contents)
+        self.assertIn('--source-weights "$(SFT_AUDIT_SOURCE_WEIGHTS)"', contents)
+        self.assertIn('--mode "$(SFT_AUDIT_MODE)"', contents)
+        self.assertIn('--report "$(SFT_AUDIT_REPORT)"', contents)
+
     def test_sft_overfit_50_target_trains_diagnostic_checkpoint(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
         contents = makefile.read_text(encoding="utf-8")

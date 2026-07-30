@@ -206,6 +206,11 @@ SFT_VALIDATION_BATCHES := 10
 SFT_MAX_EXAMPLES := 0
 SFT_SOURCE_WEIGHTS :=
 SFT_SEED := 1337
+SFT_AUDIT_DATA := $(SFT_DATA)
+SFT_AUDIT_CHECKPOINT :=
+SFT_AUDIT_SOURCE_WEIGHTS := $(SFT_SOURCE_WEIGHTS)
+SFT_AUDIT_MODE := curated
+SFT_AUDIT_REPORT := data/sft/audit.json
 SFT_IMPORT_CHECKPOINT := $(SFT_BASE_CHECKPOINT)
 SFT_IMPORT_OUT := data/sft/imported/public-mixed.jsonl
 SFT_IMPORT_METADATA := data/sft/imported/public-mixed.metadata.json
@@ -325,7 +330,7 @@ SFT_LOCAL_SMOKE_ANCHOR_STEPS := 120
 SFT_LOCAL_SMOKE_PUBLIC_STEPS := 160
 SFT_LOCAL_SMOKE_BATCH := 1
 
-.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 ingest-stream-sources train sft-import-public sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged sft-prepare-local sft-anchor-local sft-public-local sft-style-local sft-core-local sft-local sft-local-smoke params train-export-run train-4090 train-200m train-h100 train-300m runpod-train-300m std-train export-model generate run-model chat smoke-train clean-generated
+.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 ingest-stream-sources train sft-audit sft-import-public sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged sft-prepare-local sft-anchor-local sft-public-local sft-style-local sft-core-local sft-local sft-local-smoke params train-export-run train-4090 train-200m train-h100 train-300m runpod-train-300m std-train export-model generate run-model chat smoke-train clean-generated
 
 help:
 	@echo "SuperAGI pipeline targets"
@@ -742,6 +747,15 @@ sft-train: setup
 		--device "$(SFT_DEVICE)" \
 		--seed "$(SFT_SEED)"
 	@printf '==> [sft-train] Finished supervised chat training\n'
+
+sft-audit: setup
+	@printf '==> [sft-audit] Auditing SFT corpus\n'
+	$(PYTHON) scripts/audit_sft.py \
+		--data "$(SFT_AUDIT_DATA)" \
+		--checkpoint "$(SFT_AUDIT_CHECKPOINT)" \
+		--source-weights "$(SFT_AUDIT_SOURCE_WEIGHTS)" \
+		--mode "$(SFT_AUDIT_MODE)" \
+		--report "$(SFT_AUDIT_REPORT)"
 
 sft-import-public: setup
 	@printf '==> [sft-import-public] Importing public SFT datasets\n'
