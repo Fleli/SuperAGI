@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import random
 import re
 from collections import Counter, defaultdict
@@ -54,6 +55,7 @@ _NON_HARMLESS_PROMPT_RE = re.compile(
     r"\b(?:kill|murder|hurt|harm|suicide|self-harm|bomb|weapon|explosive|malware|ransomware|phishing|fraud|steal)\b",
     re.IGNORECASE,
 )
+_JACCARD_ROUNDING_TOLERANCE = 1e-12
 
 
 @dataclass(frozen=True)
@@ -107,6 +109,75 @@ class ImportResult:
     stats: ImportStats
 
 
+@dataclass(frozen=True)
+class _IndexedAnswer:
+    token_set: frozenset[str]
+    token_count: int
+
+
+class _JaccardCandidateIndex:
+    """Exact, threshold-preserving candidate retrieval for accepted answers.
+
+    A fixed lexicographic token order makes classic Jaccard prefix filtering
+    safe online: for sets with Jaccard similarity at least ``threshold``, their
+    threshold prefixes must overlap.  The index stores only accepted-answer
+    prefixes, partitioned by token-set length.  Query length bounds and the
+    necessary overlap bound discard impossible candidates before an exact
+    Jaccard calculation, without an arbitrary posting-list cap.
+    """
+
+    def __init__(self, threshold: float) -> None:
+        if not 0.0 < threshold <= 1.0:
+            raise ValueError("near_duplicate_threshold must be in (0, 1]")
+        self.threshold = threshold
+        self._entries: list[_IndexedAnswer] = []
+        self._postings: dict[str, dict[int, set[int]]] = defaultdict(
+            lambda: defaultdict(set)
+        )
+        self.comparison_count = 0
+
+    def has_near_duplicate(self, answer: str) -> bool:
+        token_set = frozenset(answer.split())
+        if not token_set:
+            return False
+
+        query_length = len(token_set)
+        min_length, max_length = _jaccard_length_bounds(
+            query_length,
+            self.threshold,
+        )
+        candidate_ids: set[int] = set()
+        for token in _jaccard_prefix(token_set, self.threshold):
+            for length, posting in self._postings.get(token, {}).items():
+                if min_length <= length <= max_length:
+                    candidate_ids.update(posting)
+
+        for candidate_id in sorted(candidate_ids):
+            candidate = self._entries[candidate_id]
+            intersection_size = len(token_set & candidate.token_set)
+            if intersection_size < _minimum_jaccard_intersection(
+                query_length,
+                candidate.token_count,
+                self.threshold,
+            ):
+                continue
+            self.comparison_count += 1
+            union_size = query_length + candidate.token_count - intersection_size
+            if intersection_size / union_size >= self.threshold:
+                return True
+        return False
+
+    def add(self, answer: str) -> None:
+        token_set = frozenset(answer.split())
+        if not token_set:
+            return
+        entry_id = len(self._entries)
+        token_count = len(token_set)
+        self._entries.append(_IndexedAnswer(token_set, token_count))
+        for token in _jaccard_prefix(token_set, self.threshold):
+            self._postings[token][token_count].add(entry_id)
+
+
 class PublicSftImporter:
     def __init__(
         self,
@@ -124,7 +195,10 @@ class PublicSftImporter:
         stats = ImportStats()
         examples: list[ImportedSftExample] = []
         seen_answers: set[str] = set()
-        seen_answer_buckets: dict[tuple[str, ...], list[str]] = defaultdict(list)
+        near_duplicate_index = _JaccardCandidateIndex(
+            self.filter_config.near_duplicate_threshold
+        )
+        self._near_duplicate_comparisons = 0
 
         for source, raw_messages in conversations:
             stats.seen += 1
@@ -132,7 +206,7 @@ class PublicSftImporter:
             rejection_reason = self._rejection_reason(
                 messages,
                 seen_answers,
-                seen_answer_buckets,
+                near_duplicate_index,
             )
             if rejection_reason is not None:
                 stats.reject(rejection_reason)
@@ -149,9 +223,10 @@ class PublicSftImporter:
             )
             for answer in _normalized_agi_answers(messages):
                 seen_answers.add(answer)
-                seen_answer_buckets[_answer_prefix_bucket(answer)].append(answer)
+                near_duplicate_index.add(answer)
             stats.accepted += 1
 
+        self._near_duplicate_comparisons = near_duplicate_index.comparison_count
         return ImportResult(examples=tuple(examples), stats=stats)
 
     def write_import(
@@ -200,7 +275,7 @@ class PublicSftImporter:
         self,
         messages: tuple[ChatMessage, ...],
         seen_answers: set[str],
-        seen_answer_buckets: Mapping[tuple[str, ...], Sequence[str]],
+        near_duplicate_index: _JaccardCandidateIndex,
     ) -> str | None:
         config = self.filter_config
         if not messages:
@@ -236,11 +311,7 @@ class PublicSftImporter:
         if any(answer in seen_answers for answer in normalized_answers):
             return "duplicate_answer"
         if any(
-            _is_near_duplicate(
-                answer,
-                seen_answer_buckets.get(_answer_prefix_bucket(answer), ()),
-                threshold=config.near_duplicate_threshold,
-            )
+            near_duplicate_index.has_near_duplicate(answer)
             for answer in normalized_answers
         ):
             return "near_duplicate"
@@ -442,17 +513,36 @@ def token_jaccard(left: str, right: str) -> float:
     return len(left_tokens & right_tokens) / len(union) if union else 1.0
 
 
-def _answer_prefix_bucket(answer: str) -> tuple[str, ...]:
-    return tuple(answer.split()[:4])
+def _jaccard_length_bounds(length: int, threshold: float) -> tuple[int, int]:
+    # Expand bounds by a tiny tolerance: rounding may retrieve an extra
+    # candidate, but cannot discard one that meets the exact threshold.
+    return (
+        math.ceil((threshold * length) - _JACCARD_ROUNDING_TOLERANCE),
+        math.floor((length / threshold) + _JACCARD_ROUNDING_TOLERANCE),
+    )
 
 
-def _is_near_duplicate(
-    answer: str,
-    accepted_answers: Sequence[str],
-    *,
+def _jaccard_prefix(token_set: frozenset[str], threshold: float) -> tuple[str, ...]:
+    ordered_tokens = tuple(sorted(token_set))
+    prefix_length = (
+        len(ordered_tokens)
+        - math.ceil(
+            (threshold * len(ordered_tokens)) - _JACCARD_ROUNDING_TOLERANCE
+        )
+        + 1
+    )
+    return ordered_tokens[:prefix_length]
+
+
+def _minimum_jaccard_intersection(
+    left_length: int,
+    right_length: int,
     threshold: float,
-) -> bool:
-    return any(token_jaccard(answer, accepted) >= threshold for accepted in accepted_answers)
+) -> int:
+    return math.ceil(
+        ((threshold * (left_length + right_length)) / (1.0 + threshold))
+        - _JACCARD_ROUNDING_TOLERANCE
+    )
 
 
 def _contains_artifact(value: str) -> bool:

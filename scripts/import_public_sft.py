@@ -13,6 +13,7 @@ from superagi.chat.sft_public_import import (
     ImportFilterConfig,
     ImportedSftExample,
     ImportResult,
+    ImportStats,
     PublicSftImporter,
     convert_dolly_row,
     convert_no_robots_row,
@@ -120,7 +121,14 @@ def run_import(args: argparse.Namespace) -> int:
             flush=True,
         )
 
-    result = ImportResult(examples=tuple(all_examples), stats=imported.stats)
+    result = ImportResult(
+        examples=tuple(all_examples),
+        stats=ImportStats(
+            seen=imported.stats.seen,
+            accepted=len(all_examples),
+            rejected_by_reason=Counter(imported.stats.rejected_by_reason),
+        ),
+    )
     importer.write_import(
         result,
         out_path=Path(args.out),
@@ -133,6 +141,7 @@ def run_import(args: argparse.Namespace) -> int:
         candidate_counts=candidate_counts,
         accepted_before_limit_counts=accepted_before_limit_counts,
         selected_counts=selected_counts,
+        accepted_before_limit=imported.stats.accepted,
         result=result,
     )
     print(f"Wrote {len(all_examples)} public SFT examples to {args.out}")
@@ -198,6 +207,7 @@ def _append_source_metadata(
     candidate_counts: Mapping[str, int],
     accepted_before_limit_counts: Mapping[str, int],
     selected_counts: Mapping[str, int],
+    accepted_before_limit: int,
     result: ImportResult,
 ) -> None:
     payload = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -211,6 +221,8 @@ def _append_source_metadata(
     }
     rejection_reasons = dict(sorted(result.stats.rejected_by_reason.items()))
     payload["seed"] = seed
+    payload["written_count"] = len(result.examples)
+    payload["accepted_before_limit"] = accepted_before_limit
     payload["sources"] = source_summaries
     payload["selected_source_counts"] = dict(sorted(selected_counts.items()))
     payload["accepted_before_limit_source_counts"] = dict(

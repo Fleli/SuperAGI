@@ -208,6 +208,84 @@ class PublicSftImportTests(unittest.TestCase):
         self.assertEqual(imported.stats.rejected_by_reason["duplicate_answer"], 1)
         self.assertEqual(imported.stats.rejected_by_reason["near_duplicate"], 1)
 
+    def test_importer_rejects_near_duplicates_with_different_openings(self) -> None:
+        shared = " ".join(f"shared{index:02d}" for index in range(17))
+        tokenizer = BpeTokenizer.from_text(
+            f"<bos><user> Ask\n<agi> fresh opening one {shared}<eos>\n",
+            vocab_size=300,
+            min_frequency=1,
+        )
+        importer = PublicSftImporter(
+            tokenizer=tokenizer,
+            filter_config=ImportFilterConfig(min_agi_chars=5),
+        )
+
+        imported = importer.import_conversations(
+            [
+                (
+                    "first:1",
+                    [
+                        {"role": "user", "content": "First question"},
+                        {"role": "agi", "content": f"fresh opening one {shared}"},
+                    ],
+                ),
+                (
+                    "second:1",
+                    [
+                        {"role": "user", "content": "Second question"},
+                        {"role": "agi", "content": f"different opening one {shared}"},
+                    ],
+                ),
+            ]
+        )
+
+        self.assertEqual([example.source for example in imported.examples], ["first:1"])
+        self.assertEqual(imported.stats.rejected_by_reason["near_duplicate"], 1)
+
+    def test_near_duplicate_index_avoids_full_comparisons_for_shared_openings(self) -> None:
+        answers = [
+            "a generic opening phrase "
+            + " ".join(f"z{index:03d}{suffix}" for suffix in range(12))
+            for index in range(100)
+        ]
+        tokenizer = BpeTokenizer.from_text(
+            "<bos><user> Ask\n<agi> " + "\n".join(answers) + "<eos>\n",
+            vocab_size=1000,
+            min_frequency=1,
+        )
+        importer = PublicSftImporter(
+            tokenizer=tokenizer,
+            filter_config=ImportFilterConfig(min_agi_chars=5),
+        )
+        rows = [
+            (
+                f"source:{index}",
+                [
+                    {"role": "user", "content": f"Question {index}"},
+                    {"role": "agi", "content": answer},
+                ],
+            )
+            for index, answer in enumerate(answers)
+        ]
+        rows.append(
+            (
+                "source:final",
+                [
+                    {"role": "user", "content": "Final question"},
+                    {
+                        "role": "agi",
+                        "content": "a generic opening phrase "
+                        + " ".join(f"zfinal{suffix}" for suffix in range(12)),
+                    },
+                ],
+            )
+        )
+
+        imported = importer.import_conversations(rows)
+
+        self.assertEqual(len(imported.examples), 101)
+        self.assertLessEqual(importer._near_duplicate_comparisons, 1)
+
     def test_importer_rejects_invalid_roles_identity_refusals_and_artifacts(self) -> None:
         tokenizer = BpeTokenizer.from_text(
             "<bos><user> Ask\n<agi> A sufficiently detailed ordinary answer.<eos>\n",

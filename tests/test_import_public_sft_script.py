@@ -49,7 +49,17 @@ class ImportPublicSftScriptTests(unittest.TestCase):
                             "content": "A detailed response with useful context for the reader.",
                         },
                     ],
-                )
+                ),
+                (
+                    "no_robots:2",
+                    [
+                        {"role": "user", "content": "Explain another topic"},
+                        {
+                            "role": "agi",
+                            "content": "A separate response with different facts for the reader.",
+                        },
+                    ],
+                ),
             ],
             "dolly": [
                 (
@@ -74,7 +84,7 @@ class ImportPublicSftScriptTests(unittest.TestCase):
                 metadata=str(metadata_path),
                 sources="no_robots,dolly",
                 max_rows_per_source=10,
-                max_examples_per_source=10,
+                max_examples_per_source=1,
                 max_context_tokens=900,
                 max_messages=8,
                 max_agi_chars=1200,
@@ -98,14 +108,18 @@ class ImportPublicSftScriptTests(unittest.TestCase):
             records = [json.loads(line) for line in out_path.read_text().splitlines()]
             metadata = json.loads(metadata_path.read_text())
 
-        self.assertEqual([record["source"] for record in records], ["no_robots:1"])
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["source"].startswith("no_robots:"))
         self.assertEqual(iter_candidates.call_count, 2)
         self.assertEqual(metadata["seed"], 1337)
         self.assertEqual(metadata["selected_source_counts"], {"dolly": 0, "no_robots": 1})
         self.assertEqual(
             metadata["accepted_before_limit_source_counts"],
-            {"dolly": 0, "no_robots": 1},
+            {"dolly": 0, "no_robots": 2},
         )
+        self.assertEqual(metadata["stats"]["accepted"], len(records))
+        self.assertEqual(metadata["written_count"], len(records))
+        self.assertEqual(metadata["accepted_before_limit"], 2)
         self.assertEqual(metadata["exact_duplicate_count"], 1)
         self.assertEqual(metadata["near_duplicate_count"], 0)
         self.assertEqual(metadata["filter_config"]["near_duplicate_threshold"], 0.88)
