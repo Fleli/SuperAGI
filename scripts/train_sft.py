@@ -9,6 +9,7 @@ import torch
 
 from superagi.chat.sft import load_sft_records, tokenize_sft_messages
 from superagi.chat.sft_training import (
+    clear_sft_device_cache,
     evaluate_sft_loss,
     limit_sft_examples,
     parse_sft_source_weights,
@@ -277,6 +278,7 @@ def main() -> int:
                 f"elapsed_seconds={metric.elapsed_seconds:.2f}",
                 flush=True,
             )
+            clear_sft_device_cache(device)
         elif should_log:
             elapsed_seconds = time.perf_counter() - start_time
             print(

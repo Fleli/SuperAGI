@@ -152,6 +152,16 @@ def should_log_sft_progress(
     return checkpoint_interval > 0 and step % checkpoint_interval == 0
 
 
+def clear_sft_device_cache(device: torch.device) -> None:
+    if device.type == "cuda" and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        return
+    if device.type == "mps":
+        mps = getattr(torch, "mps", None)
+        if mps is not None and hasattr(mps, "empty_cache"):
+            mps.empty_cache()
+
+
 def parse_sft_source_weights(value: str) -> dict[str, float]:
     weights: dict[str, float] = {}
     if not value.strip():

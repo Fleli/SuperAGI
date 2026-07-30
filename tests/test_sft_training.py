@@ -4,6 +4,7 @@ import torch
 
 from superagi.chat.sft import IGNORE_INDEX, TokenizedSftExample
 from superagi.chat.sft_training import (
+    clear_sft_device_cache,
     collate_sft_batch,
     evaluate_sft_loss,
     limit_sft_examples,
@@ -156,6 +157,28 @@ class SftTrainingTests(unittest.TestCase):
                 checkpoint_interval=100,
             )
         )
+
+    def test_clears_mps_cache_for_memory_intensive_sft_runs(self) -> None:
+        if not hasattr(torch, "mps") or not hasattr(torch.mps, "empty_cache"):
+            self.skipTest("torch.mps.empty_cache is unavailable")
+
+        original_empty_cache = torch.mps.empty_cache
+        calls = 0
+
+        def fake_empty_cache() -> None:
+            nonlocal calls
+            calls += 1
+
+        try:
+            torch.mps.empty_cache = fake_empty_cache
+            clear_sft_device_cache(torch.device("mps"))
+        finally:
+            torch.mps.empty_cache = original_empty_cache
+
+        self.assertEqual(calls, 1)
+
+    def test_sft_device_cache_clear_is_noop_for_cpu(self) -> None:
+        clear_sft_device_cache(torch.device("cpu"))
 
     def test_evaluates_sft_validation_loss_without_updating_model(self) -> None:
         model = TransformerLM(
