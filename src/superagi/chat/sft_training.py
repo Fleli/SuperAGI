@@ -136,6 +136,22 @@ def limit_sft_examples(
     return tuple(examples[int(index)] for index in indices.tolist())
 
 
+def should_log_sft_progress(
+    *,
+    step: int,
+    total_steps: int,
+    log_interval: int,
+    checkpoint_interval: int,
+) -> bool:
+    if step <= 0:
+        return False
+    if step == total_steps:
+        return True
+    if log_interval > 0:
+        return step % log_interval == 0
+    return checkpoint_interval > 0 and step % checkpoint_interval == 0
+
+
 def parse_sft_source_weights(value: str) -> dict[str, float]:
     weights: dict[str, float] = {}
     if not value.strip():

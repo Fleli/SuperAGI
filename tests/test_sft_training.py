@@ -7,6 +7,7 @@ from superagi.chat.sft_training import (
     collate_sft_batch,
     evaluate_sft_loss,
     limit_sft_examples,
+    should_log_sft_progress,
     parse_sft_source_weights,
     sample_sft_batch,
     split_sft_examples,
@@ -128,6 +129,32 @@ class SftTrainingTests(unittest.TestCase):
         self.assertEqual(
             limit_sft_examples(examples, max_examples=0, seed=456),
             tuple(examples),
+        )
+
+    def test_sft_progress_logging_is_separate_from_checkpoint_interval(self) -> None:
+        self.assertTrue(
+            should_log_sft_progress(
+                step=25,
+                total_steps=100,
+                log_interval=25,
+                checkpoint_interval=100,
+            )
+        )
+        self.assertFalse(
+            should_log_sft_progress(
+                step=26,
+                total_steps=100,
+                log_interval=25,
+                checkpoint_interval=100,
+            )
+        )
+        self.assertTrue(
+            should_log_sft_progress(
+                step=100,
+                total_steps=100,
+                log_interval=0,
+                checkpoint_interval=100,
+            )
         )
 
     def test_evaluates_sft_validation_loss_without_updating_model(self) -> None:

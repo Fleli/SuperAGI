@@ -123,7 +123,7 @@ make sft-local-smoke \
 ```
 
 If the smoke run shows clear instruction-following movement, run the bounded
-local core pass:
+local staged pass:
 
 ```bash
 make sft-local \
@@ -132,10 +132,19 @@ make sft-local \
 ```
 
 The local targets import public SFT data into
-`data/sft/imported/local-public-mixed.jsonl`, mix it with the curated anchor and
-broad files, and write `data/sft/runs/chat-core-local.pt`. Override
-`SFT_LOCAL_CORE_MAX_EXAMPLES=0` for the full imported corpus, or keep the
-default bounded subset while testing behavior on a Mac.
+`data/sft/imported/local-public-mixed.jsonl`, then train three separate phases:
+
+- anchor behavior into `data/sft/runs/chat-anchor-local.pt`
+- public instruction/chat behavior into `data/sft/runs/chat-public-local.pt`
+- light style into `data/sft/runs/chat-style-local.pt`
+
+The local public phase intentionally avoids `stages/broad-mixed.jsonl` by
+default because that synthetic broad file can dominate small local runs. It
+keeps the curated anchor data in the public phase with source weighting so the
+model does not forget the basic chat contract. Override
+`SFT_LOCAL_PUBLIC_MAX_EXAMPLES=0` for the full imported corpus, or keep the
+default bounded subset while testing behavior on a Mac. The smoke target stops
+after the public phase and writes `data/sft/runs/chat-public-local-smoke.pt`.
 
 For a conservative chat test, start with:
 

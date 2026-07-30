@@ -13,6 +13,7 @@ from superagi.chat.sft_training import (
     limit_sft_examples,
     parse_sft_source_weights,
     sample_sft_batch,
+    should_log_sft_progress,
     source_summary,
     split_sft_examples,
 )
@@ -42,6 +43,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--checkpoint-interval", type=int, default=50)
+    parser.add_argument(
+        "--log-interval",
+        type=int,
+        default=0,
+        help="Print train-loss progress every N steps without checkpointing; 0 logs on checkpoints only.",
+    )
     parser.add_argument("--validation-fraction", type=float, default=0.05)
     parser.add_argument("--validation-batches", type=int, default=10)
     parser.add_argument(
@@ -66,6 +73,8 @@ def main() -> int:
         raise SystemExit("--steps must be positive")
     if args.checkpoint_interval < 0:
         raise SystemExit("--checkpoint-interval must be non-negative")
+    if args.log_interval < 0:
+        raise SystemExit("--log-interval must be non-negative")
     if not 0 <= args.validation_fraction < 1:
         raise SystemExit("--validation-fraction must be in [0, 1)")
     if args.validation_batches <= 0:
@@ -203,11 +212,17 @@ def main() -> int:
         )
         losses.append(train_loss)
 
-        should_report = step_index == args.steps or (
+        should_checkpoint = step_index == args.steps or (
             args.checkpoint_interval > 0
             and step_index % args.checkpoint_interval == 0
         )
-        if should_report:
+        should_log = should_log_sft_progress(
+            step=step_index,
+            total_steps=args.steps,
+            log_interval=args.log_interval,
+            checkpoint_interval=args.checkpoint_interval,
+        )
+        if should_checkpoint:
             validation_loss = (
                 evaluate_sft_loss(
                     model,
@@ -262,6 +277,16 @@ def main() -> int:
                 f"elapsed_seconds={metric.elapsed_seconds:.2f}",
                 flush=True,
             )
+        elif should_log:
+            elapsed_seconds = time.perf_counter() - start_time
+            print(
+                "sft_step="
+                f"{step_index} "
+                f"train_loss={train_loss:.6f} "
+                f"learning_rate={learning_rate:.8f} "
+                f"elapsed_seconds={elapsed_seconds:.2f}",
+                flush=True,
+            )
 
     print(f"SFT checkpoint: {out_path}")
     print(f"SFT metrics: {metrics_path}")
@@ -300,6 +325,7 @@ def _build_metadata(
             "sft_validation_fraction": args.validation_fraction,
             "sft_validation_batches": args.validation_batches,
             "sft_max_examples": args.max_examples,
+            "sft_log_interval": args.log_interval,
             "sft_source_weights": source_weights,
             "sft_skipped_examples": skipped_examples,
         }

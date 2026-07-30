@@ -69,10 +69,12 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("SFT_VALIDATION_BATCHES := 10", contents)
         self.assertIn("SFT_MAX_EXAMPLES := 0", contents)
         self.assertIn("SFT_SOURCE_WEIGHTS :=", contents)
+        self.assertIn("SFT_LOG_INTERVAL := 50", contents)
         self.assertIn('--validation-fraction "$(SFT_VALIDATION_FRACTION)"', contents)
         self.assertIn('--validation-batches "$(SFT_VALIDATION_BATCHES)"', contents)
         self.assertIn('--max-examples "$(SFT_MAX_EXAMPLES)"', contents)
         self.assertIn('--source-weights "$(SFT_SOURCE_WEIGHTS)"', contents)
+        self.assertIn('--log-interval "$(SFT_LOG_INTERVAL)"', contents)
 
     def test_sft_import_public_target_downloads_and_filters_public_data(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
@@ -132,24 +134,33 @@ class MakefileTests(unittest.TestCase):
         self.assertIn('$(MAKE) sft-style', contents)
         self.assertIn("==> [sft-staged] Finished staged supervised chat training", contents)
 
-    def test_local_sft_targets_prepare_and_train_bounded_300m_subset(self) -> None:
+    def test_local_sft_targets_run_staged_behavior_then_public_then_style(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
         contents = makefile.read_text(encoding="utf-8")
 
         self.assertIn("sft-prepare-local", contents)
-        self.assertIn("sft-core-local", contents)
+        self.assertIn("sft-anchor-local", contents)
+        self.assertIn("sft-public-local", contents)
+        self.assertIn("sft-style-local", contents)
         self.assertIn("sft-local-smoke", contents)
         self.assertIn("SFT_LOCAL_BASE_CHECKPOINT := ./best-300m-current.pt", contents)
         self.assertIn("SFT_LOCAL_IMPORT_OUT := data/sft/imported/local-public-mixed.jsonl", contents)
-        self.assertIn("SFT_LOCAL_CORE_DATA :=", contents)
-        self.assertIn("SFT_LOCAL_CORE_MAX_EXAMPLES := 4000", contents)
+        self.assertIn("SFT_LOCAL_ANCHOR_DATA := data/sft/stages/anchor.jsonl", contents)
+        self.assertIn("SFT_LOCAL_PUBLIC_DATA := data/sft/stages/anchor.jsonl,$(SFT_LOCAL_IMPORT_OUT)", contents)
+        self.assertIn("SFT_LOCAL_PUBLIC_SOURCE_WEIGHTS := anchor=4,no_robots=1.5,openassistant=1.25,dolly=1,ultrachat=0.8,wildchat=0.25,default=1", contents)
+        self.assertIn("SFT_LOCAL_PUBLIC_MAX_EXAMPLES := 4000", contents)
         self.assertIn("SFT_LOCAL_SMOKE_MAX_EXAMPLES_PER_SOURCE := 100", contents)
-        self.assertIn("SFT_LOCAL_SMOKE_STEPS := 80", contents)
+        self.assertIn("SFT_LOCAL_SMOKE_ANCHOR_STEPS := 120", contents)
+        self.assertIn("SFT_LOCAL_SMOKE_PUBLIC_STEPS := 160", contents)
         self.assertIn('SFT_IMPORT_CHECKPOINT="$(SFT_LOCAL_BASE_CHECKPOINT)"', contents)
         self.assertIn('SFT_IMPORT_OUT="$(SFT_LOCAL_IMPORT_OUT)"', contents)
         self.assertIn('SFT_BASE_CHECKPOINT="$(SFT_LOCAL_BASE_CHECKPOINT)"', contents)
-        self.assertIn('SFT_DATA="$(SFT_LOCAL_CORE_DATA)"', contents)
-        self.assertIn('SFT_MAX_EXAMPLES="$(SFT_LOCAL_CORE_MAX_EXAMPLES)"', contents)
+        self.assertIn('SFT_DATA="$(SFT_LOCAL_ANCHOR_DATA)"', contents)
+        self.assertIn("SFT_LOCAL_PUBLIC_BASE_CHECKPOINT := $(SFT_LOCAL_ANCHOR_OUT)", contents)
+        self.assertIn('SFT_BASE_CHECKPOINT="$(SFT_LOCAL_PUBLIC_BASE_CHECKPOINT)"', contents)
+        self.assertIn('SFT_DATA="$(SFT_LOCAL_PUBLIC_DATA)"', contents)
+        self.assertIn('SFT_SOURCE_WEIGHTS="$(SFT_LOCAL_PUBLIC_SOURCE_WEIGHTS)"', contents)
+        self.assertIn('SFT_MAX_EXAMPLES="$(SFT_LOCAL_PUBLIC_MAX_EXAMPLES)"', contents)
         self.assertIn('SFT_DEVICE="$(SFT_LOCAL_DEVICE)"', contents)
         self.assertIn("==> [sft-local] Finished local SFT pipeline", contents)
 

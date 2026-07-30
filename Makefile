@@ -200,6 +200,7 @@ SFT_WEIGHT_DECAY := 0.01
 SFT_GRAD_CLIP := 1.0
 SFT_DEVICE := auto
 SFT_CHECKPOINT_INTERVAL := 250
+SFT_LOG_INTERVAL := 50
 SFT_VALIDATION_FRACTION := 0.05
 SFT_VALIDATION_BATCHES := 10
 SFT_MAX_EXAMPLES := 0
@@ -238,6 +239,7 @@ SFT_ANCHOR_LR_MIN := 5e-6
 SFT_ANCHOR_LR_WARMUP_STEPS := 50
 SFT_ANCHOR_WEIGHT_DECAY := 0.0
 SFT_ANCHOR_CHECKPOINT_INTERVAL := 250
+SFT_ANCHOR_LOG_INTERVAL := 50
 SFT_BROAD_DATA := data/sft/stages/anchor.jsonl,data/sft/stages/broad-mixed.jsonl,data/sft/imported/public-mixed.jsonl
 SFT_BROAD_BASE_CHECKPOINT := $(SFT_ANCHOR_OUT)
 SFT_BROAD_OUT := data/sft/runs/chat-broad.pt
@@ -249,6 +251,7 @@ SFT_BROAD_LR_MIN := 2e-6
 SFT_BROAD_LR_WARMUP_STEPS := 100
 SFT_BROAD_WEIGHT_DECAY := 0.01
 SFT_BROAD_CHECKPOINT_INTERVAL := 250
+SFT_BROAD_LOG_INTERVAL := 50
 SFT_BROAD_SOURCE_WEIGHTS := anchor=4,broad-mixed=2,no_robots=1.5,openassistant=1.25,dolly=1,ultrachat=0.8,wildchat=0.35,default=1
 SFT_STYLE_DATA := data/sft/stages/style-playful-direct.jsonl
 SFT_STYLE_BASE_CHECKPOINT := $(SFT_BROAD_OUT)
@@ -261,6 +264,7 @@ SFT_STYLE_LR_MIN := 1e-6
 SFT_STYLE_LR_WARMUP_STEPS := 50
 SFT_STYLE_WEIGHT_DECAY := 0.01
 SFT_STYLE_CHECKPOINT_INTERVAL := 200
+SFT_STYLE_LOG_INTERVAL := 50
 SFT_STAGED_OUT := $(SFT_STYLE_OUT)
 
 SFT_LOCAL_BASE_CHECKPOINT := ./best-300m-current.pt
@@ -272,26 +276,55 @@ SFT_LOCAL_IMPORT_MAX_EXAMPLES_PER_SOURCE := 1000
 SFT_LOCAL_IMPORT_MAX_CONTEXT_TOKENS := 900
 SFT_LOCAL_IMPORT_MAX_MESSAGES := 6
 SFT_LOCAL_IMPORT_MAX_AGI_CHARS := 900
-SFT_LOCAL_CORE_DATA := data/sft/stages/anchor.jsonl,data/sft/stages/broad-mixed.jsonl,$(SFT_LOCAL_IMPORT_OUT)
-SFT_LOCAL_CORE_OUT := data/sft/runs/chat-core-local.pt
-SFT_LOCAL_CORE_METRICS := data/sft/runs/chat-core-local-metrics.jsonl
-SFT_LOCAL_CORE_STEPS := 600
-SFT_LOCAL_CORE_BATCH := 2
-SFT_LOCAL_CORE_LR := 4e-6
-SFT_LOCAL_CORE_LR_MIN := 1e-6
-SFT_LOCAL_CORE_LR_WARMUP_STEPS := 50
-SFT_LOCAL_CORE_WEIGHT_DECAY := 0.01
-SFT_LOCAL_CORE_CHECKPOINT_INTERVAL := 100
-SFT_LOCAL_CORE_VALIDATION_FRACTION := 0.05
-SFT_LOCAL_CORE_VALIDATION_BATCHES := 5
-SFT_LOCAL_CORE_MAX_EXAMPLES := 4000
-SFT_LOCAL_SOURCE_WEIGHTS := anchor=5,broad-mixed=2,no_robots=1.5,openassistant=1.25,dolly=1,ultrachat=0.8,wildchat=0.25,default=1
+SFT_LOCAL_ANCHOR_DATA := data/sft/stages/anchor.jsonl
+SFT_LOCAL_ANCHOR_OUT := data/sft/runs/chat-anchor-local.pt
+SFT_LOCAL_ANCHOR_METRICS := data/sft/runs/chat-anchor-local-metrics.jsonl
+SFT_LOCAL_ANCHOR_STEPS := 500
+SFT_LOCAL_ANCHOR_BATCH := 1
+SFT_LOCAL_ANCHOR_LR := 1e-5
+SFT_LOCAL_ANCHOR_LR_MIN := 2e-6
+SFT_LOCAL_ANCHOR_LR_WARMUP_STEPS := 50
+SFT_LOCAL_ANCHOR_WEIGHT_DECAY := 0.0
+SFT_LOCAL_ANCHOR_CHECKPOINT_INTERVAL := 100
+SFT_LOCAL_ANCHOR_LOG_INTERVAL := 25
+SFT_LOCAL_ANCHOR_VALIDATION_FRACTION := 0.05
+SFT_LOCAL_ANCHOR_VALIDATION_BATCHES := 5
+SFT_LOCAL_PUBLIC_DATA := data/sft/stages/anchor.jsonl,$(SFT_LOCAL_IMPORT_OUT)
+SFT_LOCAL_PUBLIC_BASE_CHECKPOINT := $(SFT_LOCAL_ANCHOR_OUT)
+SFT_LOCAL_PUBLIC_OUT := data/sft/runs/chat-public-local.pt
+SFT_LOCAL_PUBLIC_METRICS := data/sft/runs/chat-public-local-metrics.jsonl
+SFT_LOCAL_PUBLIC_STEPS := 800
+SFT_LOCAL_PUBLIC_BATCH := 1
+SFT_LOCAL_PUBLIC_LR := 4e-6
+SFT_LOCAL_PUBLIC_LR_MIN := 1e-6
+SFT_LOCAL_PUBLIC_LR_WARMUP_STEPS := 50
+SFT_LOCAL_PUBLIC_WEIGHT_DECAY := 0.01
+SFT_LOCAL_PUBLIC_CHECKPOINT_INTERVAL := 100
+SFT_LOCAL_PUBLIC_LOG_INTERVAL := 25
+SFT_LOCAL_PUBLIC_VALIDATION_FRACTION := 0.05
+SFT_LOCAL_PUBLIC_VALIDATION_BATCHES := 5
+SFT_LOCAL_PUBLIC_MAX_EXAMPLES := 4000
+SFT_LOCAL_PUBLIC_SOURCE_WEIGHTS := anchor=4,no_robots=1.5,openassistant=1.25,dolly=1,ultrachat=0.8,wildchat=0.25,default=1
+SFT_LOCAL_STYLE_DATA := data/sft/stages/style-playful-direct.jsonl
+SFT_LOCAL_STYLE_BASE_CHECKPOINT := $(SFT_LOCAL_PUBLIC_OUT)
+SFT_LOCAL_STYLE_OUT := data/sft/runs/chat-style-local.pt
+SFT_LOCAL_STYLE_METRICS := data/sft/runs/chat-style-local-metrics.jsonl
+SFT_LOCAL_STYLE_STEPS := 200
+SFT_LOCAL_STYLE_BATCH := 1
+SFT_LOCAL_STYLE_LR := 2e-6
+SFT_LOCAL_STYLE_LR_MIN := 8e-7
+SFT_LOCAL_STYLE_LR_WARMUP_STEPS := 25
+SFT_LOCAL_STYLE_WEIGHT_DECAY := 0.01
+SFT_LOCAL_STYLE_CHECKPOINT_INTERVAL := 100
+SFT_LOCAL_STYLE_LOG_INTERVAL := 25
+SFT_LOCAL_STAGED_OUT := $(SFT_LOCAL_STYLE_OUT)
 SFT_LOCAL_SMOKE_MAX_EXAMPLES_PER_SOURCE := 100
 SFT_LOCAL_SMOKE_MAX_EXAMPLES := 500
-SFT_LOCAL_SMOKE_STEPS := 80
+SFT_LOCAL_SMOKE_ANCHOR_STEPS := 120
+SFT_LOCAL_SMOKE_PUBLIC_STEPS := 160
 SFT_LOCAL_SMOKE_BATCH := 1
 
-.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 ingest-stream-sources train sft-import-public sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged sft-prepare-local sft-core-local sft-local sft-local-smoke params train-export-run train-4090 train-200m train-h100 train-300m runpod-train-300m std-train export-model generate run-model chat smoke-train clean-generated
+.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 ingest-stream-sources train sft-import-public sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged sft-prepare-local sft-anchor-local sft-public-local sft-style-local sft-core-local sft-local sft-local-smoke params train-export-run train-4090 train-200m train-h100 train-300m runpod-train-300m std-train export-model generate run-model chat smoke-train clean-generated
 
 help:
 	@echo "SuperAGI pipeline targets"
@@ -700,6 +733,7 @@ sft-train: setup
 		--weight-decay "$(SFT_WEIGHT_DECAY)" \
 		--grad-clip "$(SFT_GRAD_CLIP)" \
 		--checkpoint-interval "$(SFT_CHECKPOINT_INTERVAL)" \
+		--log-interval "$(SFT_LOG_INTERVAL)" \
 		--validation-fraction "$(SFT_VALIDATION_FRACTION)" \
 		--validation-batches "$(SFT_VALIDATION_BATCHES)" \
 		--max-examples "$(SFT_MAX_EXAMPLES)" \
@@ -753,7 +787,8 @@ sft-anchor:
 		SFT_LR_MIN="$(SFT_ANCHOR_LR_MIN)" \
 		SFT_LR_WARMUP_STEPS="$(SFT_ANCHOR_LR_WARMUP_STEPS)" \
 		SFT_WEIGHT_DECAY="$(SFT_ANCHOR_WEIGHT_DECAY)" \
-		SFT_CHECKPOINT_INTERVAL="$(SFT_ANCHOR_CHECKPOINT_INTERVAL)"
+		SFT_CHECKPOINT_INTERVAL="$(SFT_ANCHOR_CHECKPOINT_INTERVAL)" \
+		SFT_LOG_INTERVAL="$(SFT_ANCHOR_LOG_INTERVAL)"
 	@printf '==> [sft-anchor] Finished anchor behavior SFT phase\n'
 
 sft-broad:
@@ -770,6 +805,7 @@ sft-broad:
 		SFT_LR_WARMUP_STEPS="$(SFT_BROAD_LR_WARMUP_STEPS)" \
 		SFT_WEIGHT_DECAY="$(SFT_BROAD_WEIGHT_DECAY)" \
 		SFT_CHECKPOINT_INTERVAL="$(SFT_BROAD_CHECKPOINT_INTERVAL)" \
+		SFT_LOG_INTERVAL="$(SFT_BROAD_LOG_INTERVAL)" \
 		SFT_SOURCE_WEIGHTS="$(SFT_BROAD_SOURCE_WEIGHTS)"
 	@printf '==> [sft-broad] Finished broad chat SFT phase\n'
 
@@ -786,7 +822,8 @@ sft-style:
 		SFT_LR_MIN="$(SFT_STYLE_LR_MIN)" \
 		SFT_LR_WARMUP_STEPS="$(SFT_STYLE_LR_WARMUP_STEPS)" \
 		SFT_WEIGHT_DECAY="$(SFT_STYLE_WEIGHT_DECAY)" \
-		SFT_CHECKPOINT_INTERVAL="$(SFT_STYLE_CHECKPOINT_INTERVAL)"
+		SFT_CHECKPOINT_INTERVAL="$(SFT_STYLE_CHECKPOINT_INTERVAL)" \
+		SFT_LOG_INTERVAL="$(SFT_STYLE_LOG_INTERVAL)"
 	@printf '==> [sft-style] Finished playful direct style SFT phase\n'
 
 sft-staged:
@@ -815,45 +852,96 @@ sft-prepare-local:
 	@printf 'SFT local metadata: $(SFT_LOCAL_IMPORT_METADATA)\n'
 	@printf '==> [sft-prepare-local] Finished importing bounded public SFT data\n'
 
-sft-core-local:
-	@printf '==> [sft-core-local] Training local core chat SFT checkpoint\n'
+sft-anchor-local:
+	@printf '==> [sft-anchor-local] Training local anchor behavior SFT phase\n'
 	$(MAKE) sft-train \
 		SFT_BASE_CHECKPOINT="$(SFT_LOCAL_BASE_CHECKPOINT)" \
-		SFT_DATA="$(SFT_LOCAL_CORE_DATA)" \
-		SFT_OUT="$(SFT_LOCAL_CORE_OUT)" \
-		SFT_METRICS="$(SFT_LOCAL_CORE_METRICS)" \
-		SFT_STEPS="$(SFT_LOCAL_CORE_STEPS)" \
-		SFT_BATCH="$(SFT_LOCAL_CORE_BATCH)" \
-		SFT_LR="$(SFT_LOCAL_CORE_LR)" \
-		SFT_LR_MIN="$(SFT_LOCAL_CORE_LR_MIN)" \
-		SFT_LR_WARMUP_STEPS="$(SFT_LOCAL_CORE_LR_WARMUP_STEPS)" \
-		SFT_WEIGHT_DECAY="$(SFT_LOCAL_CORE_WEIGHT_DECAY)" \
-		SFT_CHECKPOINT_INTERVAL="$(SFT_LOCAL_CORE_CHECKPOINT_INTERVAL)" \
-		SFT_VALIDATION_FRACTION="$(SFT_LOCAL_CORE_VALIDATION_FRACTION)" \
-		SFT_VALIDATION_BATCHES="$(SFT_LOCAL_CORE_VALIDATION_BATCHES)" \
-		SFT_MAX_EXAMPLES="$(SFT_LOCAL_CORE_MAX_EXAMPLES)" \
-		SFT_SOURCE_WEIGHTS="$(SFT_LOCAL_SOURCE_WEIGHTS)" \
+		SFT_DATA="$(SFT_LOCAL_ANCHOR_DATA)" \
+		SFT_OUT="$(SFT_LOCAL_ANCHOR_OUT)" \
+		SFT_METRICS="$(SFT_LOCAL_ANCHOR_METRICS)" \
+		SFT_STEPS="$(SFT_LOCAL_ANCHOR_STEPS)" \
+		SFT_BATCH="$(SFT_LOCAL_ANCHOR_BATCH)" \
+		SFT_LR="$(SFT_LOCAL_ANCHOR_LR)" \
+		SFT_LR_MIN="$(SFT_LOCAL_ANCHOR_LR_MIN)" \
+		SFT_LR_WARMUP_STEPS="$(SFT_LOCAL_ANCHOR_LR_WARMUP_STEPS)" \
+		SFT_WEIGHT_DECAY="$(SFT_LOCAL_ANCHOR_WEIGHT_DECAY)" \
+		SFT_CHECKPOINT_INTERVAL="$(SFT_LOCAL_ANCHOR_CHECKPOINT_INTERVAL)" \
+		SFT_LOG_INTERVAL="$(SFT_LOCAL_ANCHOR_LOG_INTERVAL)" \
+		SFT_VALIDATION_FRACTION="$(SFT_LOCAL_ANCHOR_VALIDATION_FRACTION)" \
+		SFT_VALIDATION_BATCHES="$(SFT_LOCAL_ANCHOR_VALIDATION_BATCHES)" \
 		SFT_DEVICE="$(SFT_LOCAL_DEVICE)"
-	@printf '==> [sft-core-local] Finished local core chat SFT checkpoint\n'
+	@printf '==> [sft-anchor-local] Finished local anchor behavior SFT phase\n'
+
+sft-public-local:
+	@printf '==> [sft-public-local] Training local public broad SFT phase\n'
+	$(MAKE) sft-train \
+		SFT_BASE_CHECKPOINT="$(SFT_LOCAL_PUBLIC_BASE_CHECKPOINT)" \
+		SFT_DATA="$(SFT_LOCAL_PUBLIC_DATA)" \
+		SFT_OUT="$(SFT_LOCAL_PUBLIC_OUT)" \
+		SFT_METRICS="$(SFT_LOCAL_PUBLIC_METRICS)" \
+		SFT_STEPS="$(SFT_LOCAL_PUBLIC_STEPS)" \
+		SFT_BATCH="$(SFT_LOCAL_PUBLIC_BATCH)" \
+		SFT_LR="$(SFT_LOCAL_PUBLIC_LR)" \
+		SFT_LR_MIN="$(SFT_LOCAL_PUBLIC_LR_MIN)" \
+		SFT_LR_WARMUP_STEPS="$(SFT_LOCAL_PUBLIC_LR_WARMUP_STEPS)" \
+		SFT_WEIGHT_DECAY="$(SFT_LOCAL_PUBLIC_WEIGHT_DECAY)" \
+		SFT_CHECKPOINT_INTERVAL="$(SFT_LOCAL_PUBLIC_CHECKPOINT_INTERVAL)" \
+		SFT_LOG_INTERVAL="$(SFT_LOCAL_PUBLIC_LOG_INTERVAL)" \
+		SFT_VALIDATION_FRACTION="$(SFT_LOCAL_PUBLIC_VALIDATION_FRACTION)" \
+		SFT_VALIDATION_BATCHES="$(SFT_LOCAL_PUBLIC_VALIDATION_BATCHES)" \
+		SFT_MAX_EXAMPLES="$(SFT_LOCAL_PUBLIC_MAX_EXAMPLES)" \
+		SFT_SOURCE_WEIGHTS="$(SFT_LOCAL_PUBLIC_SOURCE_WEIGHTS)" \
+		SFT_DEVICE="$(SFT_LOCAL_DEVICE)"
+	@printf '==> [sft-public-local] Finished local public broad SFT phase\n'
+
+sft-style-local:
+	@printf '==> [sft-style-local] Training local style SFT phase\n'
+	$(MAKE) sft-train \
+		SFT_BASE_CHECKPOINT="$(SFT_LOCAL_STYLE_BASE_CHECKPOINT)" \
+		SFT_DATA="$(SFT_LOCAL_STYLE_DATA)" \
+		SFT_OUT="$(SFT_LOCAL_STYLE_OUT)" \
+		SFT_METRICS="$(SFT_LOCAL_STYLE_METRICS)" \
+		SFT_STEPS="$(SFT_LOCAL_STYLE_STEPS)" \
+		SFT_BATCH="$(SFT_LOCAL_STYLE_BATCH)" \
+		SFT_LR="$(SFT_LOCAL_STYLE_LR)" \
+		SFT_LR_MIN="$(SFT_LOCAL_STYLE_LR_MIN)" \
+		SFT_LR_WARMUP_STEPS="$(SFT_LOCAL_STYLE_LR_WARMUP_STEPS)" \
+		SFT_WEIGHT_DECAY="$(SFT_LOCAL_STYLE_WEIGHT_DECAY)" \
+		SFT_CHECKPOINT_INTERVAL="$(SFT_LOCAL_STYLE_CHECKPOINT_INTERVAL)" \
+		SFT_LOG_INTERVAL="$(SFT_LOCAL_STYLE_LOG_INTERVAL)" \
+		SFT_VALIDATION_FRACTION="0" \
+		SFT_DEVICE="$(SFT_LOCAL_DEVICE)"
+	@printf '==> [sft-style-local] Finished local style SFT phase\n'
+
+sft-core-local: sft-anchor-local sft-public-local
+	@printf '==> [sft-core-local] Finished staged local core chat SFT checkpoint\n'
 
 sft-local:
 	@printf '==> [sft-local] Starting local SFT pipeline\n'
 	$(MAKE) sft-prepare-local
-	$(MAKE) sft-core-local
-	@printf 'Final local SFT checkpoint: $(SFT_LOCAL_CORE_OUT)\n'
+	$(MAKE) sft-anchor-local
+	$(MAKE) sft-public-local
+	$(MAKE) sft-style-local
+	@printf 'Final local SFT checkpoint: $(SFT_LOCAL_STAGED_OUT)\n'
 	@printf '==> [sft-local] Finished local SFT pipeline\n'
 
 sft-local-smoke:
 	@printf '==> [sft-local-smoke] Starting small local SFT smoke pipeline\n'
 	$(MAKE) sft-prepare-local \
 		SFT_LOCAL_IMPORT_MAX_EXAMPLES_PER_SOURCE="$(SFT_LOCAL_SMOKE_MAX_EXAMPLES_PER_SOURCE)"
-	$(MAKE) sft-core-local \
-		SFT_LOCAL_CORE_OUT="data/sft/runs/chat-core-local-smoke.pt" \
-		SFT_LOCAL_CORE_METRICS="data/sft/runs/chat-core-local-smoke-metrics.jsonl" \
-		SFT_LOCAL_CORE_STEPS="$(SFT_LOCAL_SMOKE_STEPS)" \
-		SFT_LOCAL_CORE_BATCH="$(SFT_LOCAL_SMOKE_BATCH)" \
-		SFT_LOCAL_CORE_MAX_EXAMPLES="$(SFT_LOCAL_SMOKE_MAX_EXAMPLES)"
-	@printf 'Final local SFT smoke checkpoint: data/sft/runs/chat-core-local-smoke.pt\n'
+	$(MAKE) sft-anchor-local \
+		SFT_LOCAL_ANCHOR_OUT="data/sft/runs/chat-anchor-local-smoke.pt" \
+		SFT_LOCAL_ANCHOR_METRICS="data/sft/runs/chat-anchor-local-smoke-metrics.jsonl" \
+		SFT_LOCAL_ANCHOR_STEPS="$(SFT_LOCAL_SMOKE_ANCHOR_STEPS)" \
+		SFT_LOCAL_ANCHOR_BATCH="$(SFT_LOCAL_SMOKE_BATCH)"
+	$(MAKE) sft-public-local \
+		SFT_LOCAL_PUBLIC_BASE_CHECKPOINT="data/sft/runs/chat-anchor-local-smoke.pt" \
+		SFT_LOCAL_PUBLIC_OUT="data/sft/runs/chat-public-local-smoke.pt" \
+		SFT_LOCAL_PUBLIC_METRICS="data/sft/runs/chat-public-local-smoke-metrics.jsonl" \
+		SFT_LOCAL_PUBLIC_STEPS="$(SFT_LOCAL_SMOKE_PUBLIC_STEPS)" \
+		SFT_LOCAL_PUBLIC_BATCH="$(SFT_LOCAL_SMOKE_BATCH)" \
+		SFT_LOCAL_PUBLIC_MAX_EXAMPLES="$(SFT_LOCAL_SMOKE_MAX_EXAMPLES)"
+	@printf 'Final local SFT smoke checkpoint: data/sft/runs/chat-public-local-smoke.pt\n'
 	@printf '==> [sft-local-smoke] Finished small local SFT smoke pipeline\n'
 
 train-export-run:
