@@ -13,6 +13,7 @@ from superagi.chat.sft_training import (
     evaluate_sft_loss,
     limit_sft_examples,
     parse_sft_source_weights,
+    resolve_sft_pad_token_id,
     sample_sft_batch,
     should_log_sft_progress,
     source_summary,
@@ -93,6 +94,7 @@ def main() -> int:
         raise SystemExit(str(error)) from error
 
     checkpoint = load_checkpoint(base_path, map_location="cpu")
+    sft_pad_token_id = resolve_sft_pad_token_id(checkpoint.tokenizer)
     records = [
         record
         for data_path in data_paths
@@ -199,7 +201,7 @@ def main() -> int:
         input_ids, target_ids = sample_sft_batch(
             train_examples,
             batch_size=args.batch,
-            pad_token_id=0,
+            pad_token_id=sft_pad_token_id,
             device=device,
             generator=generator,
             source_weights=source_weights,
@@ -229,7 +231,7 @@ def main() -> int:
                     model,
                     validation_examples,
                     batch_size=args.batch,
-                    pad_token_id=0,
+                    pad_token_id=sft_pad_token_id,
                     device=device,
                     max_batches=args.validation_batches,
                 )

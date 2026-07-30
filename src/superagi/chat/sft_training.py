@@ -7,12 +7,20 @@ from dataclasses import dataclass
 import torch
 
 from superagi.chat.sft import IGNORE_INDEX, TokenizedSftExample
+from superagi.ingestion.tokenizer import PAD_TOKEN, TokenizerLike
 
 
 @dataclass(frozen=True)
 class SourceSummary:
     counts_text: str
     sampling_mass_text: str
+
+
+def resolve_sft_pad_token_id(tokenizer: TokenizerLike) -> int:
+    try:
+        return int(tokenizer.special_token_id(PAD_TOKEN))
+    except (AttributeError, ValueError) as error:
+        raise ValueError("SFT tokenizer must define a <pad> special token") from error
 
 
 def collate_sft_batch(

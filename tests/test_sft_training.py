@@ -10,6 +10,7 @@ from superagi.chat.sft_training import (
     limit_sft_examples,
     should_log_sft_progress,
     parse_sft_source_weights,
+    resolve_sft_pad_token_id,
     sample_sft_batch,
     split_sft_examples,
     source_sampling_weights,
@@ -19,6 +20,16 @@ from superagi.model.transformer import TransformerConfig, TransformerLM
 
 
 class SftTrainingTests(unittest.TestCase):
+    def test_resolves_pad_token_from_tokenizer(self) -> None:
+        test_case = self
+
+        class FakeTokenizer:
+            def special_token_id(self, token: str) -> int:
+                test_case.assertEqual(token, "<pad>")
+                return 17
+
+        self.assertEqual(resolve_sft_pad_token_id(FakeTokenizer()), 17)
+
     def test_collates_variable_length_sft_examples_with_label_padding(self) -> None:
         examples = [
             TokenizedSftExample(
