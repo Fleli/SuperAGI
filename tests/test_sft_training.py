@@ -6,6 +6,7 @@ from superagi.chat.sft import IGNORE_INDEX, TokenizedSftExample
 from superagi.chat.sft_training import (
     collate_sft_batch,
     evaluate_sft_loss,
+    limit_sft_examples,
     parse_sft_source_weights,
     sample_sft_batch,
     split_sft_examples,
@@ -94,6 +95,40 @@ class SftTrainingTests(unittest.TestCase):
 
         self.assertEqual(train_examples, tuple(examples))
         self.assertEqual(validation_examples, ())
+
+    def test_limits_sft_examples_deterministically_for_local_subset_runs(self) -> None:
+        examples = [
+            TokenizedSftExample(
+                text=f"example-{index}",
+                input_ids=(index, index + 1),
+                target_ids=(IGNORE_INDEX, index + 2),
+                supervised_token_count=1,
+            )
+            for index in range(10)
+        ]
+
+        limited_examples = limit_sft_examples(examples, max_examples=4, seed=456)
+        limited_examples_again = limit_sft_examples(examples, max_examples=4, seed=456)
+
+        self.assertEqual(len(limited_examples), 4)
+        self.assertEqual(limited_examples, limited_examples_again)
+        self.assertTrue(set(limited_examples).issubset(set(examples)))
+        self.assertNotEqual(limited_examples, tuple(examples[:4]))
+
+    def test_sft_example_limit_zero_keeps_all_examples(self) -> None:
+        examples = [
+            TokenizedSftExample(
+                text="only",
+                input_ids=(1, 2),
+                target_ids=(IGNORE_INDEX, 3),
+                supervised_token_count=1,
+            )
+        ]
+
+        self.assertEqual(
+            limit_sft_examples(examples, max_examples=0, seed=456),
+            tuple(examples),
+        )
 
     def test_evaluates_sft_validation_loss_without_updating_model(self) -> None:
         model = TransformerLM(

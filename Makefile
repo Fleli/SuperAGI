@@ -202,6 +202,7 @@ SFT_DEVICE := auto
 SFT_CHECKPOINT_INTERVAL := 250
 SFT_VALIDATION_FRACTION := 0.05
 SFT_VALIDATION_BATCHES := 10
+SFT_MAX_EXAMPLES := 0
 SFT_SOURCE_WEIGHTS :=
 SFT_SEED := 1337
 SFT_IMPORT_CHECKPOINT := $(SFT_BASE_CHECKPOINT)
@@ -262,7 +263,35 @@ SFT_STYLE_WEIGHT_DECAY := 0.01
 SFT_STYLE_CHECKPOINT_INTERVAL := 200
 SFT_STAGED_OUT := $(SFT_STYLE_OUT)
 
-.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 ingest-stream-sources train sft-import-public sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged params train-export-run train-4090 train-200m train-h100 train-300m runpod-train-300m std-train export-model generate run-model chat smoke-train clean-generated
+SFT_LOCAL_BASE_CHECKPOINT := ./best-300m-current.pt
+SFT_LOCAL_DEVICE := auto
+SFT_LOCAL_IMPORT_OUT := data/sft/imported/local-public-mixed.jsonl
+SFT_LOCAL_IMPORT_METADATA := data/sft/imported/local-public-mixed.metadata.json
+SFT_LOCAL_IMPORT_MAX_ROWS_PER_SOURCE := 20000
+SFT_LOCAL_IMPORT_MAX_EXAMPLES_PER_SOURCE := 1000
+SFT_LOCAL_IMPORT_MAX_CONTEXT_TOKENS := 900
+SFT_LOCAL_IMPORT_MAX_MESSAGES := 6
+SFT_LOCAL_IMPORT_MAX_AGI_CHARS := 900
+SFT_LOCAL_CORE_DATA := data/sft/stages/anchor.jsonl,data/sft/stages/broad-mixed.jsonl,$(SFT_LOCAL_IMPORT_OUT)
+SFT_LOCAL_CORE_OUT := data/sft/runs/chat-core-local.pt
+SFT_LOCAL_CORE_METRICS := data/sft/runs/chat-core-local-metrics.jsonl
+SFT_LOCAL_CORE_STEPS := 600
+SFT_LOCAL_CORE_BATCH := 2
+SFT_LOCAL_CORE_LR := 4e-6
+SFT_LOCAL_CORE_LR_MIN := 1e-6
+SFT_LOCAL_CORE_LR_WARMUP_STEPS := 50
+SFT_LOCAL_CORE_WEIGHT_DECAY := 0.01
+SFT_LOCAL_CORE_CHECKPOINT_INTERVAL := 100
+SFT_LOCAL_CORE_VALIDATION_FRACTION := 0.05
+SFT_LOCAL_CORE_VALIDATION_BATCHES := 5
+SFT_LOCAL_CORE_MAX_EXAMPLES := 4000
+SFT_LOCAL_SOURCE_WEIGHTS := anchor=5,broad-mixed=2,no_robots=1.5,openassistant=1.25,dolly=1,ultrachat=0.8,wildchat=0.25,default=1
+SFT_LOCAL_SMOKE_MAX_EXAMPLES_PER_SOURCE := 100
+SFT_LOCAL_SMOKE_MAX_EXAMPLES := 500
+SFT_LOCAL_SMOKE_STEPS := 80
+SFT_LOCAL_SMOKE_BATCH := 1
+
+.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 ingest-stream-sources train sft-import-public sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged sft-prepare-local sft-core-local sft-local sft-local-smoke params train-export-run train-4090 train-200m train-h100 train-300m runpod-train-300m std-train export-model generate run-model chat smoke-train clean-generated
 
 help:
 	@echo "SuperAGI pipeline targets"
@@ -289,6 +318,8 @@ help:
 	@echo "  make train-export-run RESUME=data/checkpoints/latest.pt STEPS=1000 PROMPT=\"Attention is\""
 	@echo "  make sft-import-public SFT_IMPORT_CHECKPOINT=./best-200m-current.pt"
 	@echo "  make sft-train SFT_BASE_CHECKPOINT=data/checkpoints/best.pt SFT_STEPS=200 SFT_SOURCE_WEIGHTS=anchor=4,wildchat=0.35"
+	@echo "  make sft-local-smoke SFT_LOCAL_BASE_CHECKPOINT=./best-300m-current.pt"
+	@echo "  make sft-local SFT_LOCAL_BASE_CHECKPOINT=./best-300m-current.pt"
 	@echo "  make sft-overfit-50 SFT_OVERFIT_BASE_CHECKPOINT=./best-current-cloud.pt"
 	@echo "  make sft-staged SFT_STAGED_BASE_CHECKPOINT=./best-current-cloud.pt  # run sft-import-public first"
 	@echo "  make train-4090        Fetch C4, rebuild artifacts, and start the RTX 4090 night run"
@@ -671,6 +702,7 @@ sft-train: setup
 		--checkpoint-interval "$(SFT_CHECKPOINT_INTERVAL)" \
 		--validation-fraction "$(SFT_VALIDATION_FRACTION)" \
 		--validation-batches "$(SFT_VALIDATION_BATCHES)" \
+		--max-examples "$(SFT_MAX_EXAMPLES)" \
 		--source-weights "$(SFT_SOURCE_WEIGHTS)" \
 		--device "$(SFT_DEVICE)" \
 		--seed "$(SFT_SEED)"
@@ -767,6 +799,62 @@ sft-staged:
 		SFT_STYLE_BASE_CHECKPOINT="$(SFT_BROAD_OUT)"
 	@printf 'Final staged checkpoint: $(SFT_STAGED_OUT)\n'
 	@printf '==> [sft-staged] Finished staged supervised chat training\n'
+
+sft-prepare-local:
+	@printf '==> [sft-prepare-local] Importing bounded public SFT data for local testing\n'
+	$(MAKE) sft-import-public \
+		SFT_IMPORT_CHECKPOINT="$(SFT_LOCAL_BASE_CHECKPOINT)" \
+		SFT_IMPORT_OUT="$(SFT_LOCAL_IMPORT_OUT)" \
+		SFT_IMPORT_METADATA="$(SFT_LOCAL_IMPORT_METADATA)" \
+		SFT_IMPORT_MAX_ROWS_PER_SOURCE="$(SFT_LOCAL_IMPORT_MAX_ROWS_PER_SOURCE)" \
+		SFT_IMPORT_MAX_EXAMPLES_PER_SOURCE="$(SFT_LOCAL_IMPORT_MAX_EXAMPLES_PER_SOURCE)" \
+		SFT_IMPORT_MAX_CONTEXT_TOKENS="$(SFT_LOCAL_IMPORT_MAX_CONTEXT_TOKENS)" \
+		SFT_IMPORT_MAX_MESSAGES="$(SFT_LOCAL_IMPORT_MAX_MESSAGES)" \
+		SFT_IMPORT_MAX_AGI_CHARS="$(SFT_LOCAL_IMPORT_MAX_AGI_CHARS)"
+	@printf 'SFT local import: $(SFT_LOCAL_IMPORT_OUT)\n'
+	@printf 'SFT local metadata: $(SFT_LOCAL_IMPORT_METADATA)\n'
+	@printf '==> [sft-prepare-local] Finished importing bounded public SFT data\n'
+
+sft-core-local:
+	@printf '==> [sft-core-local] Training local core chat SFT checkpoint\n'
+	$(MAKE) sft-train \
+		SFT_BASE_CHECKPOINT="$(SFT_LOCAL_BASE_CHECKPOINT)" \
+		SFT_DATA="$(SFT_LOCAL_CORE_DATA)" \
+		SFT_OUT="$(SFT_LOCAL_CORE_OUT)" \
+		SFT_METRICS="$(SFT_LOCAL_CORE_METRICS)" \
+		SFT_STEPS="$(SFT_LOCAL_CORE_STEPS)" \
+		SFT_BATCH="$(SFT_LOCAL_CORE_BATCH)" \
+		SFT_LR="$(SFT_LOCAL_CORE_LR)" \
+		SFT_LR_MIN="$(SFT_LOCAL_CORE_LR_MIN)" \
+		SFT_LR_WARMUP_STEPS="$(SFT_LOCAL_CORE_LR_WARMUP_STEPS)" \
+		SFT_WEIGHT_DECAY="$(SFT_LOCAL_CORE_WEIGHT_DECAY)" \
+		SFT_CHECKPOINT_INTERVAL="$(SFT_LOCAL_CORE_CHECKPOINT_INTERVAL)" \
+		SFT_VALIDATION_FRACTION="$(SFT_LOCAL_CORE_VALIDATION_FRACTION)" \
+		SFT_VALIDATION_BATCHES="$(SFT_LOCAL_CORE_VALIDATION_BATCHES)" \
+		SFT_MAX_EXAMPLES="$(SFT_LOCAL_CORE_MAX_EXAMPLES)" \
+		SFT_SOURCE_WEIGHTS="$(SFT_LOCAL_SOURCE_WEIGHTS)" \
+		SFT_DEVICE="$(SFT_LOCAL_DEVICE)"
+	@printf '==> [sft-core-local] Finished local core chat SFT checkpoint\n'
+
+sft-local:
+	@printf '==> [sft-local] Starting local SFT pipeline\n'
+	$(MAKE) sft-prepare-local
+	$(MAKE) sft-core-local
+	@printf 'Final local SFT checkpoint: $(SFT_LOCAL_CORE_OUT)\n'
+	@printf '==> [sft-local] Finished local SFT pipeline\n'
+
+sft-local-smoke:
+	@printf '==> [sft-local-smoke] Starting small local SFT smoke pipeline\n'
+	$(MAKE) sft-prepare-local \
+		SFT_LOCAL_IMPORT_MAX_EXAMPLES_PER_SOURCE="$(SFT_LOCAL_SMOKE_MAX_EXAMPLES_PER_SOURCE)"
+	$(MAKE) sft-core-local \
+		SFT_LOCAL_CORE_OUT="data/sft/runs/chat-core-local-smoke.pt" \
+		SFT_LOCAL_CORE_METRICS="data/sft/runs/chat-core-local-smoke-metrics.jsonl" \
+		SFT_LOCAL_CORE_STEPS="$(SFT_LOCAL_SMOKE_STEPS)" \
+		SFT_LOCAL_CORE_BATCH="$(SFT_LOCAL_SMOKE_BATCH)" \
+		SFT_LOCAL_CORE_MAX_EXAMPLES="$(SFT_LOCAL_SMOKE_MAX_EXAMPLES)"
+	@printf 'Final local SFT smoke checkpoint: data/sft/runs/chat-core-local-smoke.pt\n'
+	@printf '==> [sft-local-smoke] Finished small local SFT smoke pipeline\n'
 
 train-export-run:
 	@set -e; \

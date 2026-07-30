@@ -117,6 +117,25 @@ def split_sft_examples(
     return train_examples, validation_examples
 
 
+def limit_sft_examples(
+    examples: Sequence[TokenizedSftExample],
+    *,
+    max_examples: int,
+    seed: int,
+) -> tuple[TokenizedSftExample, ...]:
+    if max_examples < 0:
+        raise ValueError("max_examples must be non-negative")
+    if not examples:
+        raise ValueError("at least one SFT example is required")
+    if max_examples == 0 or len(examples) <= max_examples:
+        return tuple(examples)
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    indices = torch.randperm(len(examples), generator=generator)[:max_examples]
+    return tuple(examples[int(index)] for index in indices.tolist())
+
+
 def parse_sft_source_weights(value: str) -> dict[str, float]:
     weights: dict[str, float] = {}
     if not value.strip():

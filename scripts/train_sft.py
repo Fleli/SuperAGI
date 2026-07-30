@@ -10,6 +10,7 @@ import torch
 from superagi.chat.sft import load_sft_records, tokenize_sft_messages
 from superagi.chat.sft_training import (
     evaluate_sft_loss,
+    limit_sft_examples,
     parse_sft_source_weights,
     sample_sft_batch,
     source_summary,
@@ -44,6 +45,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-fraction", type=float, default=0.05)
     parser.add_argument("--validation-batches", type=int, default=10)
     parser.add_argument(
+        "--max-examples",
+        type=int,
+        default=0,
+        help="Deterministically cap loaded SFT examples before train/validation split; 0 uses all examples.",
+    )
+    parser.add_argument(
         "--source-weights",
         default="",
         help="Comma-separated source=weight entries, e.g. anchor=4,wildchat=0.35",
@@ -63,6 +70,8 @@ def main() -> int:
         raise SystemExit("--validation-fraction must be in [0, 1)")
     if args.validation_batches <= 0:
         raise SystemExit("--validation-batches must be positive")
+    if args.max_examples < 0:
+        raise SystemExit("--max-examples must be non-negative")
 
     base_path = Path(args.base_checkpoint)
     data_paths = _parse_data_paths(args.data)
@@ -105,6 +114,18 @@ def main() -> int:
         print(
             f"Skipped {skipped_examples} SFT examples longer than "
             f"context_length={checkpoint.config.context_length}",
+            flush=True,
+        )
+    total_examples_before_limit = len(examples)
+    examples = limit_sft_examples(
+        examples,
+        max_examples=args.max_examples,
+        seed=args.seed,
+    )
+    if len(examples) < total_examples_before_limit:
+        print(
+            "SFT max examples: "
+            f"using {len(examples)} of {total_examples_before_limit}",
             flush=True,
         )
     train_examples, validation_examples = split_sft_examples(
@@ -278,6 +299,7 @@ def _build_metadata(
             "sft_validation_examples": validation_examples,
             "sft_validation_fraction": args.validation_fraction,
             "sft_validation_batches": args.validation_batches,
+            "sft_max_examples": args.max_examples,
             "sft_source_weights": source_weights,
             "sft_skipped_examples": skipped_examples,
         }

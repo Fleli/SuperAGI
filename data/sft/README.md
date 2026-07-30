@@ -59,11 +59,16 @@ make sft-train \
   SFT_OUT=data/sft/runs/chat-sft.pt \
   SFT_STEPS=3000 \
   SFT_BATCH=8 \
+  SFT_MAX_EXAMPLES=0 \
   SFT_LR=3e-5 \
   SFT_DEVICE=auto
 ```
 
-The trainer formats examples with literal role prefixes such as `User:` and `AGI:`. Future tokenizers can add special chat tokens.
+The trainer formats examples with the checkpoint tokenizer's chat special
+tokens: `<bos>`, `<user>`, `<agi>`, and `<eos>`. Loss is only applied to AGI
+answer tokens, so user prompts teach context rather than being predicted.
+Set `SFT_MAX_EXAMPLES` above zero to run a deterministic subset before using
+the full corpus.
 
 `SFT_DATA` may contain one JSONL file or comma-separated JSONL files. Public
 imports carry a `source` field such as `wildchat:123`; local staged files default
@@ -107,6 +112,30 @@ This writes separate checkpoints for each phase:
 - `data/sft/runs/chat-anchor.pt`
 - `data/sft/runs/chat-broad.pt`
 - `data/sft/runs/chat-playful-direct.pt`
+
+For local testing of a downloaded 300M checkpoint, copy the cloud checkpoint to
+`./best-300m-current.pt`, then run a small smoke pass:
+
+```bash
+make sft-local-smoke \
+  SFT_LOCAL_BASE_CHECKPOINT=./best-300m-current.pt \
+  SFT_LOCAL_DEVICE=auto
+```
+
+If the smoke run shows clear instruction-following movement, run the bounded
+local core pass:
+
+```bash
+make sft-local \
+  SFT_LOCAL_BASE_CHECKPOINT=./best-300m-current.pt \
+  SFT_LOCAL_DEVICE=auto
+```
+
+The local targets import public SFT data into
+`data/sft/imported/local-public-mixed.jsonl`, mix it with the curated anchor and
+broad files, and write `data/sft/runs/chat-core-local.pt`. Override
+`SFT_LOCAL_CORE_MAX_EXAMPLES=0` for the full imported corpus, or keep the
+default bounded subset while testing behavior on a Mac.
 
 For a conservative chat test, start with:
 
