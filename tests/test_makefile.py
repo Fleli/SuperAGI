@@ -81,13 +81,15 @@ class MakefileTests(unittest.TestCase):
         contents = makefile.read_text(encoding="utf-8")
 
         self.assertIn("sft-import-public", contents)
-        self.assertIn("SFT_IMPORT_SOURCES := no_robots,dolly,openassistant,wildchat,ultrachat", contents)
+        self.assertIn("SFT_IMPORT_SOURCES := no_robots,dolly,openassistant,ultrachat", contents)
+        self.assertIn("SFT_IMPORT_SEED := 1337", contents)
         self.assertIn("SFT_IMPORT_OUT := data/sft/imported/public-mixed.jsonl", contents)
         self.assertIn("SFT_IMPORT_METADATA := data/sft/imported/public-mixed.metadata.json", contents)
         self.assertIn("scripts/import_public_sft.py", contents)
         self.assertIn('--checkpoint "$(SFT_IMPORT_CHECKPOINT)"', contents)
         self.assertIn('--sources "$(SFT_IMPORT_SOURCES)"', contents)
         self.assertIn('--max-context-tokens "$(SFT_IMPORT_MAX_CONTEXT_TOKENS)"', contents)
+        self.assertIn('--seed "$(SFT_IMPORT_SEED)"', contents)
         self.assertIn("==> [sft-import-public] Importing public SFT datasets", contents)
 
     def test_sft_overfit_50_target_trains_diagnostic_checkpoint(self) -> None:

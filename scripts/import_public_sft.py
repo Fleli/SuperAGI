@@ -1,27 +1,30 @@
 from __future__ import annotations
 
 import argparse
+import json
+from collections import Counter, defaultdict
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from datasets import load_dataset
 
 from superagi.chat.sft_public_import import (
     ImportFilterConfig,
+    ImportedSftExample,
     ImportResult,
-    ImportStats,
     PublicSftImporter,
     convert_dolly_row,
     convert_no_robots_row,
     convert_ultrachat_row,
     convert_wildchat_row,
     iter_openassistant_conversations,
+    seeded_source_sample,
 )
 from superagi.model.checkpoint import load_checkpoint
 
 
-DEFAULT_SOURCES = ("no_robots", "dolly", "openassistant", "wildchat", "ultrachat")
+DEFAULT_SOURCES = ("no_robots", "dolly", "openassistant", "ultrachat")
 
 SOURCE_DATASETS = {
     "no_robots": ("HuggingFaceH4/no_robots", "train"),
@@ -32,7 +35,7 @@ SOURCE_DATASETS = {
 }
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Download public instruction/chat datasets and filter them into SuperAGI SFT JSONL.",
     )
@@ -53,11 +56,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-messages", type=int, default=8)
     parser.add_argument("--max-agi-chars", type=int, default=1200)
     parser.add_argument("--min-agi-chars", type=int, default=20)
-    return parser.parse_args()
+    parser.add_argument("--seed", type=int, default=1337)
+    return parser
+
+
+def parse_args() -> argparse.Namespace:
+    return build_parser().parse_args()
 
 
 def main() -> int:
-    args = parse_args()
+    return run_import(parse_args())
+
+
+def run_import(args: argparse.Namespace) -> int:
     sources = _parse_sources(args.sources)
     checkpoint = load_checkpoint(args.checkpoint, map_location="cpu")
     importer = PublicSftImporter(
@@ -70,49 +81,60 @@ def main() -> int:
         ),
     )
 
-    all_examples = []
-    combined_stats = ImportStats()
-    source_summaries: dict[str, dict[str, object]] = {}
+    candidates: list[tuple[str, object]] = []
+    candidate_counts: Counter[str] = Counter()
     for source in sources:
         print(f"Importing source: {source}", flush=True)
-        candidates = list(
+        source_candidates = list(
             _iter_source_candidates(
                 source=source,
                 max_rows=args.max_rows_per_source,
                 max_messages=args.max_messages,
             )
         )
-        imported = importer.import_conversations(candidates)
-        selected_examples = imported.examples[: args.max_examples_per_source]
-        combined_stats.seen += imported.stats.seen
-        combined_stats.accepted += len(selected_examples)
-        combined_stats.rejected_by_reason.update(imported.stats.rejected_by_reason)
-        if len(imported.examples) > len(selected_examples):
-            combined_stats.rejected_by_reason["source_limit"] += (
-                len(imported.examples) - len(selected_examples)
-            )
+        candidates.extend(source_candidates)
+        candidate_counts[source] = len(source_candidates)
+
+    imported = importer.import_conversations(candidates)
+    accepted_by_source: dict[str, list[ImportedSftExample]] = defaultdict(list)
+    for example in imported.examples:
+        accepted_by_source[_source_family(example.source)].append(example)
+
+    all_examples = []
+    accepted_before_limit_counts: Counter[str] = Counter()
+    selected_counts: Counter[str] = Counter()
+    for source in sources:
+        accepted_examples = accepted_by_source[source]
+        accepted_before_limit_counts[source] = len(accepted_examples)
+        selected_examples = seeded_source_sample(
+            accepted_examples,
+            limit=args.max_examples_per_source,
+            seed=args.seed,
+            source=source,
+        )
+        selected_counts[source] = len(selected_examples)
         all_examples.extend(selected_examples)
-        source_summaries[source] = {
-            "candidates": imported.stats.seen,
-            "accepted_before_source_limit": imported.stats.accepted,
-            "selected": len(selected_examples),
-            "rejected_by_reason": dict(
-                sorted(imported.stats.rejected_by_reason.items())
-            ),
-        }
         print(
-            f"Selected {len(selected_examples)} / {imported.stats.accepted} accepted "
-            f"from {imported.stats.seen} candidates",
+            f"Selected {len(selected_examples)} / {len(accepted_examples)} accepted "
+            f"from {candidate_counts[source]} candidates",
             flush=True,
         )
 
-    result = ImportResult(examples=tuple(all_examples), stats=combined_stats)
+    result = ImportResult(examples=tuple(all_examples), stats=imported.stats)
     importer.write_import(
         result,
         out_path=Path(args.out),
         metadata_path=Path(args.metadata),
     )
-    _append_source_metadata(Path(args.metadata), source_summaries)
+    _append_source_metadata(
+        Path(args.metadata),
+        seed=args.seed,
+        sources=sources,
+        candidate_counts=candidate_counts,
+        accepted_before_limit_counts=accepted_before_limit_counts,
+        selected_counts=selected_counts,
+        result=result,
+    )
     print(f"Wrote {len(all_examples)} public SFT examples to {args.out}")
     print(f"Metadata: {args.metadata}")
     return 0
@@ -170,12 +192,33 @@ def _parse_sources(value: str) -> tuple[str, ...]:
 
 def _append_source_metadata(
     metadata_path: Path,
-    source_summaries: dict[str, dict[str, object]],
+    *,
+    seed: int,
+    sources: tuple[str, ...],
+    candidate_counts: Mapping[str, int],
+    accepted_before_limit_counts: Mapping[str, int],
+    selected_counts: Mapping[str, int],
+    result: ImportResult,
 ) -> None:
-    import json
-
     payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    source_summaries = {
+        source: {
+            "candidates": candidate_counts[source],
+            "accepted_before_source_limit": accepted_before_limit_counts[source],
+            "selected": selected_counts[source],
+        }
+        for source in sources
+    }
+    rejection_reasons = dict(sorted(result.stats.rejected_by_reason.items()))
+    payload["seed"] = seed
     payload["sources"] = source_summaries
+    payload["selected_source_counts"] = dict(sorted(selected_counts.items()))
+    payload["accepted_before_limit_source_counts"] = dict(
+        sorted(accepted_before_limit_counts.items())
+    )
+    payload["rejection_reasons"] = rejection_reasons
+    payload["exact_duplicate_count"] = rejection_reasons.get("duplicate_answer", 0)
+    payload["near_duplicate_count"] = rejection_reasons.get("near_duplicate", 0)
     payload["licenses_note"] = (
         "Review each upstream dataset license before using imported SFT data outside "
         "local learning experiments."
@@ -184,6 +227,10 @@ def _append_source_metadata(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+
+
+def _source_family(source: str) -> str:
+    return source.split(":", 1)[0]
 
 
 if __name__ == "__main__":

@@ -3,14 +3,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from superagi.chat.formatting import ChatMessage
 from superagi.chat.sft_public_import import (
     ImportFilterConfig,
+    ImportedSftExample,
     PublicSftImporter,
     convert_dolly_row,
     convert_no_robots_row,
     convert_ultrachat_row,
     convert_wildchat_row,
     iter_openassistant_conversations,
+    seeded_source_sample,
 )
 from superagi.ingestion.tokenizer import BpeTokenizer
 
@@ -154,6 +157,153 @@ class PublicSftImportTests(unittest.TestCase):
         self.assertEqual(imported.stats.rejected_by_reason["duplicate_answer"], 1)
         self.assertEqual(imported.stats.rejected_by_reason["too_long"], 1)
         self.assertEqual(imported.stats.rejected_by_reason["repeated_phrase"], 1)
+
+    def test_importer_rejects_global_exact_and_near_duplicate_answers(self) -> None:
+        tokenizer = BpeTokenizer.from_text(
+            "<bos><user> Ask\n<agi> Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma.<eos>\n",
+            vocab_size=300,
+            min_frequency=1,
+        )
+        importer = PublicSftImporter(
+            tokenizer=tokenizer,
+            filter_config=ImportFilterConfig(min_agi_chars=5),
+        )
+
+        imported = importer.import_conversations(
+            [
+                (
+                    "first:1",
+                    [
+                        {"role": "user", "content": "Ask one"},
+                        {
+                            "role": "agi",
+                            "content": "Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma.",
+                        },
+                    ],
+                ),
+                (
+                    "second:1",
+                    [
+                        {"role": "user", "content": "Ask two"},
+                        {
+                            "role": "agi",
+                            "content": "ALPHA, beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma!",
+                        },
+                    ],
+                ),
+                (
+                    "third:1",
+                    [
+                        {"role": "user", "content": "Ask three"},
+                        {
+                            "role": "agi",
+                            "content": "Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho tau.",
+                        },
+                    ],
+                ),
+            ]
+        )
+
+        self.assertEqual([example.source for example in imported.examples], ["first:1"])
+        self.assertEqual(imported.stats.rejected_by_reason["duplicate_answer"], 1)
+        self.assertEqual(imported.stats.rejected_by_reason["near_duplicate"], 1)
+
+    def test_importer_rejects_invalid_roles_identity_refusals_and_artifacts(self) -> None:
+        tokenizer = BpeTokenizer.from_text(
+            "<bos><user> Ask\n<agi> A sufficiently detailed ordinary answer.<eos>\n",
+            vocab_size=300,
+            min_frequency=1,
+        )
+        importer = PublicSftImporter(
+            tokenizer=tokenizer,
+            filter_config=ImportFilterConfig(min_agi_chars=5),
+        )
+        rows = [
+            (
+                "roles:1",
+                [
+                    {"role": "agi", "content": "This starts with the wrong role."},
+                    {"role": "user", "content": "Why?"},
+                ],
+            ),
+            (
+                "identity:1",
+                [
+                    {"role": "user", "content": "Can you advise me?"},
+                    {"role": "agi", "content": "I am a licensed financial adviser."},
+                ],
+            ),
+            (
+                "identity:2",
+                [
+                    {"role": "user", "content": "Where are you?"},
+                    {"role": "agi", "content": "I live in London."},
+                ],
+            ),
+            (
+                "identity:3",
+                [
+                    {"role": "user", "content": "How did you find that?"},
+                    {"role": "agi", "content": "I browsed the web to find it."},
+                ],
+            ),
+            (
+                "identity:4",
+                [
+                    {"role": "user", "content": "How long?"},
+                    {"role": "agi", "content": "I have worked here for 20 years."},
+                ],
+            ),
+            (
+                "refusal:1",
+                [
+                    {"role": "user", "content": "Tell me a short joke."},
+                    {"role": "agi", "content": "As an AI, I cannot help with that."},
+                ],
+            ),
+            (
+                "artifact:1",
+                [
+                    {"role": "user", "content": "Hello"},
+                    {"role": "agi", "content": "Here is a replacement character: \ufffd"},
+                ],
+            ),
+            (
+                "artifact:2",
+                [
+                    {"role": "user", "content": "Hello"},
+                    {"role": "agi", "content": "Leaked <agi> marker in this answer."},
+                ],
+            ),
+        ]
+
+        imported = importer.import_conversations(rows)
+
+        self.assertEqual(imported.examples, ())
+        self.assertEqual(imported.stats.rejected_by_reason["role_sequence"], 1)
+        self.assertEqual(imported.stats.rejected_by_reason["false_capability_or_identity"], 4)
+        self.assertEqual(imported.stats.rejected_by_reason["generic_refusal"], 1)
+        self.assertEqual(imported.stats.rejected_by_reason["artifact"], 2)
+
+    def test_seeded_source_sample_is_stable_and_not_first_n(self) -> None:
+        examples = tuple(
+            ImportedSftExample(
+                source=f"dolly:{index}",
+                messages=(
+                    ChatMessage(role="user", content=f"Question {index}"),
+                    ChatMessage(role="agi", content=f"Answer {index} with useful detail."),
+                ),
+                token_count=10,
+                supervised_token_count=5,
+            )
+            for index in range(10)
+        )
+
+        first = seeded_source_sample(examples, limit=3, seed=1337, source="dolly")
+        second = seeded_source_sample(examples, limit=3, seed=1337, source="dolly")
+
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, examples[:3])
 
     def test_writes_jsonl_and_metadata(self) -> None:
         tokenizer = BpeTokenizer.from_text(

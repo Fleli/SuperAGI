@@ -209,7 +209,8 @@ SFT_SEED := 1337
 SFT_IMPORT_CHECKPOINT := $(SFT_BASE_CHECKPOINT)
 SFT_IMPORT_OUT := data/sft/imported/public-mixed.jsonl
 SFT_IMPORT_METADATA := data/sft/imported/public-mixed.metadata.json
-SFT_IMPORT_SOURCES := no_robots,dolly,openassistant,wildchat,ultrachat
+SFT_IMPORT_SOURCES := no_robots,dolly,openassistant,ultrachat
+SFT_IMPORT_SEED := 1337
 SFT_IMPORT_MAX_ROWS_PER_SOURCE := 50000
 SFT_IMPORT_MAX_EXAMPLES_PER_SOURCE := 5000
 SFT_IMPORT_MAX_CONTEXT_TOKENS := 900
@@ -754,7 +755,8 @@ sft-import-public: setup
 		--max-context-tokens "$(SFT_IMPORT_MAX_CONTEXT_TOKENS)" \
 		--max-messages "$(SFT_IMPORT_MAX_MESSAGES)" \
 		--max-agi-chars "$(SFT_IMPORT_MAX_AGI_CHARS)" \
-		--min-agi-chars "$(SFT_IMPORT_MIN_AGI_CHARS)"
+		--min-agi-chars "$(SFT_IMPORT_MIN_AGI_CHARS)" \
+		--seed "$(SFT_IMPORT_SEED)"
 	@printf '==> [sft-import-public] Finished importing public SFT datasets\n'
 
 sft-overfit-50:

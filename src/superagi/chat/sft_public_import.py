@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import random
 import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
@@ -10,6 +12,7 @@ from typing import Any
 
 from superagi.chat.formatting import ChatMessage
 from superagi.chat.sft import tokenize_sft_messages
+from superagi.chat.sft_quality import canonical_text, validate_role_sequence
 from superagi.ingestion.tokenizer import TokenizerLike
 
 
@@ -27,6 +30,31 @@ DISALLOWED_PATTERNS = (
     re.compile(r"\bemail-magic\b", re.IGNORECASE),
 )
 
+_LEAKED_CONTROL_TOKEN_RE = re.compile(
+    r"<(?:pad|bos|eos|user|agi|system)>",
+    re.IGNORECASE,
+)
+_FALSE_CAPABILITY_OR_IDENTITY_PATTERNS = (
+    re.compile(
+        r"\bi\s+(?:am|['\u2019]m)\s+(?:a\s+|an\s+)?(?:licensed|certified|registered|qualified)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bi\s+live\s+in\b", re.IGNORECASE),
+    re.compile(r"\bi\s+(?:have\s+)?browsed\s+(?:the\s+)?web\b", re.IGNORECASE),
+    re.compile(
+        r"\bi\s+have\s+worked\s+(?:here|there|at\s+\S+)\s+for\s+\d+\s+years?\b",
+        re.IGNORECASE,
+    ),
+)
+_GENERIC_REFUSAL_RE = re.compile(
+    r"\bas\s+an\s+ai(?:\s+language\s+model)?\b.*\b(?:cannot|can['\u2019]t|unable|not\s+able)\b",
+    re.IGNORECASE,
+)
+_NON_HARMLESS_PROMPT_RE = re.compile(
+    r"\b(?:kill|murder|hurt|harm|suicide|self-harm|bomb|weapon|explosive|malware|ransomware|phishing|fraud|steal)\b",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class ImportFilterConfig:
@@ -36,6 +64,7 @@ class ImportFilterConfig:
     max_user_chars: int = 4000
     max_messages: int = 8
     max_repeated_five_grams: int = 3
+    near_duplicate_threshold: float = 0.88
 
 
 @dataclass(frozen=True)
@@ -95,11 +124,16 @@ class PublicSftImporter:
         stats = ImportStats()
         examples: list[ImportedSftExample] = []
         seen_answers: set[str] = set()
+        seen_answer_buckets: dict[tuple[str, ...], list[str]] = defaultdict(list)
 
         for source, raw_messages in conversations:
             stats.seen += 1
             messages = _coerce_messages(raw_messages)
-            rejection_reason = self._rejection_reason(messages, seen_answers)
+            rejection_reason = self._rejection_reason(
+                messages,
+                seen_answers,
+                seen_answer_buckets,
+            )
             if rejection_reason is not None:
                 stats.reject(rejection_reason)
                 continue
@@ -113,7 +147,9 @@ class PublicSftImporter:
                     supervised_token_count=tokenized.supervised_token_count,
                 )
             )
-            seen_answers.update(_normalized_agi_answers(messages))
+            for answer in _normalized_agi_answers(messages):
+                seen_answers.add(answer)
+                seen_answer_buckets[_answer_prefix_bucket(answer)].append(answer)
             stats.accepted += 1
 
         return ImportResult(examples=tuple(examples), stats=stats)
@@ -164,14 +200,17 @@ class PublicSftImporter:
         self,
         messages: tuple[ChatMessage, ...],
         seen_answers: set[str],
+        seen_answer_buckets: Mapping[tuple[str, ...], Sequence[str]],
     ) -> str | None:
         config = self.filter_config
         if not messages:
             return "empty"
+        try:
+            validate_role_sequence(messages)
+        except ValueError:
+            return "role_sequence"
         if len(messages) > config.max_messages:
             return "too_many_messages"
-        if not any(message.role == "agi" for message in messages):
-            return "missing_agi"
         if any(not message.content.strip() for message in messages):
             return "empty_content"
         if any(
@@ -185,12 +224,26 @@ class PublicSftImporter:
         if any(len(answer) > config.max_agi_chars for answer in agi_answers):
             return "answer_too_long"
         joined_text = "\n".join(message.content for message in messages)
-        if any(pattern.search(joined_text) for pattern in DISALLOWED_PATTERNS):
+        if _contains_artifact(joined_text):
             return "artifact"
+        if any(_claims_false_capability_or_identity(answer) for answer in agi_answers):
+            return "false_capability_or_identity"
+        if _is_generic_refusal_for_harmless_prompt(messages):
+            return "generic_refusal"
         if any(_has_repeated_five_grams(answer, config) for answer in agi_answers):
             return "repeated_phrase"
-        if any(answer in seen_answers for answer in _normalized_agi_answers(messages)):
+        normalized_answers = _normalized_agi_answers(messages)
+        if any(answer in seen_answers for answer in normalized_answers):
             return "duplicate_answer"
+        if any(
+            _is_near_duplicate(
+                answer,
+                seen_answer_buckets.get(_answer_prefix_bucket(answer), ()),
+                threshold=config.near_duplicate_threshold,
+            )
+            for answer in normalized_answers
+        ):
+            return "near_duplicate"
 
         try:
             tokenized = tokenize_sft_messages(messages, self.tokenizer)
@@ -355,16 +408,74 @@ def _normalize_whitespace(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
-def _normalized_agi_answers(messages: Sequence[ChatMessage]) -> set[str]:
-    return {
-        _normalize_for_dedupe(message.content)
+def _normalized_agi_answers(messages: Sequence[ChatMessage]) -> tuple[str, ...]:
+    return tuple(
+        canonical_text(message.content)
         for message in messages
         if message.role == "agi"
-    }
+    )
 
 
-def _normalize_for_dedupe(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+def seeded_source_sample(
+    examples: Sequence[ImportedSftExample],
+    *,
+    limit: int,
+    seed: int,
+    source: str,
+) -> tuple[ImportedSftExample, ...]:
+    if limit < 0:
+        raise ValueError("sample limit must be non-negative")
+    if limit >= len(examples):
+        return tuple(examples)
+    source_seed = int.from_bytes(
+        hashlib.sha256(f"{seed}:{source}".encode("utf-8")).digest()[:8],
+        "big",
+    )
+    indices = random.Random(source_seed).sample(range(len(examples)), limit)
+    return tuple(examples[index] for index in sorted(indices))
+
+
+def token_jaccard(left: str, right: str) -> float:
+    left_tokens = set(canonical_text(left).split())
+    right_tokens = set(canonical_text(right).split())
+    union = left_tokens | right_tokens
+    return len(left_tokens & right_tokens) / len(union) if union else 1.0
+
+
+def _answer_prefix_bucket(answer: str) -> tuple[str, ...]:
+    return tuple(answer.split()[:4])
+
+
+def _is_near_duplicate(
+    answer: str,
+    accepted_answers: Sequence[str],
+    *,
+    threshold: float,
+) -> bool:
+    return any(token_jaccard(answer, accepted) >= threshold for accepted in accepted_answers)
+
+
+def _contains_artifact(value: str) -> bool:
+    return (
+        "\ufffd" in value
+        or bool(_LEAKED_CONTROL_TOKEN_RE.search(value))
+        or any(pattern.search(value) for pattern in DISALLOWED_PATTERNS)
+    )
+
+
+def _claims_false_capability_or_identity(answer: str) -> bool:
+    return any(pattern.search(answer) for pattern in _FALSE_CAPABILITY_OR_IDENTITY_PATTERNS)
+
+
+def _is_generic_refusal_for_harmless_prompt(messages: Sequence[ChatMessage]) -> bool:
+    user_text = "\n".join(message.content for message in messages if message.role == "user")
+    if _NON_HARMLESS_PROMPT_RE.search(user_text):
+        return False
+    return any(
+        _GENERIC_REFUSAL_RE.search(message.content)
+        for message in messages
+        if message.role == "agi"
+    )
 
 
 def _has_repeated_five_grams(
