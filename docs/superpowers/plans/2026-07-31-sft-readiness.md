@@ -308,6 +308,7 @@ Create in-memory or temporary JSONL fixtures proving the auditor fails on:
 
 - duplicate full conversations;
 - duplicate AGI answers in curated mode;
+- canonical prompt/answer pairs with Jaccard similarity at or above `0.88`;
 - invalid role sequence;
 - leaked `<user>`, `<agi>`, `<system>`, or `<bos>` inside content;
 - synthetic tags matching `\[[a-z_-]+-\d+`;
@@ -465,15 +466,15 @@ Use separate files during drafting, then merge only after audit. Exact quotas:
 
 | Domain | Conversations |
 |---|---:|
-| everyday food, household, shopping, travel | 190 |
-| work, study, planning, writing transformations | 180 |
-| computing, AI/ML, practical technology | 170 |
-| math and natural science explanations | 150 |
-| economics, finance, business fundamentals | 140 |
-| politics, civics, history, media literacy | 140 |
-| relationships, communication, casual conversation | 150 |
+| everyday food, household, shopping, travel | 180 |
+| work, study, planning, writing transformations | 170 |
+| computing, AI/ML, practical technology | 160 |
+| math and natural science explanations | 140 |
+| economics, finance, business fundamentals | 130 |
+| politics, civics, history, media literacy | 130 |
+| relationships, communication, casual conversation | 140 |
 | health, safety, uncertainty, professional boundaries | 120 |
-| correction, topic reset, ambiguity, multi-turn repair | 180 |
+| correction, topic reset, ambiguity, multi-turn repair | 170 |
 | creative writing, comparison, summarization, outlining | 120 |
 | identity/capability boundaries | 40 |
 
@@ -481,7 +482,7 @@ Each response answers the latest question in its first sentence. Multi-turn exam
 
 - [ ] **Step 4: Merge shards deterministically and write metadata**
 
-Sort by `(source, conversation_fingerprint)`. Metadata records total, per-domain counts, single/multi-turn counts, identity count, SHA-256, and audit timestamp.
+Sort by `(source, conversation_fingerprint)`. Metadata records schema version, total, per-domain counts, single/multi-turn counts, identity count, and SHA-256 without a wall-clock timestamp.
 
 - [ ] **Step 5: Run strict curated audit and inspect frequent openings**
 
