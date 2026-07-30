@@ -242,11 +242,11 @@ class PublicSftImportTests(unittest.TestCase):
         self.assertEqual([example.source for example in imported.examples], ["first:1"])
         self.assertEqual(imported.stats.rejected_by_reason["near_duplicate"], 1)
 
-    def test_near_duplicate_index_avoids_full_comparisons_for_shared_openings(self) -> None:
+    def test_rarity_order_avoids_large_posting_retrieval_for_shared_openings(self) -> None:
         answers = [
             "a generic opening phrase "
             + " ".join(f"z{index:03d}{suffix}" for suffix in range(12))
-            for index in range(100)
+            for index in range(300)
         ]
         tokenizer = BpeTokenizer.from_text(
             "<bos><user> Ask\n<agi> " + "\n".join(answers) + "<eos>\n",
@@ -283,8 +283,8 @@ class PublicSftImportTests(unittest.TestCase):
 
         imported = importer.import_conversations(rows)
 
-        self.assertEqual(len(imported.examples), 101)
-        self.assertLessEqual(importer._near_duplicate_comparisons, 1)
+        self.assertEqual(len(imported.examples), 301)
+        self.assertLessEqual(importer._near_duplicate_retrieval_work, len(answers) * 4)
 
     def test_importer_rejects_invalid_roles_identity_refusals_and_artifacts(self) -> None:
         tokenizer = BpeTokenizer.from_text(

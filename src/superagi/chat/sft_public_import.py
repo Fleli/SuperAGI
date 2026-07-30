@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from superagi.chat.formatting import ChatMessage
-from superagi.chat.sft import tokenize_sft_messages
+from superagi.chat.sft import TokenizedSftExample, tokenize_sft_messages
 from superagi.chat.sft_quality import canonical_text, validate_role_sequence
 from superagi.ingestion.tokenizer import TokenizerLike
 
@@ -115,26 +115,36 @@ class _IndexedAnswer:
     token_count: int
 
 
+@dataclass(frozen=True)
+class _PreparedConversation:
+    source: str
+    messages: tuple[ChatMessage, ...]
+    pre_dedupe_rejection_reason: str | None
+    normalized_answers: tuple[str, ...]
+
+
 class _JaccardCandidateIndex:
     """Exact, threshold-preserving candidate retrieval for accepted answers.
 
-    A fixed lexicographic token order makes classic Jaccard prefix filtering
-    safe online: for sets with Jaccard similarity at least ``threshold``, their
-    threshold prefixes must overlap.  The index stores only accepted-answer
-    prefixes, partitioned by token-set length.  Query length bounds and the
-    necessary overlap bound discard impossible candidates before an exact
-    Jaccard calculation, without an arbitrary posting-list cap.
+    The corpus-wide rarest-first token order is frozen before insertion. For
+    sets with Jaccard similarity at least ``threshold``, their threshold
+    prefixes must overlap under any shared fixed order. Freezing this order for
+    the complete import keeps the standard prefix-filter proof valid while
+    pushing common boilerplate tokens out of prefixes. The index stores only
+    accepted-answer prefixes, partitioned by token-set length.
     """
 
-    def __init__(self, threshold: float) -> None:
+    def __init__(self, threshold: float, token_order: Mapping[str, int]) -> None:
         if not 0.0 < threshold <= 1.0:
             raise ValueError("near_duplicate_threshold must be in (0, 1]")
         self.threshold = threshold
+        self._token_order = token_order
         self._entries: list[_IndexedAnswer] = []
         self._postings: dict[str, dict[int, set[int]]] = defaultdict(
             lambda: defaultdict(set)
         )
         self.comparison_count = 0
+        self.retrieval_work = 0
 
     def has_near_duplicate(self, answer: str) -> bool:
         token_set = frozenset(answer.split())
@@ -147,9 +157,14 @@ class _JaccardCandidateIndex:
             self.threshold,
         )
         candidate_ids: set[int] = set()
-        for token in _jaccard_prefix(token_set, self.threshold):
+        for token in _jaccard_prefix(
+            token_set,
+            self.threshold,
+            token_order=self._token_order,
+        ):
             for length, posting in self._postings.get(token, {}).items():
                 if min_length <= length <= max_length:
+                    self.retrieval_work += len(posting)
                     candidate_ids.update(posting)
 
         for candidate_id in sorted(candidate_ids):
@@ -174,7 +189,11 @@ class _JaccardCandidateIndex:
         entry_id = len(self._entries)
         token_count = len(token_set)
         self._entries.append(_IndexedAnswer(token_set, token_count))
-        for token in _jaccard_prefix(token_set, self.threshold):
+        for token in _jaccard_prefix(
+            token_set,
+            self.threshold,
+            token_order=self._token_order,
+        ):
             self._postings[token][token_count].add(entry_id)
 
 
@@ -195,38 +214,53 @@ class PublicSftImporter:
         stats = ImportStats()
         examples: list[ImportedSftExample] = []
         seen_answers: set[str] = set()
+        prepared_conversations = self._prepare_conversations(conversations)
         near_duplicate_index = _JaccardCandidateIndex(
-            self.filter_config.near_duplicate_threshold
+            self.filter_config.near_duplicate_threshold,
+            _rarest_first_token_order(prepared_conversations),
         )
         self._near_duplicate_comparisons = 0
+        self._near_duplicate_retrieval_work = 0
 
-        for source, raw_messages in conversations:
+        for prepared in prepared_conversations:
             stats.seen += 1
-            messages = _coerce_messages(raw_messages)
-            rejection_reason = self._rejection_reason(
-                messages,
-                seen_answers,
-                near_duplicate_index,
-            )
+            rejection_reason = prepared.pre_dedupe_rejection_reason
             if rejection_reason is not None:
                 stats.reject(rejection_reason)
                 continue
 
-            tokenized = tokenize_sft_messages(messages, self.tokenizer)
+            if any(answer in seen_answers for answer in prepared.normalized_answers):
+                stats.reject("duplicate_answer")
+                continue
+            if any(
+                near_duplicate_index.has_near_duplicate(answer)
+                for answer in prepared.normalized_answers
+            ):
+                stats.reject("near_duplicate")
+                continue
+
+            rejection_reason, tokenized = self._post_dedupe_filter(
+                prepared.messages
+            )
+            if rejection_reason is not None:
+                stats.reject(rejection_reason)
+                continue
+            assert tokenized is not None
             examples.append(
                 ImportedSftExample(
-                    source=source,
-                    messages=messages,
+                    source=prepared.source,
+                    messages=prepared.messages,
                     token_count=len(tokenized.input_ids),
                     supervised_token_count=tokenized.supervised_token_count,
                 )
             )
-            for answer in _normalized_agi_answers(messages):
+            for answer in prepared.normalized_answers:
                 seen_answers.add(answer)
                 near_duplicate_index.add(answer)
             stats.accepted += 1
 
         self._near_duplicate_comparisons = near_duplicate_index.comparison_count
+        self._near_duplicate_retrieval_work = near_duplicate_index.retrieval_work
         return ImportResult(examples=tuple(examples), stats=stats)
 
     def write_import(
@@ -271,11 +305,31 @@ class PublicSftImporter:
             encoding="utf-8",
         )
 
-    def _rejection_reason(
+    def _prepare_conversations(
+        self,
+        conversations: Iterable[tuple[str, Sequence[ChatMessage | Mapping[str, str]]]],
+    ) -> tuple[_PreparedConversation, ...]:
+        prepared: list[_PreparedConversation] = []
+        for source, raw_messages in conversations:
+            messages = _coerce_messages(raw_messages)
+            rejection_reason = self._pre_dedupe_rejection_reason(messages)
+            prepared.append(
+                _PreparedConversation(
+                    source=source,
+                    messages=messages,
+                    pre_dedupe_rejection_reason=rejection_reason,
+                    normalized_answers=(
+                        _normalized_agi_answers(messages)
+                        if rejection_reason is None
+                        else ()
+                    ),
+                )
+            )
+        return tuple(prepared)
+
+    def _pre_dedupe_rejection_reason(
         self,
         messages: tuple[ChatMessage, ...],
-        seen_answers: set[str],
-        near_duplicate_index: _JaccardCandidateIndex,
     ) -> str | None:
         config = self.filter_config
         if not messages:
@@ -307,22 +361,19 @@ class PublicSftImporter:
             return "generic_refusal"
         if any(_has_repeated_five_grams(answer, config) for answer in agi_answers):
             return "repeated_phrase"
-        normalized_answers = _normalized_agi_answers(messages)
-        if any(answer in seen_answers for answer in normalized_answers):
-            return "duplicate_answer"
-        if any(
-            near_duplicate_index.has_near_duplicate(answer)
-            for answer in normalized_answers
-        ):
-            return "near_duplicate"
+        return None
 
+    def _post_dedupe_filter(
+        self,
+        messages: tuple[ChatMessage, ...],
+    ) -> tuple[str | None, TokenizedSftExample | None]:
         try:
             tokenized = tokenize_sft_messages(messages, self.tokenizer)
         except ValueError:
-            return "tokenization_error"
-        if len(tokenized.input_ids) > config.max_context_tokens:
-            return "too_long"
-        return None
+            return "tokenization_error", None
+        if len(tokenized.input_ids) > self.filter_config.max_context_tokens:
+            return "too_long", None
+        return None, tokenized
 
 
 def convert_no_robots_row(row: Mapping[str, Any]) -> tuple[ChatMessage, ...]:
@@ -522,8 +573,19 @@ def _jaccard_length_bounds(length: int, threshold: float) -> tuple[int, int]:
     )
 
 
-def _jaccard_prefix(token_set: frozenset[str], threshold: float) -> tuple[str, ...]:
-    ordered_tokens = tuple(sorted(token_set))
+def _jaccard_prefix(
+    token_set: frozenset[str],
+    threshold: float,
+    *,
+    token_order: Mapping[str, int],
+) -> tuple[str, ...]:
+    fallback_rank = len(token_order)
+    ordered_tokens = tuple(
+        sorted(
+            token_set,
+            key=lambda token: (token_order.get(token, fallback_rank), token),
+        )
+    )
     prefix_length = (
         len(ordered_tokens)
         - math.ceil(
@@ -532,6 +594,23 @@ def _jaccard_prefix(token_set: frozenset[str], threshold: float) -> tuple[str, .
         + 1
     )
     return ordered_tokens[:prefix_length]
+
+
+def _rarest_first_token_order(
+    conversations: Sequence[_PreparedConversation],
+) -> dict[str, int]:
+    document_frequency: Counter[str] = Counter()
+    for conversation in conversations:
+        if conversation.pre_dedupe_rejection_reason is not None:
+            continue
+        for answer in conversation.normalized_answers:
+            document_frequency.update(frozenset(answer.split()))
+    return {
+        token: rank
+        for rank, (token, _) in enumerate(
+            sorted(document_frequency.items(), key=lambda item: (item[1], item[0]))
+        )
+    }
 
 
 def _minimum_jaccard_intersection(
