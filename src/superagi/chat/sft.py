@@ -40,6 +40,7 @@ def tokenize_sft_messages(
     normalized_messages = tuple(
         _coerce_tokenization_message(message) for message in messages
     )
+    validate_role_sequence(normalized_messages)
     formatted = format_chat_messages(normalized_messages)
     encoding = tokenizer.encode_with_offsets(formatted.text)
     if len(encoding.ids) < 2:

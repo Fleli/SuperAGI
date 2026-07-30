@@ -132,7 +132,11 @@ def split_sft_examples(
         source_groups = groups_by_source[source_family]
         source_example_count = sum(len(group) for group in source_groups.values())
         if source_example_count < 2:
-            train_group_keys.update(source_groups)
+            for group_key in source_groups:
+                if group_key in validation_group_keys:
+                    validation_groups.add((source_family, group_key))
+                else:
+                    train_group_keys.add(group_key)
             continue
 
         validation_target = int(round(source_example_count * validation_fraction))

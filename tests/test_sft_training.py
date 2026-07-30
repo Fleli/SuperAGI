@@ -199,6 +199,48 @@ class SftTrainingTests(unittest.TestCase):
             )
         )
 
+    def test_split_keeps_shared_group_in_validation_for_singleton_source_family(
+        self,
+    ) -> None:
+        examples = [
+            TokenizedSftExample(
+                text="alpha shared",
+                input_ids=(1, 2),
+                target_ids=(IGNORE_INDEX, 3),
+                supervised_token_count=1,
+                source="alpha:shared",
+                group_key="shared",
+            ),
+            TokenizedSftExample(
+                text="alpha other",
+                input_ids=(2, 3),
+                target_ids=(IGNORE_INDEX, 4),
+                supervised_token_count=1,
+                source="alpha:other",
+                group_key="other",
+            ),
+            TokenizedSftExample(
+                text="beta shared",
+                input_ids=(3, 4),
+                target_ids=(IGNORE_INDEX, 5),
+                supervised_token_count=1,
+                source="beta:shared",
+                group_key="shared",
+            ),
+        ]
+
+        train_examples, validation_examples = split_sft_examples(
+            examples,
+            validation_fraction=0.5,
+            seed=0,
+        )
+
+        self.assertEqual([example.source for example in train_examples], ["alpha:other"])
+        self.assertEqual(
+            [example.source for example in validation_examples],
+            ["alpha:shared", "beta:shared"],
+        )
+
     def test_sft_split_keeps_all_examples_for_training_when_validation_disabled(self) -> None:
         examples = [
             TokenizedSftExample(

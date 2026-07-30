@@ -87,11 +87,24 @@ class SftTokenizationTests(unittest.TestCase):
             "AI is software.<eos>ML learns from data.<eos>",
         )
 
-    def test_rejects_conversation_without_agi_labels(self) -> None:
+    def test_rejects_conversation_that_does_not_end_with_agi(self) -> None:
         tokenizer = CharTokenizer.from_text("<bos><user> Hello\n")
 
-        with self.assertRaisesRegex(ValueError, "no AGI response tokens"):
+        with self.assertRaisesRegex(ValueError, "end with an agi response"):
             tokenize_sft_messages([{"role": "user", "content": "Hello"}], tokenizer)
+
+    def test_rejects_invalid_role_order_before_tokenization(self) -> None:
+        messages = [
+            {"role": "user", "content": "First"},
+            {"role": "user", "content": "Second"},
+            {"role": "agi", "content": "Reply."},
+        ]
+        tokenizer = CharTokenizer.from_text(
+            "<bos><user> First\n<user> Second\n<agi> Reply.<eos>\n"
+        )
+
+        with self.assertRaisesRegex(ValueError, "expected 'agi'"):
+            tokenize_sft_messages(messages, tokenizer)
 
     def test_loads_sft_jsonl_messages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
