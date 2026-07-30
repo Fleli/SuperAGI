@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from superagi.chat.formatting import ChatMessage, TextSpan, format_chat_messages
+from superagi.chat.sft_quality import conversation_group_key, validate_role_sequence
 from superagi.ingestion.tokenizer import TokenizerLike
 
 
@@ -19,12 +20,14 @@ class TokenizedSftExample:
     target_ids: tuple[int, ...]
     supervised_token_count: int
     source: str = "manual"
+    group_key: str = ""
 
 
 @dataclass(frozen=True)
 class SftConversation:
     messages: tuple[ChatMessage, ...]
     source: str
+    group_key: str = ""
 
 
 def tokenize_sft_messages(
@@ -32,8 +35,12 @@ def tokenize_sft_messages(
     tokenizer: TokenizerLike,
     *,
     source: str = "manual",
+    group_key: str | None = None,
 ) -> TokenizedSftExample:
-    formatted = format_chat_messages(messages)
+    normalized_messages = tuple(
+        _coerce_tokenization_message(message) for message in messages
+    )
+    formatted = format_chat_messages(normalized_messages)
     encoding = tokenizer.encode_with_offsets(formatted.text)
     if len(encoding.ids) < 2:
         raise ValueError("formatted SFT conversation must contain at least two tokens")
@@ -58,6 +65,11 @@ def tokenize_sft_messages(
         target_ids=target_ids,
         supervised_token_count=supervised_token_count,
         source=source,
+        group_key=(
+            conversation_group_key(normalized_messages)
+            if group_key is None
+            else group_key
+        ),
     )
 
 
@@ -85,12 +97,18 @@ def load_sft_records(
         source = payload.get("source", default_source)
         if not isinstance(source, str) or not source.strip():
             raise ValueError(f"SFT line {line_number} source must be a non-empty string")
+        chat_messages = tuple(
+            _coerce_chat_message(message, line_number) for message in messages
+        )
+        try:
+            validate_role_sequence(chat_messages)
+        except ValueError as error:
+            raise ValueError(f"SFT {sft_path}:{line_number}: {error}") from error
         conversations.append(
             SftConversation(
-                messages=tuple(
-                    _coerce_chat_message(message, line_number) for message in messages
-                ),
+                messages=chat_messages,
                 source=source.strip(),
+                group_key=conversation_group_key(chat_messages),
             )
         )
     if not conversations:
@@ -111,6 +129,17 @@ def _coerce_chat_message(
     if not isinstance(content, str):
         raise ValueError(f"SFT line {line_number} content must be a string")
     return ChatMessage(role=role, content=content)
+
+
+def _coerce_tokenization_message(
+    message: ChatMessage | Mapping[str, str],
+) -> ChatMessage:
+    if isinstance(message, ChatMessage):
+        return message
+    return ChatMessage(
+        role=message.get("role"),
+        content=message.get("content"),
+    )
 
 
 def _token_overlaps_any_span(

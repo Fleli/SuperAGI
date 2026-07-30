@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from superagi.chat.sft import load_sft_jsonl, load_sft_records
+from superagi.chat.sft_quality import conversation_group_key
 
 
 class SftLoadingTests(unittest.TestCase):
@@ -29,6 +30,7 @@ class SftLoadingTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].source, "wildchat:42")
         self.assertEqual(records[0].messages[0].role, "user")
+        self.assertEqual(records[0].group_key, conversation_group_key(records[0].messages))
 
     def test_loads_sft_records_with_default_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -51,6 +53,28 @@ class SftLoadingTests(unittest.TestCase):
 
         self.assertEqual(records[0].source, "anchor")
         self.assertEqual(conversations[0], records[0].messages)
+
+    def test_rejects_invalid_role_order_with_path_and_line_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "invalid.jsonl"
+            path.write_text(
+                json.dumps(
+                    {
+                        "messages": [
+                            {"role": "user", "content": "First."},
+                            {"role": "user", "content": "Second."},
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                r"invalid\.jsonl:1: .*expected 'agi'",
+            ):
+                load_sft_records(path)
 
 
 if __name__ == "__main__":

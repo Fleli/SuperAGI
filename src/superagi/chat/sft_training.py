@@ -110,18 +110,77 @@ def split_sft_examples(
     if validation_fraction == 0 or len(examples) < 2:
         return tuple(examples), ()
 
-    validation_count = int(round(len(examples) * validation_fraction))
-    validation_count = max(1, min(validation_count, len(examples) - 1))
     generator = torch.Generator()
     generator.manual_seed(seed)
-    indices = torch.randperm(len(examples), generator=generator).tolist()
-    validation_indices = set(indices[:validation_count])
+
+    effective_group_keys = tuple(
+        example.group_key or f"__legacy_sft_example_{index}__"
+        for index, example in enumerate(examples)
+    )
+    groups_by_source: dict[
+        str,
+        dict[str, list[TokenizedSftExample]],
+    ] = {}
+    for example, group_key in zip(examples, effective_group_keys, strict=True):
+        source_groups = groups_by_source.setdefault(_source_family(example.source), {})
+        source_groups.setdefault(group_key, []).append(example)
+
+    validation_groups: set[tuple[str, str]] = set()
+    train_group_keys: set[str] = set()
+    validation_group_keys: set[str] = set()
+    for source_family in sorted(groups_by_source):
+        source_groups = groups_by_source[source_family]
+        source_example_count = sum(len(group) for group in source_groups.values())
+        if source_example_count < 2:
+            train_group_keys.update(source_groups)
+            continue
+
+        validation_target = int(round(source_example_count * validation_fraction))
+        validation_target = max(1, min(validation_target, source_example_count - 1))
+        group_keys = list(source_groups)
+        shuffled_indices = torch.randperm(len(group_keys), generator=generator).tolist()
+        validation_count = 0
+        for index in shuffled_indices:
+            group_key = group_keys[index]
+            group_size = len(source_groups[group_key])
+            if group_key in validation_group_keys:
+                validation_groups.add((source_family, group_key))
+                validation_count += group_size
+                continue
+            if group_key in train_group_keys:
+                continue
+            if (
+                validation_count < validation_target
+                and validation_count + group_size < source_example_count
+            ):
+                validation_groups.add((source_family, group_key))
+                validation_group_keys.add(group_key)
+                validation_count += group_size
+            else:
+                train_group_keys.add(group_key)
+
     train_examples = tuple(
-        example for index, example in enumerate(examples) if index not in validation_indices
+        example
+        for example, group_key in zip(examples, effective_group_keys, strict=True)
+        if (_source_family(example.source), group_key) not in validation_groups
     )
     validation_examples = tuple(
-        example for index, example in enumerate(examples) if index in validation_indices
+        example
+        for example, group_key in zip(examples, effective_group_keys, strict=True)
+        if (_source_family(example.source), group_key) in validation_groups
     )
+    train_group_keys = {
+        group_key
+        for example, group_key in zip(examples, effective_group_keys, strict=True)
+        if (_source_family(example.source), group_key) not in validation_groups
+    }
+    validation_group_keys = {
+        group_key
+        for example, group_key in zip(examples, effective_group_keys, strict=True)
+        if (_source_family(example.source), group_key) in validation_groups
+    }
+    if train_group_keys & validation_group_keys:
+        raise AssertionError("SFT train and validation group keys must be disjoint")
     return train_examples, validation_examples
 
 

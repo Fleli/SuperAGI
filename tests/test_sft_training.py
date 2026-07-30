@@ -69,6 +69,7 @@ class SftTrainingTests(unittest.TestCase):
                 input_ids=(index, index + 1),
                 target_ids=(IGNORE_INDEX, index + 2),
                 supervised_token_count=1,
+                group_key=f"group-{index}",
             )
             for index in range(10)
         ]
@@ -89,6 +90,114 @@ class SftTrainingTests(unittest.TestCase):
         self.assertEqual(train_examples, train_examples_again)
         self.assertEqual(validation_examples, validation_examples_again)
         self.assertTrue(set(train_examples).isdisjoint(validation_examples))
+
+    def test_splits_legacy_examples_without_explicit_group_keys(self) -> None:
+        examples = [
+            TokenizedSftExample(
+                text=f"example-{index}",
+                input_ids=(index, index + 1),
+                target_ids=(IGNORE_INDEX, index + 2),
+                supervised_token_count=1,
+            )
+            for index in range(4)
+        ]
+
+        train_examples, validation_examples = split_sft_examples(
+            examples,
+            validation_fraction=0.5,
+            seed=123,
+        )
+
+        self.assertEqual(len(train_examples), 2)
+        self.assertEqual(len(validation_examples), 2)
+
+    def test_split_is_source_stratified_and_keeps_groups_together(self) -> None:
+        examples = [
+            TokenizedSftExample(
+                text="anchor duplicate one",
+                input_ids=(1, 2),
+                target_ids=(IGNORE_INDEX, 3),
+                supervised_token_count=1,
+                source="anchor:1",
+                group_key="anchor-duplicate",
+            ),
+            TokenizedSftExample(
+                text="anchor duplicate two",
+                input_ids=(2, 3),
+                target_ids=(IGNORE_INDEX, 4),
+                supervised_token_count=1,
+                source="anchor:2",
+                group_key="anchor-duplicate",
+            ),
+            TokenizedSftExample(
+                text="anchor unique one",
+                input_ids=(3, 4),
+                target_ids=(IGNORE_INDEX, 5),
+                supervised_token_count=1,
+                source="anchor:3",
+                group_key="anchor-one",
+            ),
+            TokenizedSftExample(
+                text="anchor unique two",
+                input_ids=(4, 5),
+                target_ids=(IGNORE_INDEX, 6),
+                supervised_token_count=1,
+                source="anchor:4",
+                group_key="anchor-two",
+            ),
+            TokenizedSftExample(
+                text="public one",
+                input_ids=(5, 6),
+                target_ids=(IGNORE_INDEX, 7),
+                supervised_token_count=1,
+                source="public:1",
+                group_key="public-one",
+            ),
+            TokenizedSftExample(
+                text="public two",
+                input_ids=(6, 7),
+                target_ids=(IGNORE_INDEX, 8),
+                supervised_token_count=1,
+                source="public:2",
+                group_key="public-two",
+            ),
+            TokenizedSftExample(
+                text="public three",
+                input_ids=(7, 8),
+                target_ids=(IGNORE_INDEX, 9),
+                supervised_token_count=1,
+                source="public:3",
+                group_key="public-three",
+            ),
+            TokenizedSftExample(
+                text="public four",
+                input_ids=(8, 9),
+                target_ids=(IGNORE_INDEX, 10),
+                supervised_token_count=1,
+                source="public:4",
+                group_key="public-four",
+            ),
+        ]
+
+        train_examples, validation_examples = split_sft_examples(
+            examples,
+            validation_fraction=0.5,
+            seed=123,
+        )
+
+        self.assertEqual(
+            sum(example.source.startswith("anchor:") for example in validation_examples),
+            2,
+        )
+        self.assertEqual(
+            sum(example.source.startswith("public:") for example in validation_examples),
+            2,
+        )
+        self.assertTrue(
+            {example.group_key for example in train_examples}.isdisjoint(
+                example.group_key for example in validation_examples
+            )
+        )
 
     def test_sft_split_keeps_all_examples_for_training_when_validation_disabled(self) -> None:
         examples = [
