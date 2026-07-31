@@ -10,6 +10,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+if __package__:
+    from scripts.import_public_sft import SOURCE_DATASETS
+    from scripts.preflight_sft_300m import parse_config_entries
+else:
+    from import_public_sft import SOURCE_DATASETS
+    from preflight_sft_300m import parse_config_entries
+
 
 SCHEMA_VERSION = 2
 RUN_CONFIG_SCHEMA_VERSION = 2
@@ -91,11 +98,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--run-config",
         default="data/sft/runs/300m/run-config.json",
     )
+    parser.add_argument(
+        "--config",
+        action="append",
+        default=[],
+        help="Expected active production setting as dotted key=value; repeat.",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not args.config:
+        raise ValueError(
+            "manifest requires expected active production settings via --config"
+        )
+    expected_settings = parse_config_entries(args.config)
     repository_root = Path(args.repository_root).resolve()
     output_path = _resolve_path(args.output, repository_root)
     base_path = _resolve_path(args.base_checkpoint, repository_root)
@@ -153,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         source_paths=source_paths,
         run_config_path=run_config_path,
         run_dirs=run_dirs,
+        expected_settings=expected_settings,
     )
     _write_json_atomic(output_path, manifest)
     print(f"SFT manifest: {_relative_path(output_path, repository_root)}")
@@ -167,6 +186,7 @@ def build_manifest(
     source_paths: Mapping[str, Path],
     run_config_path: Path,
     run_dirs: Mapping[str, Path],
+    expected_settings: Mapping[str, Any],
 ) -> dict[str, Any]:
     root = repository_root.resolve()
     _require_within_repository(root, base_path)
@@ -194,11 +214,6 @@ def build_manifest(
         base_artifact=base_artifact,
     )
     source_artifacts = _source_artifacts(source_paths, repository_root=root)
-    public_metadata = _load_json_object(
-        source_paths["public_metadata"],
-        "public import metadata",
-    )
-    _validate_public_metadata(public_metadata)
     audit_report = _load_json_object(
         source_paths["mixed_audit"],
         "audit report",
@@ -214,6 +229,15 @@ def build_manifest(
         source_artifacts=source_artifacts,
         source_paths=source_paths,
         repository_root=root,
+        expected_settings=expected_settings,
+    )
+    public_metadata = _load_json_object(
+        source_paths["public_metadata"],
+        "public import metadata",
+    )
+    _validate_public_metadata(
+        public_metadata,
+        expected_sources=_configured_public_sources(expected_settings),
     )
 
     runs = {
@@ -294,7 +318,6 @@ def _source_artifacts(
         source_paths["public_metadata"],
         "public import metadata",
     )
-    _validate_public_metadata(public_metadata)
     artifacts["public_metadata"]["summary"] = public_metadata
     return artifacts
 
@@ -336,6 +359,7 @@ def _validate_run_config(
     source_artifacts: Mapping[str, Mapping[str, Any]],
     source_paths: Mapping[str, Path],
     repository_root: Path,
+    expected_settings: Mapping[str, Any],
 ) -> None:
     if payload.get("schema_version") != RUN_CONFIG_SCHEMA_VERSION:
         raise ValueError(
@@ -367,6 +391,11 @@ def _validate_run_config(
     settings = payload.get("settings")
     if not isinstance(settings, dict):
         raise ValueError("run config settings must be a JSON object")
+    if settings != expected_settings:
+        raise ValueError(
+            "run configuration changed after preflight; "
+            "use a new SFT run directory for different settings"
+        )
     required_sections = {
         "pipeline",
         "import",
@@ -672,7 +701,38 @@ def _best_validation_metric(
     )
 
 
-def _validate_public_metadata(payload: Mapping[str, Any]) -> None:
+def _configured_public_sources(
+    expected_settings: Mapping[str, Any],
+) -> tuple[str, ...]:
+    import_settings = expected_settings.get("import")
+    if not isinstance(import_settings, dict):
+        raise ValueError("expected settings import section must be a JSON object")
+    raw_sources = import_settings.get("sources")
+    if not isinstance(raw_sources, str):
+        raise ValueError("expected settings import.sources must be a string")
+    sources = tuple(
+        source.strip()
+        for source in raw_sources.split(",")
+        if source.strip()
+    )
+    if not sources or len(sources) != len(set(sources)):
+        raise ValueError(
+            "expected settings import.sources must contain unique source names"
+        )
+    unknown_sources = sorted(set(sources) - set(SOURCE_DATASETS))
+    if unknown_sources:
+        raise ValueError(
+            "expected settings import.sources contains unknown sources: "
+            + ", ".join(unknown_sources)
+        )
+    return sources
+
+
+def _validate_public_metadata(
+    payload: Mapping[str, Any],
+    *,
+    expected_sources: tuple[str, ...],
+) -> None:
     written_count = payload.get("written_count")
     sources = payload.get("sources")
     dataset_revisions = payload.get("dataset_revisions")
@@ -681,11 +741,11 @@ def _validate_public_metadata(payload: Mapping[str, Any]) -> None:
         or isinstance(written_count, bool)
         or written_count <= 0
         or not isinstance(sources, dict)
-        or not sources
+        or set(sources) != set(expected_sources)
     ):
         raise ValueError(
             "public import metadata must contain a positive written_count "
-            "and non-empty sources"
+            "and exactly the configured sources"
         )
     selected_total = 0
     for source_name, source_summary in sources.items():
@@ -711,31 +771,22 @@ def _validate_public_metadata(payload: Mapping[str, Any]) -> None:
         )
     if (
         not isinstance(dataset_revisions, dict)
-        or set(dataset_revisions) != set(sources)
+        or set(dataset_revisions) != set(expected_sources)
     ):
         raise ValueError(
             "public import metadata dataset revisions must match its sources"
         )
-    for source_name, source_spec in dataset_revisions.items():
-        if not isinstance(source_spec, dict):
+    for source_name in expected_sources:
+        dataset, split, revision = SOURCE_DATASETS[source_name]
+        expected_identity = {
+            "dataset": dataset,
+            "split": split,
+            "revision": revision,
+        }
+        if dataset_revisions.get(source_name) != expected_identity:
             raise ValueError(
-                "public import metadata dataset revisions are malformed"
-            )
-        dataset = source_spec.get("dataset")
-        split = source_spec.get("split")
-        revision = source_spec.get("revision")
-        if (
-            not isinstance(dataset, str)
-            or not dataset.strip()
-            or not isinstance(split, str)
-            or not split.strip()
-            or not isinstance(revision, str)
-            or len(revision) != 40
-            or any(character not in "0123456789abcdef" for character in revision)
-        ):
-            raise ValueError(
-                "public import metadata dataset revisions must contain "
-                f"a pinned commit for {source_name}"
+                "public import metadata dataset identity does not match "
+                f"the pinned importer source {source_name}"
             )
 
 

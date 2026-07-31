@@ -203,6 +203,46 @@ class Sft300mPreflightTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "run configuration changed"):
                 module.main([*arguments, "--config", "core.batch=4"])
 
+    def test_verify_only_rejects_well_typed_run_configuration_mutation(self) -> None:
+        module = _load_preflight_module(self)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            checkpoint_path = _write_bpe_checkpoint(
+                root / "base.pt",
+                context_length=1024,
+            )
+            sha_record = root / "base-checkpoint.json"
+            run_config = root / "run-config.json"
+            arguments = [
+                "--repository-root",
+                str(root),
+                "--base-checkpoint",
+                str(checkpoint_path),
+                "--sha-record",
+                str(sha_record),
+                "--run-config",
+                str(run_config),
+                "--config",
+                "core.steps=3000",
+            ]
+            module.main(arguments)
+            payload = json.loads(run_config.read_text(encoding="utf-8"))
+            payload["settings"]["core"]["steps"] = 9999
+            run_config.write_text(
+                json.dumps(payload, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "run configuration changed"):
+                module.main([*arguments, "--verify-only"])
+
+            payload["settings"]["core"]["steps"] = 3000
+            run_config.write_text(
+                json.dumps(payload, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(module.main([*arguments, "--verify-only"]), 0)
+
     def test_records_public_import_identity_and_distinguishes_resume(self) -> None:
         module = _load_preflight_module(self)
         with tempfile.TemporaryDirectory() as tmp_dir:

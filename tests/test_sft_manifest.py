@@ -8,7 +8,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from scripts import write_sft_manifest
+from scripts import import_public_sft, write_sft_manifest
 
 
 RUN_NAMES = ("core", "playful", "calm")
@@ -188,17 +188,16 @@ class SftManifestWriterTests(unittest.TestCase):
                         "no_robots": {"selected": 100},
                     },
                 },
-                "dataset revisions",
+                "public import metadata",
             ),
         }
         for label, (relative_path, payload, message) in invalid_cases.items():
             with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp_dir:
                 root = Path(tmp_dir)
                 paths = _write_complete_run(root)
-                (root / relative_path).write_text(
-                    json.dumps(payload) + "\n",
-                    encoding="utf-8",
-                )
+                _write_json(root / relative_path, payload)
+                if Path(relative_path) == paths["public_metadata"].relative_to(root):
+                    _reseal_public_metadata(paths, root)
 
                 with self.assertRaisesRegex(ValueError, message):
                     write_sft_manifest.main(_arguments(root, paths))
@@ -242,6 +241,8 @@ class SftManifestWriterTests(unittest.TestCase):
                 root = Path(tmp_dir)
                 paths = _write_complete_run(root)
                 _write_json(root / relative_path, payload)
+                if Path(relative_path) == paths["public_metadata"].relative_to(root):
+                    _reseal_public_metadata(paths, root)
 
                 with self.assertRaisesRegex(ValueError, message):
                     write_sft_manifest.main(_arguments(root, paths))
@@ -283,12 +284,12 @@ class SftManifestWriterTests(unittest.TestCase):
             "run config core path": (
                 "run_config",
                 ("settings.core.data", "different.jsonl"),
-                "core data",
+                "run configuration changed",
             ),
             "run config prompt path": (
                 "run_config",
                 ("settings.evaluation.prompts", "different.jsonl"),
-                "evaluation prompts",
+                "run configuration changed",
             ),
         }
         for label, (path_key, mutation, message) in mismatch_cases.items():
@@ -301,6 +302,67 @@ class SftManifestWriterTests(unittest.TestCase):
                 _write_json(target, payload)
 
                 with self.assertRaisesRegex(ValueError, message):
+                    write_sft_manifest.main(_arguments(root, paths))
+
+                self.assertFalse(paths["output"].exists())
+
+    def test_refuses_well_typed_run_config_setting_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            paths = _write_complete_run(root)
+            payload = json.loads(paths["run_config"].read_text(encoding="utf-8"))
+            payload["settings"]["core"]["steps"] = 9999
+            _write_json(paths["run_config"], payload)
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "run configuration changed",
+            ):
+                write_sft_manifest.main(_arguments(root, paths))
+
+            self.assertFalse(paths["output"].exists())
+
+    def test_refuses_resealed_public_metadata_source_identity_mutations(self) -> None:
+        mutation_cases = {
+            "source keys": _add_unconfigured_public_source,
+            "dataset": lambda payload: _set_dotted(
+                payload,
+                "dataset_revisions.dolly.dataset",
+                "example.invalid/dolly",
+            ),
+            "split": lambda payload: _set_dotted(
+                payload,
+                "dataset_revisions.dolly.split",
+                "validation",
+            ),
+            "revision": lambda payload: _set_dotted(
+                payload,
+                "dataset_revisions.dolly.revision",
+                "f" * 40,
+            ),
+        }
+        for label, mutate in mutation_cases.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp_dir:
+                root = Path(tmp_dir)
+                paths = _write_complete_run(root)
+                public_metadata = json.loads(
+                    paths["public_metadata"].read_text(encoding="utf-8")
+                )
+                mutate(public_metadata)
+                _write_json(paths["public_metadata"], public_metadata)
+                run_config = json.loads(
+                    paths["run_config"].read_text(encoding="utf-8")
+                )
+                run_config["inputs"]["public_metadata"] = _artifact_identity(
+                    paths["public_metadata"],
+                    root,
+                )
+                _write_json(paths["run_config"], run_config)
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "public import metadata",
+                ):
                     write_sft_manifest.main(_arguments(root, paths))
 
                 self.assertFalse(paths["output"].exists())
@@ -368,7 +430,7 @@ class SftManifestWriterTests(unittest.TestCase):
 
 
 def _arguments(root: Path, paths: dict[str, Path]) -> list[str]:
-    return [
+    arguments = [
         "--repository-root",
         str(root),
         "--output",
@@ -410,6 +472,9 @@ def _arguments(root: Path, paths: dict[str, Path]) -> list[str]:
         "--run-config",
         str(paths["run_config"]),
     ]
+    for key, value in _flatten_settings(_production_settings()):
+        arguments.extend(("--config", f"{key}={value}"))
+    return arguments
 
 
 def _write_complete_run(root: Path) -> dict[str, Path]:
@@ -442,21 +507,20 @@ def _write_complete_run(root: Path) -> dict[str, Path]:
         {
             "written_count": 200,
             "sources": {
-                "dolly": {"selected": 100},
-                "no_robots": {"selected": 100},
+                source: {"selected": 50}
+                for source in import_public_sft.DEFAULT_SOURCES
             },
-            "selected_source_counts": {"dolly": 100, "no_robots": 100},
+            "selected_source_counts": {
+                source: 50
+                for source in import_public_sft.DEFAULT_SOURCES
+            },
             "dataset_revisions": {
-                "dolly": {
-                    "dataset": "databricks/databricks-dolly-15k",
-                    "split": "train",
-                    "revision": "b" * 40,
-                },
-                "no_robots": {
-                    "dataset": "HuggingFaceH4/no_robots",
-                    "split": "train",
-                    "revision": "e" * 40,
-                },
+                source: {
+                    "dataset": import_public_sft.SOURCE_DATASETS[source][0],
+                    "split": import_public_sft.SOURCE_DATASETS[source][1],
+                    "revision": import_public_sft.SOURCE_DATASETS[source][2],
+                }
+                for source in import_public_sft.DEFAULT_SOURCES
             },
         },
     )
@@ -695,6 +759,30 @@ def _artifact_identity(path: Path, root: Path) -> dict[str, object]:
     }
 
 
+def _reseal_public_metadata(paths: dict[str, Path], root: Path) -> None:
+    run_config = json.loads(paths["run_config"].read_text(encoding="utf-8"))
+    run_config["inputs"]["public_metadata"] = _artifact_identity(
+        paths["public_metadata"],
+        root,
+    )
+    _write_json(paths["run_config"], run_config)
+
+
+def _flatten_settings(
+    settings: dict[str, object],
+    prefix: str = "",
+) -> list[tuple[str, object]]:
+    flattened: list[tuple[str, object]] = []
+    for key in sorted(settings):
+        value = settings[key]
+        dotted_key = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict):
+            flattened.extend(_flatten_settings(value, dotted_key))
+        else:
+            flattened.append((dotted_key, value))
+    return flattened
+
+
 def _set_dotted(payload: dict[str, object], key: str, value: object) -> None:
     parts = key.split(".")
     target = payload
@@ -715,6 +803,23 @@ def _delete_dotted(payload: dict[str, object], key: str) -> None:
             raise AssertionError(f"{part} is not an object")
         target = next_target
     del target[parts[-1]]
+
+
+def _add_unconfigured_public_source(payload: dict[str, object]) -> None:
+    sources = payload["sources"]
+    revisions = payload["dataset_revisions"]
+    if not isinstance(sources, dict) or not isinstance(revisions, dict):
+        raise AssertionError("public metadata source records must be objects")
+    sources["wildchat"] = {"selected": 1}
+    revisions["wildchat"] = {
+        "dataset": "allenai/WildChat",
+        "split": "train",
+        "revision": "f66566ceaaeb619dd98ffb0f3bf3ce1f86775ac4",
+    }
+    written_count = payload["written_count"]
+    if not isinstance(written_count, int):
+        raise AssertionError("public metadata written_count must be an integer")
+    payload["written_count"] = written_count + 1
 
 
 def _write_json(path: Path, payload: object) -> None:

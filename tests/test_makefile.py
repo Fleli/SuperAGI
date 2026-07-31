@@ -91,6 +91,7 @@ class MakefileTests(unittest.TestCase):
             recipe.index("--record-public"),
         )
         self.assertEqual(recipe.count("$(MAKE) sft-import-public"), 1)
+        self.assertEqual(recipe.count("$(SFT_CLOUD_CONFIG_ARGS)"), 3)
         self.assertNotIn("$(MAKE) sft-train", recipe)
 
     def test_runpod_sft_300m_orders_training_evaluation_and_manifest(self) -> None:
@@ -171,6 +172,7 @@ class MakefileTests(unittest.TestCase):
             recipe,
         )
         self.assertEqual(recipe.count("--verify-only"), 4)
+        self.assertEqual(recipe.count("$(SFT_CLOUD_CONFIG_ARGS)"), 5)
         self.assertEqual(
             recipe.count('--public-data "$(SFT_CLOUD_PUBLIC_DATA)"'),
             4,

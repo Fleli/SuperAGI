@@ -117,6 +117,11 @@ def main(argv: list[str] | None = None) -> int:
         repository_root=root,
         minimum_context_length=args.minimum_context_length,
     )
+    expected_settings = (
+        parse_config_entries(args.config)
+        if args.config
+        else None
+    )
     _require_input_paths(required_paths)
     _validate_or_write_sha_record(
         sha_record_path,
@@ -131,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
                 run_config_path,
                 checkpoint_identity=checkpoint_identity,
             )
+            _verify_expected_settings(run_config, expected_settings)
             if public_paths:
                 _verify_public_inputs(
                     run_config,
@@ -145,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
             run_config_path,
             checkpoint_identity=checkpoint_identity,
         )
+        _verify_expected_settings(run_config, expected_settings)
         if not public_paths:
             raise ValueError(
                 "--record-public requires --public-data and --public-metadata"
@@ -167,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         if run_config_path is None:
             raise RuntimeError("run config path was not resolved")
-        settings = parse_config_entries(args.config)
+        settings = expected_settings or {}
         if run_config_path.exists():
             run_config = _load_and_validate_run_config(
                 run_config_path,
@@ -367,6 +374,19 @@ def _verify_public_inputs(
                 f"{name} changed after its import identity was recorded; "
                 "restore the exact imported file or use a new SFT run directory"
             )
+
+
+def _verify_expected_settings(
+    run_config: Mapping[str, Any],
+    expected_settings: Mapping[str, Any] | None,
+) -> None:
+    if expected_settings is None:
+        return
+    if run_config["settings"] != expected_settings:
+        raise ValueError(
+            "run configuration changed after preflight; "
+            "use a new SFT run directory for different settings"
+        )
 
 
 def _artifact_identity(path: Path, repository_root: Path) -> dict[str, Any]:
