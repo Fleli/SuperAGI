@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
-from superagi.chat.sft_audit import AuditMode, audit_sft_corpus  # noqa: E402
+from superagi.chat.sft_audit import AuditReport, audit_sft_corpus  # noqa: E402
 from superagi.chat.sft_training import parse_sft_source_weights  # noqa: E402
 from superagi.model.checkpoint import load_checkpoint  # noqa: E402
 
@@ -60,17 +60,27 @@ def run_audit(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
-def _print_summary(report: object) -> None:
+def _print_summary(report: AuditReport) -> None:
     print(f"SFT audit: {'PASS' if report.ok else 'FAIL'}", flush=True)
     print(f"Sources: {_format_mapping(report.source_counts)}", flush=True)
     print(f"Turns: {_format_mapping(report.turn_counts)}", flush=True)
-    print(f"Token quantiles: {_format_mapping(report.token_quantiles)}", flush=True)
+    print(f"Word quantiles: {_format_mapping(report.word_quantiles)}", flush=True)
+    print(
+        "Token quantiles: "
+        + (
+            _format_mapping(report.token_quantiles)
+            if report.token_quantiles is not None
+            else "unavailable (supply --checkpoint)"
+        ),
+        flush=True,
+    )
     print(
         f"Response-length quantiles: {_format_mapping(report.response_length_quantiles)}",
         flush=True,
     )
     print(f"Top openings: {_format_top(report.repeated_openings)}", flush=True)
     print(f"Repeated n-grams: {_format_top(report.repeated_ngrams)}", flush=True)
+    print(f"Coverage: {_format_mapping(report.coverage_categories)}", flush=True)
     print(f"Identity share: {report.identity_share:.1%}", flush=True)
     if report.curated_sampling_mass is not None:
         print(f"Curated sampling mass: {report.curated_sampling_mass:.1%}", flush=True)

@@ -9,7 +9,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from superagi.chat.sft_audit import AuditConfig, audit_sft_corpus
-from superagi.ingestion.tokenizer import BpeTokenizer, TokenEncoding
+from superagi.ingestion.tokenizer import (
+    EOS_TOKEN,
+    SPECIAL_TOKENS,
+    BpeTokenizer,
+    TokenEncoding,
+)
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "audit_sft.py"
@@ -28,6 +33,13 @@ class _ZeroLabelTokenizer:
             ids=(1, 2, 3),
             offsets=((0, 0), (0, 0), (0, 0)),
         )
+
+
+class _MissingEosTokenizer(_ZeroLabelTokenizer):
+    def special_token_id(self, token: str) -> int:
+        if token in {EOS_TOKEN, "<system>"}:
+            raise ValueError(f"missing {token}")
+        return 0
 
 
 class SftAuditTests(unittest.TestCase):
@@ -78,6 +90,8 @@ class SftAuditTests(unittest.TestCase):
                 max_duplicate_agi_answers=1,
                 max_near_duplicate_answers=1,
                 max_repeated_ngram_count=1000,
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
             ),
         )
 
@@ -104,6 +118,53 @@ class SftAuditTests(unittest.TestCase):
         self.assertTrue(report.has_error("leaked_control_token"))
         self.assertTrue(report.has_error("synthetic_tag"))
         self.assertTrue(report.has_error("replacement_character"))
+
+    def test_rejects_eos_and_every_other_special_token_in_source_content(self) -> None:
+        rows = [
+            _conversation(
+                f"Special token fixture {index}?",
+                f"This answer leaks {token} inside source content.",
+                source=f"curated_core:everyday",
+            )
+            for index, token in enumerate(SPECIAL_TOKENS)
+        ]
+
+        report = self._audit(
+            rows,
+            mode="curated",
+            config=AuditConfig(
+                example_limit=len(SPECIAL_TOKENS),
+                max_repeated_ngram_count=1000,
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
+            ),
+        )
+
+        finding = next(
+            finding
+            for finding in report.findings
+            if finding.code == "leaked_control_token"
+        )
+        self.assertEqual(len(finding.examples), len(SPECIAL_TOKENS))
+        rendered_examples = " ".join(finding.examples)
+        for token in SPECIAL_TOKENS:
+            self.assertIn(token, rendered_examples)
+
+    def test_checkpoint_reports_every_unresolved_special_token_id(self) -> None:
+        report = self._audit(
+            [_conversation("Question?", "A direct answer.")],
+            mode="mixed",
+            tokenizer=_MissingEosTokenizer(),
+            context_length=32,
+        )
+
+        finding = next(
+            finding
+            for finding in report.findings
+            if finding.code == "missing_special_token_ids"
+        )
+        self.assertIn("<eos>", finding.examples)
+        self.assertIn("<system>", finding.examples)
 
     def test_fails_when_a_common_opening_exceeds_the_gate(self) -> None:
         rows = [
@@ -140,6 +201,41 @@ class SftAuditTests(unittest.TestCase):
 
         self.assertFalse(report.ok)
         self.assertGreater(report.identity_share, 0.03)
+        self.assertTrue(report.has_error("identity_share"))
+
+    def test_identity_share_counts_each_conversation_once(self) -> None:
+        rows = [
+            _conversation(
+                f"Ordinary question {index}?",
+                f"An ordinary response with unique detail {index}.",
+            )
+            for index in range(31)
+        ]
+        rows.append(
+            {
+                "source": "curated_core:identity",
+                "messages": [
+                    {"role": "user", "content": "Who are you?"},
+                    {"role": "agi", "content": "I am SuperAGI, a small experimental model."},
+                    {"role": "user", "content": "What can you do?"},
+                    {"role": "agi", "content": "I can answer compact questions."},
+                    {"role": "user", "content": "Anything else?"},
+                    {"role": "agi", "content": "I can also explain simple concepts."},
+                ],
+            }
+        )
+
+        report = self._audit(
+            rows,
+            mode="curated",
+            config=AuditConfig(
+                max_repeated_ngram_count=1000,
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
+            ),
+        )
+
+        self.assertAlmostEqual(report.identity_share, 1 / 32)
         self.assertTrue(report.has_error("identity_share"))
 
     def test_fails_when_a_repeated_ngram_exceeds_the_gate(self) -> None:
@@ -182,6 +278,35 @@ class SftAuditTests(unittest.TestCase):
 
         self.assertTrue(zero_label_report.has_error("zero_supervised_labels"))
         self.assertTrue(overflow_report.has_error("context_overflow"))
+
+    def test_fails_for_response_character_and_token_limits(self) -> None:
+        rows = [
+            _conversation(
+                "Question?",
+                "This response is deliberately longer than both configured limits.",
+            )
+        ]
+        tokenizer = BpeTokenizer.from_text(
+            "<bos><user> Question\n<agi> This response is deliberately longer than both configured limits.<eos>\n",
+            vocab_size=300,
+            min_frequency=1,
+        )
+
+        report = self._audit(
+            rows,
+            mode="mixed",
+            tokenizer=tokenizer,
+            context_length=1024,
+            config=AuditConfig(
+                max_response_chars=20,
+                max_response_tokens=3,
+                max_repeated_ngram_count=1000,
+            ),
+        )
+
+        self.assertTrue(report.has_error("response_char_limit"))
+        self.assertTrue(report.has_error("response_token_limit"))
+        self.assertIsNotNone(report.token_quantiles)
 
     def test_fails_for_empty_agi_response(self) -> None:
         report = self._audit(
@@ -229,9 +354,76 @@ class SftAuditTests(unittest.TestCase):
         payload = report.to_json_payload()
 
         self.assertEqual(report.response_length_quantiles["p50"], 6)
+        self.assertEqual(report.word_quantiles["p50"], 7)
+        self.assertIsNone(report.token_quantiles)
+        self.assertIsNone(payload["token_quantiles"])
         self.assertEqual(payload["ok"], report.ok)
         self.assertEqual(payload["source_counts"], {"curated_core": 3})
         self.assertIn("findings", payload)
+
+    def test_curated_mode_requires_all_domains_and_turn_structures(self) -> None:
+        report = self._audit(
+            [
+                _conversation(
+                    "What should I cook?",
+                    "Make pasta with vegetables and a simple sauce.",
+                    source="curated_core:everyday",
+                )
+            ],
+            mode="curated",
+        )
+
+        self.assertTrue(report.has_error("missing_behavioral_coverage"))
+        self.assertEqual(report.coverage_categories["direct_answer"], 1)
+        self.assertEqual(
+            report.coverage_categories[
+                "corrections_topic_changes_multi_turn_reference"
+            ],
+            0,
+        )
+        self.assertEqual(report.coverage_categories["uncertainty_safety"], 0)
+        self.assertEqual(report.coverage_categories["identity_boundaries"], 0)
+
+    def test_curated_mode_accepts_complete_domain_and_turn_coverage(self) -> None:
+        rows = [
+            _conversation(
+                f"Question about {domain}?",
+                f"A direct answer for the {domain} domain.",
+                source=f"curated_core:{domain}",
+            )
+            for domain in AuditConfig().required_curated_domains
+        ]
+        rows.append(
+            {
+                "source": "curated_core:repair",
+                "messages": [
+                    {"role": "user", "content": "Explain the first topic."},
+                    {"role": "agi", "content": "The first topic has a direct explanation."},
+                    {"role": "user", "content": "Actually, switch topics."},
+                    {"role": "agi", "content": "The new topic has a different explanation."},
+                ],
+            }
+        )
+
+        report = self._audit(rows, mode="curated")
+
+        self.assertFalse(report.has_error("missing_behavioral_coverage"))
+        self.assertFalse(report.has_error("invalid_curated_source"))
+
+    def test_style_mode_requires_one_style_family_and_turn_mix_when_large(self) -> None:
+        rows = [
+            _conversation(
+                f"Style question {index}?",
+                f"A playful direct response with unique detail {index}.",
+                source="style_playful_direct:everyday",
+            )
+            for index in range(20)
+        ]
+
+        report = self._audit(rows, mode="style")
+
+        self.assertTrue(report.has_error("missing_behavioral_coverage"))
+        self.assertFalse(report.has_error("invalid_style_source_family"))
 
     def test_cli_writes_json_report_and_returns_nonzero_for_hard_findings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -18,11 +18,7 @@ from superagi.chat.sft_quality import (
     validate_role_sequence,
 )
 from superagi.ingestion.tokenizer import (
-    AGI_TOKEN,
-    BOS_TOKEN,
-    PAD_TOKEN,
-    SYSTEM_TOKEN,
-    USER_TOKEN,
+    SPECIAL_TOKENS,
     TokenizerLike,
 )
 
@@ -30,7 +26,10 @@ from superagi.ingestion.tokenizer import (
 AuditMode = Literal["curated", "mixed", "style"]
 AuditSeverity = Literal["error", "warning"]
 
-_LEAKED_CONTROL_TOKEN_RE = re.compile(r"<(?:user|agi|system|bos)>", re.IGNORECASE)
+_LEAKED_CONTROL_TOKEN_RE = re.compile(
+    "|".join(re.escape(token) for token in SPECIAL_TOKENS),
+    re.IGNORECASE,
+)
 _SYNTHETIC_TAG_RE = re.compile(r"\[[a-z_-]+-\d+", re.IGNORECASE)
 _IDENTITY_OR_LIMITATION_RE = re.compile(
     r"\b(?:"
@@ -42,6 +41,21 @@ _IDENTITY_OR_LIMITATION_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+
+_CURATED_DOMAINS = (
+    "everyday",
+    "work_study",
+    "technology",
+    "science_math",
+    "finance",
+    "civics",
+    "relationships",
+    "health_safety",
+    "repair",
+    "creative",
+    "identity",
+)
+_STYLE_SOURCE_FAMILIES = ("style_playful_direct", "style_calm_precise")
 
 
 @dataclass(frozen=True)
@@ -59,7 +73,15 @@ class AuditConfig:
     curated_sampling_mass_min: float = 0.15
     curated_sampling_mass_max: float = 0.25
     max_context_tokens: int | None = None
+    max_response_chars: int | None = 1200
+    max_response_tokens: int | None = 512
     curated_source_families: tuple[str, ...] = ("curated_core", "curated")
+    curated_source_family: str = "curated_core"
+    required_curated_domains: tuple[str, ...] = _CURATED_DOMAINS
+    require_curated_turn_coverage: bool = True
+    allowed_style_source_families: tuple[str, ...] = _STYLE_SOURCE_FAMILIES
+    required_style_source_family: str | None = None
+    style_turn_coverage_min_records: int = 20
     example_limit: int = 5
 
     def __post_init__(self) -> None:
@@ -89,6 +111,28 @@ class AuditConfig:
             raise ValueError("example_limit must be positive")
         if self.max_context_tokens is not None and self.max_context_tokens <= 0:
             raise ValueError("max_context_tokens must be positive when supplied")
+        if self.max_response_chars is not None and self.max_response_chars <= 0:
+            raise ValueError("max_response_chars must be positive when supplied")
+        if self.max_response_tokens is not None and self.max_response_tokens <= 0:
+            raise ValueError("max_response_tokens must be positive when supplied")
+        if self.required_curated_domains and not self.curated_source_family:
+            raise ValueError("curated_source_family must be non-empty")
+        if len(set(self.required_curated_domains)) != len(self.required_curated_domains):
+            raise ValueError("required_curated_domains must be unique")
+        if any(not domain for domain in self.required_curated_domains):
+            raise ValueError("required_curated_domains must be non-empty strings")
+        if len(set(self.allowed_style_source_families)) != len(
+            self.allowed_style_source_families
+        ):
+            raise ValueError("allowed_style_source_families must be unique")
+        if self.required_style_source_family is not None and (
+            self.required_style_source_family not in self.allowed_style_source_families
+        ):
+            raise ValueError(
+                "required_style_source_family must be an allowed style family"
+            )
+        if self.style_turn_coverage_min_records < 0:
+            raise ValueError("style_turn_coverage_min_records must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -115,10 +159,12 @@ class AuditReport:
     response_count: int
     source_counts: dict[str, int]
     turn_counts: dict[str, int]
-    token_quantiles: dict[str, int]
+    token_quantiles: dict[str, int] | None
+    word_quantiles: dict[str, int]
     response_length_quantiles: dict[str, int]
     repeated_openings: dict[str, int]
     repeated_ngrams: dict[str, int]
+    coverage_categories: dict[str, int]
     identity_share: float
     curated_sampling_mass: float | None
     findings: tuple[AuditFinding, ...]
@@ -143,9 +189,11 @@ class AuditReport:
             "source_counts": self.source_counts,
             "turn_counts": self.turn_counts,
             "token_quantiles": self.token_quantiles,
+            "word_quantiles": self.word_quantiles,
             "response_length_quantiles": self.response_length_quantiles,
             "repeated_openings": self.repeated_openings,
             "repeated_ngrams": self.repeated_ngrams,
+            "coverage_categories": self.coverage_categories,
             "identity_share": self.identity_share,
             "curated_sampling_mass": self.curated_sampling_mass,
             "findings": [finding.to_json_payload() for finding in self.findings],
@@ -171,7 +219,7 @@ def audit_sft_corpus(
 
     audit_config = config or AuditConfig()
     findings: list[AuditFinding] = []
-    records = _load_records(paths, findings, audit_config)
+    records = _load_records(paths, findings)
     if tokenizer is not None:
         _validate_special_token_ids(tokenizer, findings)
 
@@ -185,18 +233,41 @@ def audit_sft_corpus(
     ]
     _append_duplicate_findings(records, responses, mode, audit_config, findings)
     _append_content_findings(records, audit_config, findings)
+    coverage_categories = _coverage_categories(records)
+    _append_behavioral_coverage_findings(
+        records,
+        mode,
+        audit_config,
+        coverage_categories,
+        findings,
+    )
+    _append_response_length_findings(
+        records,
+        tokenizer,
+        audit_config,
+        findings,
+    )
 
     effective_context_length = _effective_context_length(
         context_length,
         audit_config.max_context_tokens,
     )
-    token_counts = _token_counts(
-        records,
-        tokenizer,
-        effective_context_length,
-        findings,
-        audit_config,
-    )
+    token_counts = None
+    if tokenizer is not None:
+        token_counts = _token_counts(
+            records,
+            tokenizer,
+            effective_context_length,
+            findings,
+        )
+    word_counts = [
+        len(
+            canonical_text(
+                " ".join(message.content for message in record.messages)
+            ).split()
+        )
+        for record in records
+    ]
     response_lengths = [len(canonical_text(answer).split()) for _, answer in responses]
     repeated_openings = _repeated_openings(responses, audit_config)
     repeated_ngrams = _repeated_ngrams(responses, audit_config)
@@ -208,17 +279,17 @@ def audit_sft_corpus(
         findings,
     )
 
-    identity_share = _identity_share(responses)
+    identity_share = _identity_share(records)
     if mode == "curated" and identity_share > audit_config.identity_share_limit:
         findings.append(
             AuditFinding(
                 code="identity_share",
                 severity="error",
                 message=(
-                    "identity/capability/limitation responses account for "
+                    "identity/capability/limitation conversations account for "
                     f"{identity_share:.1%}, above the {audit_config.identity_share_limit:.1%} curated limit"
                 ),
-                examples=_examples_matching(responses, _IDENTITY_OR_LIMITATION_RE, audit_config),
+                examples=_identity_examples(records, audit_config),
             )
         )
 
@@ -254,10 +325,16 @@ def audit_sft_corpus(
         response_count=len(responses),
         source_counts=dict(sorted(source_counts.items())),
         turn_counts=dict(sorted(turn_counts.items(), key=lambda item: int(item[0]))),
-        token_quantiles=_nearest_rank_quantiles(token_counts),
+        token_quantiles=(
+            _nearest_rank_quantiles(token_counts)
+            if token_counts is not None
+            else None
+        ),
+        word_quantiles=_nearest_rank_quantiles(word_counts),
         response_length_quantiles=_nearest_rank_quantiles(response_lengths),
         repeated_openings=repeated_openings,
         repeated_ngrams=repeated_ngrams,
+        coverage_categories=coverage_categories,
         identity_share=identity_share,
         curated_sampling_mass=curated_sampling_mass,
         findings=tuple(findings),
@@ -267,7 +344,6 @@ def audit_sft_corpus(
 def _load_records(
     paths: Sequence[Path | str],
     findings: list[AuditFinding],
-    config: AuditConfig,
 ) -> list[SftConversation]:
     records: list[SftConversation] = []
     for raw_path in paths:
@@ -283,14 +359,13 @@ def _load_records(
                     message=f"failed to load {path}: {error}",
                 )
             )
-        records.extend(_recover_valid_records(path, findings, config))
+        records.extend(_recover_valid_records(path, findings))
     return records
 
 
 def _recover_valid_records(
     path: Path,
     findings: list[AuditFinding],
-    config: AuditConfig,
 ) -> list[SftConversation]:
     recovered: list[SftConversation] = []
     try:
@@ -355,15 +430,19 @@ def _validate_special_token_ids(tokenizer: object, findings: list[AuditFinding])
             )
         )
         return
-    try:
-        for token in (PAD_TOKEN, BOS_TOKEN, USER_TOKEN, AGI_TOKEN, SYSTEM_TOKEN):
+    unresolved: list[str] = []
+    for token in SPECIAL_TOKENS:
+        try:
             special_token_id(token)
-    except (KeyError, ValueError) as error:
+        except (KeyError, ValueError):
+            unresolved.append(token)
+    if unresolved:
         findings.append(
             AuditFinding(
                 code="missing_special_token_ids",
                 severity="error",
-                message=f"SFT audit tokenizer lacks a required special token: {error}",
+                message="SFT audit tokenizer lacks required special token IDs",
+                examples=tuple(unresolved),
             )
         )
 
@@ -496,19 +575,204 @@ def _append_content_findings(
             )
 
 
+def _coverage_categories(records: Sequence[SftConversation]) -> dict[str, int]:
+    domain_counts = Counter(_source_domain(record.source) for record in records)
+    single_turn = sum(_agi_turn_count(record) == 1 for record in records)
+    multi_turn = sum(_agi_turn_count(record) > 1 for record in records)
+    return {
+        "direct_answer": len(records),
+        "corrections_topic_changes_multi_turn_reference": domain_counts["repair"],
+        "uncertainty_safety": domain_counts["health_safety"],
+        "identity_boundaries": domain_counts["identity"],
+        "single_turn": single_turn,
+        "multi_turn": multi_turn,
+    }
+
+
+def _append_behavioral_coverage_findings(
+    records: Sequence[SftConversation],
+    mode: AuditMode,
+    config: AuditConfig,
+    coverage: Mapping[str, int],
+    findings: list[AuditFinding],
+) -> None:
+    if mode == "curated":
+        _append_curated_coverage_findings(records, config, coverage, findings)
+    elif mode == "style":
+        _append_style_coverage_findings(records, config, coverage, findings)
+
+
+def _append_curated_coverage_findings(
+    records: Sequence[SftConversation],
+    config: AuditConfig,
+    coverage: Mapping[str, int],
+    findings: list[AuditFinding],
+) -> None:
+    if not config.required_curated_domains and not config.require_curated_turn_coverage:
+        return
+
+    required_domains = set(config.required_curated_domains)
+    invalid_sources = sorted(
+        {
+            record.source
+            for record in records
+            if _source_family(record.source) != config.curated_source_family
+            or _source_domain(record.source) not in required_domains
+        }
+    )
+    if invalid_sources:
+        findings.append(
+            AuditFinding(
+                code="invalid_curated_source",
+                severity="error",
+                message=(
+                    "curated sources must use "
+                    f"{config.curated_source_family}:<required-domain>"
+                ),
+                examples=tuple(invalid_sources[: config.example_limit]),
+            )
+        )
+
+    present_domains = {
+        _source_domain(record.source)
+        for record in records
+        if _source_family(record.source) == config.curated_source_family
+    }
+    missing = [
+        f"domain:{domain}"
+        for domain in config.required_curated_domains
+        if domain not in present_domains
+    ]
+    if config.require_curated_turn_coverage:
+        if coverage["single_turn"] == 0:
+            missing.append("turns:single_turn")
+        if coverage["multi_turn"] == 0:
+            missing.append("turns:multi_turn")
+    if missing:
+        findings.append(
+            AuditFinding(
+                code="missing_behavioral_coverage",
+                severity="error",
+                message="curated corpus is missing required domain or turn coverage",
+                examples=tuple(missing[: config.example_limit]),
+            )
+        )
+
+
+def _append_style_coverage_findings(
+    records: Sequence[SftConversation],
+    config: AuditConfig,
+    coverage: Mapping[str, int],
+    findings: list[AuditFinding],
+) -> None:
+    families = {_source_family(record.source) for record in records}
+    expected = config.required_style_source_family
+    if expected is None:
+        recognized = families.intersection(config.allowed_style_source_families)
+        expected = next(iter(recognized)) if len(recognized) == 1 else None
+    invalid = expected is None or families != {expected}
+    if invalid:
+        findings.append(
+            AuditFinding(
+                code="invalid_style_source_family",
+                severity="error",
+                message=(
+                    "style audit requires exactly one requested style source family: "
+                    + ", ".join(config.allowed_style_source_families)
+                ),
+                examples=tuple(sorted(families)[: config.example_limit]),
+            )
+        )
+
+    if len(records) >= config.style_turn_coverage_min_records:
+        missing = []
+        if coverage["single_turn"] == 0:
+            missing.append("turns:single_turn")
+        if coverage["multi_turn"] == 0:
+            missing.append("turns:multi_turn")
+        if missing:
+            findings.append(
+                AuditFinding(
+                    code="missing_behavioral_coverage",
+                    severity="error",
+                    message="style corpus is large enough to require single- and multi-turn coverage",
+                    examples=tuple(missing),
+                )
+            )
+
+
+def _append_response_length_findings(
+    records: Sequence[SftConversation],
+    tokenizer: object | None,
+    config: AuditConfig,
+    findings: list[AuditFinding],
+) -> None:
+    char_examples: list[str] = []
+    token_examples: list[str] = []
+    encode_with_offsets = (
+        getattr(tokenizer, "encode_with_offsets", None)
+        if tokenizer is not None
+        else None
+    )
+    for record in records:
+        for message in record.messages:
+            if message.role != "agi":
+                continue
+            if (
+                config.max_response_chars is not None
+                and len(message.content) > config.max_response_chars
+            ):
+                char_examples.append(
+                    f"{record.source}: {len(message.content)} chars"
+                )
+            if config.max_response_tokens is None or tokenizer is None:
+                continue
+            if not callable(encode_with_offsets):
+                findings.append(
+                    AuditFinding(
+                        code="tokenization_error",
+                        severity="error",
+                        message="SFT audit tokenizer must implement encode_with_offsets",
+                    )
+                )
+                return
+            encoding = encode_with_offsets(message.content)
+            if len(encoding.ids) > config.max_response_tokens:
+                token_examples.append(
+                    f"{record.source}: {len(encoding.ids)} tokens"
+                )
+    if char_examples:
+        findings.append(
+            AuditFinding(
+                code="response_char_limit",
+                severity="error",
+                message=(
+                    f"found {len(char_examples)} AGI responses above "
+                    f"max_response_chars={config.max_response_chars}"
+                ),
+                examples=tuple(char_examples[: config.example_limit]),
+            )
+        )
+    if token_examples:
+        findings.append(
+            AuditFinding(
+                code="response_token_limit",
+                severity="error",
+                message=(
+                    f"found {len(token_examples)} AGI responses above "
+                    f"max_response_tokens={config.max_response_tokens}"
+                ),
+                examples=tuple(token_examples[: config.example_limit]),
+            )
+        )
+
+
 def _token_counts(
     records: Sequence[SftConversation],
-    tokenizer: TokenizerLike | object | None,
+    tokenizer: TokenizerLike | object,
     context_length: int | None,
     findings: list[AuditFinding],
-    config: AuditConfig,
 ) -> list[int]:
-    if tokenizer is None:
-        return [
-            len(canonical_text(" ".join(message.content for message in record.messages)).split())
-            for record in records
-        ]
-
     counts: list[int] = []
     for record in records:
         try:
@@ -643,25 +907,37 @@ def _append_repetition_findings(
         )
 
 
-def _identity_share(responses: Sequence[tuple[str, str]]) -> float:
-    if not responses:
+def _identity_share(records: Sequence[SftConversation]) -> float:
+    if not records:
         return 0.0
     return sum(
-        bool(_IDENTITY_OR_LIMITATION_RE.search(answer))
-        for _, answer in responses
-    ) / len(responses)
+        any(
+            message.role == "agi"
+            and bool(_IDENTITY_OR_LIMITATION_RE.search(message.content))
+            for message in record.messages
+        )
+        for record in records
+    ) / len(records)
 
 
-def _examples_matching(
-    responses: Sequence[tuple[str, str]],
-    pattern: re.Pattern[str],
+def _identity_examples(
+    records: Sequence[SftConversation],
     config: AuditConfig,
 ) -> tuple[str, ...]:
-    return tuple(
-        f"{source}: {answer[:160]}"
-        for source, answer in responses
-        if pattern.search(answer)
-    )[: config.example_limit]
+    examples: list[str] = []
+    for record in records:
+        match = next(
+            (
+                message.content
+                for message in record.messages
+                if message.role == "agi"
+                and _IDENTITY_OR_LIMITATION_RE.search(message.content)
+            ),
+            None,
+        )
+        if match is not None:
+            examples.append(f"{record.source}: {match[:160]}")
+    return tuple(examples[: config.example_limit])
 
 
 def _curated_sampling_mass(
@@ -694,6 +970,15 @@ def _weight_for_source(source: str, source_weights: Mapping[str, float]) -> floa
 
 def _source_family(source: str) -> str:
     return source.split(":", maxsplit=1)[0]
+
+
+def _source_domain(source: str) -> str:
+    parts = source.split(":", maxsplit=1)
+    return parts[1] if len(parts) == 2 else ""
+
+
+def _agi_turn_count(record: SftConversation) -> int:
+    return sum(message.role == "agi" for message in record.messages)
 
 
 def _nearest_rank_quantiles(values: Iterable[int]) -> dict[str, int]:
