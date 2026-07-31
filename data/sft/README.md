@@ -10,15 +10,18 @@ Use JSONL files with one conversation per line:
 
 Guidelines:
 
+- `curated/core.jsonl` is the production curated SFT source. It contains 1,500
+  audited conversations across the production domain quotas; its deterministic
+  metadata and strict audit report live beside it.
+- `stages/broad-mixed.jsonl` is legacy experimental data and is not a production input.
 - Keep `seed.jsonl` small, reviewed, and tracked in Git.
 - Use `seed-playful-blunt.jsonl` for the separate personality variant. It starts
   with all `seed.jsonl` examples, then adds lightly teasing, direct examples.
 - Use `stages/anchor.jsonl` first when a checkpoint needs to learn the basic
   chat contract: identity, limits, refusal to guess live facts, and topic repair.
-- Use the broad stage after anchor training. By default it mixes
-  `stages/anchor.jsonl`, `stages/broad-mixed.jsonl`, and
-  `imported/public-mixed.jsonl`, then samples by source weights so reviewed
-  anchor behavior is not drowned by high-volume public chat data.
+- Use the production curated core with filtered public data during broad
+  instruction training, then sample by source weights so reviewed behavior is
+  not drowned by high-volume public chat data.
 - Use `stages/style-playful-direct.jsonl` last and lightly. It nudges tone
   without replacing the anchor and broad behavior.
 - Use `diagnostics/overfit-50.jsonl` only as a pipeline sanity check. It is a
@@ -39,8 +42,9 @@ make sft-import-public \
   SFT_IMPORT_MAX_EXAMPLES_PER_SOURCE=5000
 ```
 
-The default import sources are `no_robots`, `dolly`, `openassistant`,
-`wildchat`, and `ultrachat`. The importer writes:
+The default import sources are `no_robots`, `dolly`, `openassistant`, and
+`ultrachat`. WildChat is opt-in rather than a production default. The importer
+writes:
 
 - `data/sft/imported/public-mixed.jsonl`
 - `data/sft/imported/public-mixed.metadata.json`

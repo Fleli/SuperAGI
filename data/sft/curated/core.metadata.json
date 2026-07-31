@@ -1,0 +1,22 @@
+{
+  "conversation_count": 1500,
+  "format": "superagi-curated-sft-v1",
+  "identity_conversations": 40,
+  "multi_turn_conversations": 750,
+  "schema_version": 1,
+  "sha256": "0ebc65c821597a5e913756062670e6ec261b1be5decaba7436a6a9011d0944ae",
+  "single_turn_conversations": 750,
+  "source_domain_counts": {
+    "civics": 130,
+    "creative": 120,
+    "everyday": 180,
+    "finance": 130,
+    "health_safety": 120,
+    "identity": 40,
+    "relationships": 140,
+    "repair": 170,
+    "science_math": 140,
+    "technology": 160,
+    "work_study": 170
+  }
+}
