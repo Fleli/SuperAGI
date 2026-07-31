@@ -155,13 +155,13 @@ Production tracked inputs are:
 
 `curated/core.jsonl` is the production curated SFT source.
 
-The matching audit and metadata files are checked during preflight. Legacy
-`stages/broad-mixed.jsonl` and bulk files under `generated/` are not production
-inputs.
+The matching audit and metadata files are checked during preflight.
+`stages/broad-mixed.jsonl` is legacy experimental data and is not a production input.
+Bulk files under `generated/` are also not production inputs.
 
 Corpus audits enforce structural, duplication, repetition, and configured
-source-mix gates. Topical relevance may be unscored or represented only by a
-proxy, and an audit does not establish the factual correctness of an answer.
+source-mix gates. The topical-relevance proxy may leave cases unscored, and an
+audit does not establish factual correctness.
 
 Public SFT data defaults to `no_robots`, `dolly`, `openassistant`, and
 `ultrachat`. WildChat is excluded from the default import and assigned zero
