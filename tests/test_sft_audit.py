@@ -621,6 +621,176 @@ class SftAuditTests(unittest.TestCase):
             0,
         )
 
+    def test_topical_relevance_does_not_exempt_an_explicit_imperative(
+        self,
+    ) -> None:
+        report = self._audit(
+            [
+                _conversation(
+                    "I usually invest in index funds. "
+                    "Recommend a diversification strategy.",
+                    "Boil the pasta in salted water, then drain it.",
+                    source="curated_core:finance",
+                )
+            ],
+            mode="curated",
+            config=AuditConfig(
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
+            ),
+        )
+
+        self.assertTrue(report.has_error("topical_mismatch"))
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_mismatch"],
+            1,
+        )
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_unscored"],
+            0,
+        )
+
+    def test_topical_relevance_uses_prior_context_for_referential_request(
+        self,
+    ) -> None:
+        report = self._audit(
+            [
+                {
+                    "source": "curated_core:technology",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "My laptop battery drains in an hour.",
+                        },
+                        {
+                            "role": "agi",
+                            "content": "A worn battery can cause rapid battery drain.",
+                        },
+                        {
+                            "role": "user",
+                            "content": "I usually travel by train. Should I fix it now?",
+                        },
+                        {
+                            "role": "agi",
+                            "content": "Check battery health and replace the battery if degraded.",
+                        },
+                    ],
+                }
+            ],
+            mode="curated",
+            config=AuditConfig(
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
+            ),
+        )
+
+        self.assertFalse(report.has_error("topical_mismatch"))
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_mismatch"],
+            0,
+        )
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_unscored"],
+            1,
+        )
+
+    def test_referential_request_uses_only_the_immediately_prior_turn(
+        self,
+    ) -> None:
+        report = self._audit(
+            [
+                {
+                    "source": "curated_core:technology",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "How do I boil pasta?",
+                        },
+                        {
+                            "role": "agi",
+                            "content": "Boil the pasta in salted water.",
+                        },
+                        {
+                            "role": "user",
+                            "content": "My laptop battery drains in an hour.",
+                        },
+                        {
+                            "role": "agi",
+                            "content": "A worn battery can cause rapid battery drain.",
+                        },
+                        {
+                            "role": "user",
+                            "content": "I usually travel by train. Should I fix it now?",
+                        },
+                        {
+                            "role": "agi",
+                            "content": "Boil the pasta until tender and add sauce.",
+                        },
+                    ],
+                }
+            ],
+            mode="curated",
+            config=AuditConfig(
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
+            ),
+        )
+
+        self.assertTrue(report.has_error("topical_mismatch"))
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_mismatch"],
+            1,
+        )
+
+    def test_referential_request_accepts_lexical_prior_context_alignment(
+        self,
+    ) -> None:
+        report = self._audit(
+            [
+                {
+                    "source": "curated_core:civics",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                "A candidate promises to eliminate a government "
+                                "program. What should voters ask?"
+                            ),
+                        },
+                        {
+                            "role": "agi",
+                            "content": (
+                                "Ask what legal authority the candidate has and "
+                                "whether legislation would be required."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": "Is it fair to call the promise impossible?",
+                        },
+                        {
+                            "role": "agi",
+                            "content": (
+                                "Only if the legal facts establish that the "
+                                "candidate cannot do it under any route."
+                            ),
+                        },
+                    ],
+                }
+            ],
+            mode="curated",
+            config=AuditConfig(
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
+            ),
+        )
+
+        self.assertFalse(report.has_error("topical_mismatch"))
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_unscored"],
+            1,
+        )
+
     def test_topical_mismatch_is_advisory_outside_curated_core(self) -> None:
         report = self._audit(
             [

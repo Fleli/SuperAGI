@@ -48,9 +48,15 @@ _CONTEXTUAL_FOLLOW_UP_RE = re.compile(
     r"^(?:i|we)\s+(?:also|generally|mostly|normally|often|typically|usually)\b",
     re.IGNORECASE,
 )
-_EXPLICIT_QUESTION_RE = re.compile(
-    r"\?|(?:^|[.!;,]\s+)(?:are|can|could|did|do|does|how|is|should|what|when|"
-    r"where|which|who|why|will|would)\b",
+_PROMPT_CLAUSE_RE = re.compile(r"[^.!?;:]+")
+_REQUEST_CLAUSE_RE = re.compile(
+    r"^(?:please\s+)?(?:answer|are|can|compare|could|describe|did|do|does|"
+    r"explain|give|help|how|is|list|recommend|should|show|suggest|tell|what|"
+    r"when|where|which|who|why|will|would)\b",
+    re.IGNORECASE,
+)
+_REFERENTIAL_REQUEST_RE = re.compile(
+    r"\b(?:it|its|one|ones|that|them|these|this|those)\b",
     re.IGNORECASE,
 )
 _TOPICAL_STOPWORDS = frozenset(
@@ -1235,21 +1241,65 @@ def classify_topical_relevance(prompt: str, answer: str) -> TopicalRelevance:
     instruction following, or a context-dependent answer.
     """
 
-    prompt_terms = _topical_terms(prompt)
+    return _classify_topical_relevance(prompt, answer, prior_context="")
+
+
+def _classify_topical_relevance(
+    prompt: str,
+    answer: str,
+    *,
+    prior_context: str,
+) -> TopicalRelevance:
     answer_terms = _topical_terms(answer)
-    if not prompt_terms or not answer_terms:
+    if not answer_terms:
+        return "unscored"
+    answer_topics = _recognized_topics(answer_terms)
+
+    clauses = _prompt_clauses(prompt)
+    request_clauses = tuple(
+        clause for clause in clauses if _is_request_clause(clause)
+    )
+    if request_clauses:
+        request_text = " ".join(request_clauses)
+        request_terms = _topical_terms(request_text)
+        request_topics = _recognized_topics(request_terms)
+        if request_terms & answer_terms or request_topics & answer_topics:
+            return "supported"
+        if request_topics and answer_topics:
+            return "mismatch"
+
+        context_text = " ".join(
+            clause for clause in clauses if clause not in request_clauses
+        )
+        context_terms = _topical_terms(context_text)
+        prior_terms = _topical_terms(prior_context)
+        context_topics = _recognized_topics(context_terms)
+        prior_topics = _recognized_topics(prior_terms)
+        if _REFERENTIAL_REQUEST_RE.search(canonical_text(request_text)):
+            reference_terms = prior_terms | context_terms
+            reference_topics = prior_topics | context_topics
+            if answer_terms & reference_terms or answer_topics & reference_topics:
+                return "unscored"
+            if reference_topics and answer_topics:
+                return "mismatch"
+            return "unscored"
+        if context_topics & answer_topics:
+            return "supported"
+        if context_topics and answer_topics:
+            return "mismatch"
+        return "unscored"
+
+    prompt_terms = _topical_terms(prompt)
+    if not prompt_terms:
         return "unscored"
     if prompt_terms & answer_terms:
         return "supported"
 
     prompt_topics = _recognized_topics(prompt_terms)
-    answer_topics = _recognized_topics(answer_terms)
     if prompt_topics & answer_topics:
         return "supported"
     if prompt_topics and answer_topics and prompt_topics.isdisjoint(answer_topics):
-        if _CONTEXTUAL_FOLLOW_UP_RE.search(
-            canonical_text(prompt)
-        ) and not _EXPLICIT_QUESTION_RE.search(prompt):
+        if _CONTEXTUAL_FOLLOW_UP_RE.search(canonical_text(prompt)):
             return "unscored"
         return "mismatch"
     return "unscored"
@@ -1259,8 +1309,12 @@ def _conversation_topical_relevance(
     record: SftConversation,
 ) -> TopicalRelevance:
     pair_statuses = [
-        classify_topical_relevance(prompt, answer)
-        for prompt, answer in _user_agi_pairs(record)
+        _classify_topical_relevance(
+            prompt,
+            answer,
+            prior_context=prior_context,
+        )
+        for prior_context, prompt, answer in _user_agi_turns(record)
     ]
     if "mismatch" in pair_statuses:
         return "mismatch"
@@ -1269,29 +1323,50 @@ def _conversation_topical_relevance(
     return "unscored"
 
 
-def _user_agi_pairs(record: SftConversation) -> tuple[tuple[str, str], ...]:
-    pairs: list[tuple[str, str]] = []
+def _user_agi_turns(
+    record: SftConversation,
+) -> tuple[tuple[str, str, str], ...]:
+    turns: list[tuple[str, str, str]] = []
+    prior_context = ""
     for index in range(1, len(record.messages)):
         prompt = record.messages[index - 1]
         answer = record.messages[index]
         if answer.role == "agi" and prompt.role == "user":
-            pairs.append((prompt.content, answer.content))
-    return tuple(pairs)
+            turns.append((prior_context, prompt.content, answer.content))
+            prior_context = f"{prompt.content} {answer.content}"
+    return tuple(turns)
 
 
 def _topical_relevance_example(record: SftConversation) -> str:
-    pairs = _user_agi_pairs(record)
-    if not pairs:
+    turns = _user_agi_turns(record)
+    if not turns:
         return record.source
-    prompt, answer = next(
+    _, prompt, answer = next(
         (
-            pair
-            for pair in pairs
-            if classify_topical_relevance(*pair) == "mismatch"
+            turn
+            for turn in turns
+            if _classify_topical_relevance(
+                turn[1],
+                turn[2],
+                prior_context=turn[0],
+            )
+            == "mismatch"
         ),
-        pairs[-1],
+        turns[-1],
     )
     return f"{record.source}: user={prompt[:80]!r} agi={answer[:100]!r}"
+
+
+def _prompt_clauses(prompt: str) -> tuple[str, ...]:
+    return tuple(
+        clause.strip()
+        for clause in _PROMPT_CLAUSE_RE.findall(prompt)
+        if clause.strip()
+    )
+
+
+def _is_request_clause(clause: str) -> bool:
+    return bool(_REQUEST_CLAUSE_RE.search(canonical_text(clause)))
 
 
 def _topical_terms(text: str) -> frozenset[str]:
