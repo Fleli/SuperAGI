@@ -650,6 +650,142 @@ class SftAuditTests(unittest.TestCase):
             0,
         )
 
+    def test_topical_relevance_detects_named_request_targets_across_syntax(
+        self,
+    ) -> None:
+        prompts = (
+            "Please advise me on diversification.",
+            "Could you please recommend a diversification strategy?",
+            "I usually invest in index funds, recommend a diversification strategy.",
+            "Given that I use index funds, can you explain diversification?",
+            "For my portfolio, suggest a diversification strategy.",
+            "Tell me how to diversify my index funds.",
+        )
+
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                report = self._audit(
+                    [
+                        _conversation(
+                            prompt,
+                            "Boil the pasta in salted water, then drain it.",
+                            source="curated_core:finance",
+                        )
+                    ],
+                    mode="curated",
+                    config=AuditConfig(
+                        required_curated_domains=(),
+                        require_curated_turn_coverage=False,
+                    ),
+                )
+
+                self.assertTrue(report.has_error("topical_mismatch"))
+                self.assertEqual(
+                    report.coverage_categories["topical_relevance_mismatch"],
+                    1,
+                )
+                self.assertEqual(
+                    report.coverage_categories["topical_relevance_unscored"],
+                    0,
+                )
+
+    def test_referential_request_ignores_incidental_subordinate_topics(
+        self,
+    ) -> None:
+        prompts = (
+            "Since I usually travel by train, should I fix it now?",
+            "While I usually travel by train, should I fix it now?",
+            "Although I travel often, could you advise me whether to fix it now?",
+            "Given that I commute by train, can you tell me whether to fix it now?",
+        )
+
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                report = self._audit(
+                    [
+                        {
+                            "source": "curated_core:technology",
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": "My laptop battery drains in an hour.",
+                                },
+                                {
+                                    "role": "agi",
+                                    "content": (
+                                        "A worn battery can cause rapid battery drain."
+                                    ),
+                                },
+                                {"role": "user", "content": prompt},
+                                {
+                                    "role": "agi",
+                                    "content": (
+                                        "Check battery health and replace the battery "
+                                        "if degraded."
+                                    ),
+                                },
+                            ],
+                        }
+                    ],
+                    mode="curated",
+                    config=AuditConfig(
+                        required_curated_domains=(),
+                        require_curated_turn_coverage=False,
+                    ),
+                )
+
+                self.assertFalse(report.has_error("topical_mismatch"))
+                self.assertEqual(
+                    report.coverage_categories["topical_relevance_mismatch"],
+                    0,
+                )
+
+    def test_named_request_target_overrides_prior_referential_context(
+        self,
+    ) -> None:
+        report = self._audit(
+            [
+                {
+                    "source": "curated_core:technology",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "My laptop battery drains in an hour.",
+                        },
+                        {
+                            "role": "agi",
+                            "content": "A worn battery can cause rapid battery drain.",
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                "While I usually travel by train, recommend a "
+                                "diversification strategy."
+                            ),
+                        },
+                        {
+                            "role": "agi",
+                            "content": (
+                                "Check battery health and replace the battery "
+                                "if degraded."
+                            ),
+                        },
+                    ],
+                }
+            ],
+            mode="curated",
+            config=AuditConfig(
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
+            ),
+        )
+
+        self.assertTrue(report.has_error("topical_mismatch"))
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_mismatch"],
+            1,
+        )
+
     def test_topical_relevance_uses_prior_context_for_referential_request(
         self,
     ) -> None:

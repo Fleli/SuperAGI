@@ -49,15 +49,46 @@ _CONTEXTUAL_FOLLOW_UP_RE = re.compile(
     re.IGNORECASE,
 )
 _PROMPT_CLAUSE_RE = re.compile(r"[^.!?;:]+")
-_REQUEST_CLAUSE_RE = re.compile(
-    r"^(?:please\s+)?(?:answer|are|can|compare|could|describe|did|do|does|"
-    r"explain|give|help|how|is|list|recommend|should|show|suggest|tell|what|"
-    r"when|where|which|who|why|will|would)\b",
-    re.IGNORECASE,
+_REQUEST_ACTIONS = frozenset(
+    {
+        "advise",
+        "answer",
+        "compare",
+        "describe",
+        "explain",
+        "give",
+        "help",
+        "list",
+        "recommend",
+        "show",
+        "suggest",
+        "tell",
+    }
 )
-_REFERENTIAL_REQUEST_RE = re.compile(
-    r"\b(?:it|its|one|ones|that|them|these|this|those)\b",
-    re.IGNORECASE,
+_REQUEST_MODALS = frozenset(
+    {
+        "are",
+        "can",
+        "could",
+        "did",
+        "do",
+        "does",
+        "how",
+        "is",
+        "should",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "will",
+        "would",
+    }
+)
+_MODAL_SUBJECTS = frozenset({"he", "i", "it", "she", "they", "we", "you"})
+_REFERENTIAL_TARGETS = frozenset(
+    {"it", "its", "one", "ones", "that", "them", "these", "this", "those"}
 )
 _TOPICAL_STOPWORDS = frozenset(
     {
@@ -174,18 +205,23 @@ _TOPIC_GROUPS: Mapping[str, frozenset[str]] = {
             "debt",
             "expense",
             "finance",
+            "fund",
+            "index",
             "interest",
             "invest",
             "loan",
             "market",
             "money",
             "mortgage",
+            "portfolio",
             "property",
             "purchase",
             "rent",
             "saving",
             "stock",
             "tax",
+            "diversification",
+            "diversify",
         }
     ),
     "health": frozenset(
@@ -1255,32 +1291,36 @@ def _classify_topical_relevance(
         return "unscored"
     answer_topics = _recognized_topics(answer_terms)
 
-    clauses = _prompt_clauses(prompt)
-    request_clauses = tuple(
-        clause for clause in clauses if _is_request_clause(clause)
+    request_targets = tuple(
+        target
+        for clause in _prompt_clauses(prompt)
+        if (target := _request_target(clause)) is not None
     )
-    if request_clauses:
-        request_text = " ".join(request_clauses)
-        request_terms = _topical_terms(request_text)
-        request_topics = _recognized_topics(request_terms)
-        if request_terms & answer_terms or request_topics & answer_topics:
+    if request_targets:
+        target_terms = frozenset().union(
+            *(_topical_terms(target.text) for target in request_targets)
+        )
+        target_topics = _recognized_topics(target_terms)
+        if target_terms & answer_terms or target_topics & answer_topics:
             return "supported"
-        if request_topics and answer_topics:
+        if target_topics and answer_topics:
             return "mismatch"
 
-        context_text = " ".join(
-            clause for clause in clauses if clause not in request_clauses
+        referential = any(target.referential for target in request_targets)
+        context_terms = frozenset().union(
+            *(_topical_terms(target.context) for target in request_targets)
         )
-        context_terms = _topical_terms(context_text)
         prior_terms = _topical_terms(prior_context)
         context_topics = _recognized_topics(context_terms)
         prior_topics = _recognized_topics(prior_terms)
-        if _REFERENTIAL_REQUEST_RE.search(canonical_text(request_text)):
-            reference_terms = prior_terms | context_terms
-            reference_topics = prior_topics | context_topics
-            if answer_terms & reference_terms or answer_topics & reference_topics:
+        if referential:
+            if answer_terms & prior_terms or answer_topics & prior_topics:
                 return "unscored"
-            if reference_topics and answer_topics:
+            if prior_topics and answer_topics:
+                return "mismatch"
+            if answer_terms & context_terms or answer_topics & context_topics:
+                return "unscored"
+            if context_topics and answer_topics:
                 return "mismatch"
             return "unscored"
         if context_topics & answer_topics:
@@ -1365,8 +1405,55 @@ def _prompt_clauses(prompt: str) -> tuple[str, ...]:
     )
 
 
-def _is_request_clause(clause: str) -> bool:
-    return bool(_REQUEST_CLAUSE_RE.search(canonical_text(clause)))
+@dataclass(frozen=True)
+class _RequestTarget:
+    text: str
+    context: str
+    referential: bool
+
+
+def _request_target(clause: str) -> _RequestTarget | None:
+    words = tuple(_TOPICAL_WORD_RE.findall(canonical_text(clause)))
+    if not words:
+        return None
+
+    marker = next(
+        (
+            index
+            for index, word in enumerate(words)
+            if word in _REQUEST_ACTIONS
+            and not (
+                index > 0
+                and words[index - 1] in {"he", "i", "she", "they", "we"}
+            )
+        ),
+        None,
+    )
+    if marker is None:
+        marker = next(
+            (
+                index
+                for index, word in enumerate(words)
+                if word in _REQUEST_MODALS
+                and (
+                    word in {"how", "what", "when", "where", "which", "who", "why"}
+                    or index == 0
+                    or bool(
+                        _MODAL_SUBJECTS.intersection(words[index + 1 : index + 3])
+                    )
+                )
+            ),
+            None,
+        )
+    if marker is None:
+        return None
+
+    target_words = words[marker + 1 :]
+    return _RequestTarget(
+        text=" ".join(target_words),
+        context=" ".join(words[:marker]),
+        referential=bool(_REFERENTIAL_TARGETS.intersection(target_words)),
+    )
 
 
 def _topical_terms(text: str) -> frozenset[str]:
