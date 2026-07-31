@@ -229,6 +229,20 @@ SFT_IMPORT_MAX_CONTEXT_TOKENS := 900
 SFT_IMPORT_MAX_MESSAGES := 8
 SFT_IMPORT_MAX_AGI_CHARS := 1200
 SFT_IMPORT_MIN_AGI_CHARS := 20
+SFT_EVAL_CHECKPOINT := data/sft/runs/300m/core/best.pt
+SFT_EVAL_PROMPTS := data/sft/eval_prompts.jsonl
+SFT_EVAL_RESULTS :=
+SFT_EVAL_SUMMARY :=
+SFT_EVAL_TEMPERATURE := 0.3
+SFT_EVAL_TOP_K := 20
+SFT_EVAL_REPETITION_PENALTY := 1.2
+SFT_EVAL_REPETITION_WINDOW := 128
+SFT_EVAL_DEVICE := auto
+SFT_EVAL_SEED := 1337
+SFT_EVAL_MIN_EOS_TERMINATION_RATE := 0.90
+SFT_EVAL_MIN_NONEMPTY_RESPONSE_RATE := 0.95
+SFT_EVAL_MAX_REPETITION_FAILURE_RATE := 0.05
+SFT_EVAL_MIN_TOPIC_RESET_PASS_RATE := 0.80
 SFT_OVERFIT_DATA := data/sft/diagnostics/overfit-50.jsonl
 SFT_OVERFIT_BASE_CHECKPOINT := $(SFT_BASE_CHECKPOINT)
 SFT_OVERFIT_OUT := data/sft/runs/chat-sft-overfit-50.pt
@@ -337,7 +351,7 @@ SFT_LOCAL_SMOKE_ANCHOR_STEPS := 120
 SFT_LOCAL_SMOKE_PUBLIC_STEPS := 160
 SFT_LOCAL_SMOKE_BATCH := 1
 
-.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 ingest-stream-sources train sft-audit sft-import-public sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged sft-prepare-local sft-anchor-local sft-public-local sft-style-local sft-core-local sft-local sft-local-smoke params train-export-run train-4090 train-200m train-h100 train-300m runpod-train-300m std-train export-model generate run-model chat smoke-train clean-generated
+.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 ingest-stream-sources train sft-audit sft-import-public sft-evaluate sft-train sft-overfit-50 sft-anchor sft-broad sft-style sft-staged sft-prepare-local sft-anchor-local sft-public-local sft-style-local sft-core-local sft-local sft-local-smoke params train-export-run train-4090 train-200m train-h100 train-300m runpod-train-300m std-train export-model generate run-model chat smoke-train clean-generated
 
 help:
 	@echo "SuperAGI pipeline targets"
@@ -364,6 +378,7 @@ help:
 	@echo "  make train-export-run RESUME=data/checkpoints/latest.pt STEPS=1000 PROMPT=\"Attention is\""
 	@echo "  make sft-import-public SFT_IMPORT_CHECKPOINT=./best-200m-current.pt"
 	@echo "  make sft-train SFT_BASE_CHECKPOINT=data/checkpoints/best.pt SFT_STEPS=200 SFT_SOURCE_WEIGHTS=anchor=4,wildchat=0.35"
+	@echo "  make sft-evaluate SFT_EVAL_CHECKPOINT=data/sft/runs/300m/core/best.pt"
 	@echo "  make sft-local-smoke SFT_LOCAL_BASE_CHECKPOINT=./best-300m-current.pt"
 	@echo "  make sft-local SFT_LOCAL_BASE_CHECKPOINT=./best-300m-current.pt"
 	@echo "  make sft-overfit-50 SFT_OVERFIT_BASE_CHECKPOINT=./best-current-cloud.pt"
@@ -768,6 +783,25 @@ sft-audit: setup
 		--source-weights "$(SFT_AUDIT_SOURCE_WEIGHTS)" \
 		--mode "$(SFT_AUDIT_MODE)" \
 		--report "$(SFT_AUDIT_REPORT)"
+
+sft-evaluate: setup
+	@printf '==> [sft-evaluate] Running fixed behavioral evaluation gates\n'
+	$(PYTHON) scripts/evaluate_sft.py \
+		--checkpoint "$(SFT_EVAL_CHECKPOINT)" \
+		--prompts "$(SFT_EVAL_PROMPTS)" \
+		$(if $(strip $(SFT_EVAL_RESULTS)),--results "$(SFT_EVAL_RESULTS)",) \
+		$(if $(strip $(SFT_EVAL_SUMMARY)),--summary "$(SFT_EVAL_SUMMARY)",) \
+		--temperature "$(SFT_EVAL_TEMPERATURE)" \
+		--top-k "$(SFT_EVAL_TOP_K)" \
+		--repetition-penalty "$(SFT_EVAL_REPETITION_PENALTY)" \
+		--repetition-window "$(SFT_EVAL_REPETITION_WINDOW)" \
+		--device "$(SFT_EVAL_DEVICE)" \
+		--seed "$(SFT_EVAL_SEED)" \
+		--min-eos-termination-rate "$(SFT_EVAL_MIN_EOS_TERMINATION_RATE)" \
+		--min-nonempty-response-rate "$(SFT_EVAL_MIN_NONEMPTY_RESPONSE_RATE)" \
+		--max-repetition-failure-rate "$(SFT_EVAL_MAX_REPETITION_FAILURE_RATE)" \
+		--min-topic-reset-pass-rate "$(SFT_EVAL_MIN_TOPIC_RESET_PASS_RATE)"
+	@printf '==> [sft-evaluate] Finished behavioral evaluation\n'
 
 sft-import-public: setup
 	@printf '==> [sft-import-public] Importing public SFT datasets\n'

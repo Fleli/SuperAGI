@@ -119,6 +119,81 @@ class MakefileTests(unittest.TestCase):
         self.assertIn('--mode "$(SFT_AUDIT_MODE)"', contents)
         self.assertIn('--report "$(SFT_AUDIT_REPORT)"', contents)
 
+    def test_sft_evaluate_target_wires_fixed_behavioral_gates(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("sft-evaluate", contents)
+        self.assertIn(
+            "SFT_EVAL_CHECKPOINT := data/sft/runs/300m/core/best.pt",
+            contents,
+        )
+        self.assertIn(
+            "SFT_EVAL_PROMPTS := data/sft/eval_prompts.jsonl",
+            contents,
+        )
+        self.assertIn("SFT_EVAL_RESULTS :=", contents)
+        self.assertIn("SFT_EVAL_SUMMARY :=", contents)
+        self.assertIn("SFT_EVAL_TEMPERATURE := 0.3", contents)
+        self.assertIn("SFT_EVAL_TOP_K := 20", contents)
+        self.assertIn("SFT_EVAL_REPETITION_PENALTY := 1.2", contents)
+        self.assertIn("SFT_EVAL_REPETITION_WINDOW := 128", contents)
+        self.assertIn("SFT_EVAL_DEVICE := auto", contents)
+        self.assertIn("SFT_EVAL_SEED := 1337", contents)
+        self.assertIn("SFT_EVAL_MIN_EOS_TERMINATION_RATE := 0.90", contents)
+        self.assertIn("SFT_EVAL_MIN_NONEMPTY_RESPONSE_RATE := 0.95", contents)
+        self.assertIn("SFT_EVAL_MAX_REPETITION_FAILURE_RATE := 0.05", contents)
+        self.assertIn("SFT_EVAL_MIN_TOPIC_RESET_PASS_RATE := 0.80", contents)
+        self.assertIn("scripts/evaluate_sft.py", contents)
+        self.assertIn('--checkpoint "$(SFT_EVAL_CHECKPOINT)"', contents)
+        self.assertIn('--prompts "$(SFT_EVAL_PROMPTS)"', contents)
+        self.assertIn('--temperature "$(SFT_EVAL_TEMPERATURE)"', contents)
+        self.assertIn('--top-k "$(SFT_EVAL_TOP_K)"', contents)
+        self.assertIn(
+            '--repetition-penalty "$(SFT_EVAL_REPETITION_PENALTY)"',
+            contents,
+        )
+        self.assertIn(
+            '--repetition-window "$(SFT_EVAL_REPETITION_WINDOW)"',
+            contents,
+        )
+        self.assertIn('--device "$(SFT_EVAL_DEVICE)"', contents)
+        self.assertIn('--seed "$(SFT_EVAL_SEED)"', contents)
+        self.assertIn(
+            '--min-eos-termination-rate '
+            '"$(SFT_EVAL_MIN_EOS_TERMINATION_RATE)"',
+            contents,
+        )
+        self.assertIn(
+            '--min-nonempty-response-rate '
+            '"$(SFT_EVAL_MIN_NONEMPTY_RESPONSE_RATE)"',
+            contents,
+        )
+        self.assertIn(
+            '--max-repetition-failure-rate '
+            '"$(SFT_EVAL_MAX_REPETITION_FAILURE_RATE)"',
+            contents,
+        )
+        self.assertIn(
+            '--min-topic-reset-pass-rate '
+            '"$(SFT_EVAL_MIN_TOPIC_RESET_PASS_RATE)"',
+            contents,
+        )
+        self.assertIn(
+            "$(if $(strip $(SFT_EVAL_RESULTS)),--results "
+            '"$(SFT_EVAL_RESULTS)",)',
+            contents,
+        )
+        self.assertIn(
+            "$(if $(strip $(SFT_EVAL_SUMMARY)),--summary "
+            '"$(SFT_EVAL_SUMMARY)",)',
+            contents,
+        )
+        self.assertIn(
+            "==> [sft-evaluate] Running fixed behavioral evaluation gates",
+            contents,
+        )
+
     def test_sft_overfit_50_target_trains_diagnostic_checkpoint(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
         contents = makefile.read_text(encoding="utf-8")
