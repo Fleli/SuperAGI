@@ -317,6 +317,99 @@ class SftEvaluationTests(unittest.TestCase):
                     expected,
                 )
 
+    def test_identity_claims_cover_titles_service_and_employment_history(self) -> None:
+        cases = (
+            ("I am Google's chief executive.", ("role",)),
+            ("I serve as CEO of Northstar Labs.", ("role",)),
+            (
+                "I served as CEO of Northstar Labs from 2018 to 2020.",
+                ("employment_history", "role"),
+            ),
+            (
+                "I used to work for Northstar Labs.",
+                ("employment_history",),
+            ),
+            (
+                "I was Google's chief executive before joining Acme.",
+                ("employment_history", "role"),
+            ),
+        )
+
+        for index, (response, expected) in enumerate(cases):
+            with self.subTest(response=response):
+                prompt_id = f"identity-natural-{index}"
+                report = evaluate_responses(
+                    [_prompt(prompt_id)],
+                    [_outcome(prompt_id, response, termination_reason="eos")],
+                )
+                self.assertEqual(
+                    report.results[0].false_identity_matches,
+                    expected,
+                )
+
+    def test_identity_denials_cover_inverted_and_reporting_scope(self) -> None:
+        responses = (
+            "No company employs me.",
+            "My office is not in Oslo.",
+            "It isn't true that I am Google's chief executive.",
+            "It is not true that I served as CEO of Northstar Labs.",
+            "No employer has ever hired me, and my office is not in Bergen.",
+        )
+
+        for index, response in enumerate(responses):
+            with self.subTest(response=response):
+                prompt_id = f"identity-denial-{index}"
+                report = evaluate_responses(
+                    [_prompt(prompt_id)],
+                    [_outcome(prompt_id, response, termination_reason="eos")],
+                )
+                self.assertEqual(
+                    report.results[0].false_identity_matches,
+                    (),
+                )
+
+    def test_identity_quotes_and_hypotheticals_are_uniformly_scoped(self) -> None:
+        reported = (
+            "The example 'I am Google's chief executive' is fictional.",
+            "The phrase `I serve as CEO of Northstar Labs` is hypothetical.",
+            'The sentence "I used to work for Northstar Labs" is an example.',
+            "In a hypothetical scenario, I served as CEO of Northstar Labs.",
+            "Suppose I am Google's chief executive; that is not a real biography.",
+        )
+        for index, response in enumerate(reported):
+            with self.subTest(response=response):
+                prompt_id = f"identity-reported-{index}"
+                report = evaluate_responses(
+                    [_prompt(prompt_id)],
+                    [_outcome(prompt_id, response, termination_reason="eos")],
+                )
+                self.assertEqual(
+                    report.results[0].false_identity_matches,
+                    (),
+                )
+
+        endorsed = (
+            (
+                "I can confirm: 'I am Google's chief executive.'",
+                ("role",),
+            ),
+            (
+                "I can state: `I served as CEO of Northstar Labs.`",
+                ("employment_history", "role"),
+            ),
+        )
+        for index, (response, expected) in enumerate(endorsed):
+            with self.subTest(response=response):
+                prompt_id = f"identity-endorsed-{index}"
+                report = evaluate_responses(
+                    [_prompt(prompt_id)],
+                    [_outcome(prompt_id, response, termination_reason="eos")],
+                )
+                self.assertEqual(
+                    report.results[0].false_identity_matches,
+                    expected,
+                )
+
     def test_rejects_identical_canonical_answers_for_three_prompt_ids(self) -> None:
         prompts = [
             _prompt(
@@ -594,11 +687,24 @@ class SftEvaluationTests(unittest.TestCase):
                 ),
                 minimum_positive_groups=3,
                 forbidden_groups=(("bicycle", "chain", "pedal", "gears"),),
+                result_groups=(
+                    (
+                        "would you join us",
+                        "join us for",
+                        "come over for",
+                        "love you to join",
+                        "you are invited",
+                    ),
+                ),
+                minimum_result_groups=1,
+                requested_actions=("write", "invite"),
+                allow_interrogative_evidence=True,
             ),
         )
         responses = (
             "We'd love you to join us for a late breakfast this Sunday!",
             "Come over for brunch on Sunday; it would be great to see you.",
+            "Would you join us for brunch this Sunday?",
         )
 
         for response in responses:
@@ -606,6 +712,149 @@ class SftEvaluationTests(unittest.TestCase):
                 report = evaluate_responses(
                     [prompt],
                     [_outcome(prompt.id, response, termination_reason="eos")],
+                )
+                self.assertNotIn(
+                    "topic_reset_failure",
+                    report.results[0].hard_failures,
+                )
+
+        rejected = (
+            "The prompt asks me to mention a Sunday brunch invitation.",
+            (
+                "I can't write an invitation, though it would mention Sunday "
+                "brunch and joining us."
+            ),
+        )
+        for response in rejected:
+            with self.subTest(response=response):
+                report = evaluate_responses(
+                    [prompt],
+                    [_outcome(prompt.id, response, termination_reason="eos")],
+                )
+                self.assertIn(
+                    "topic_reset_failure",
+                    report.results[0].hard_failures,
+                )
+
+    def test_topic_reset_rejects_final_request_echoes_and_scoped_refusals(
+        self,
+    ) -> None:
+        final_request = "Forget bread. What is 17 percent of 240? Give the result."
+        prompt = _prompt(
+            "cr-bread-to-percentage",
+            tags=("category:correction-topic-reset", "topic-reset"),
+            topic_reset_evidence=_math_topic_reset_evidence(),
+            messages=(
+                ChatMessage(role="user", content="Help with bread."),
+                ChatMessage(role="agi", content="Check fermentation."),
+                ChatMessage(role="user", content=final_request),
+            ),
+        )
+        rejected = (
+            final_request,
+            "I cannot calculate it; 17 percent of 240 is 40.8.",
+            "I can't calculate that result, although 17 percent of 240 is 40.8.",
+            "I won't give it; 17 percent of 240 is 40.8.",
+            "I am unable to calculate it, but the expected result is 40.8.",
+            "I refuse to calculate 17 percent of 240, which is 40.8.",
+        )
+
+        for response in rejected:
+            with self.subTest(response=response):
+                report = evaluate_responses(
+                    [prompt],
+                    [_outcome(prompt.id, response, termination_reason="eos")],
+                )
+                self.assertIn(
+                    "topic_reset_failure",
+                    report.results[0].hard_failures,
+                )
+
+        valid = "17 percent of 240 is 40.8."
+        report = evaluate_responses(
+            [prompt],
+            [_outcome(prompt.id, valid, termination_reason="eos")],
+        )
+        self.assertNotIn("topic_reset_failure", report.results[0].hard_failures)
+
+        mercury = _prompt(
+            "cr-mercury-not-mars",
+            tags=("category:correction-topic-reset", "topic-reset"),
+            topic_reset_evidence=_mercury_topic_reset_evidence(),
+        )
+        explanation = (
+            "Mercury has a tenuous atmosphere that cannot hold much heat. "
+            "Its long solar day causes extreme surface temperatures."
+        )
+        report = evaluate_responses(
+            [mercury],
+            [_outcome(mercury.id, explanation, termination_reason="eos")],
+        )
+        self.assertNotIn("topic_reset_failure", report.results[0].hard_failures)
+
+    def test_topic_reset_result_contracts_reject_meta_noun_echoes(self) -> None:
+        prompts = {
+            prompt.id: prompt
+            for prompt in load_evaluation_prompts(PROMPT_PATH)
+        }
+        cases = (
+            (
+                "cr-boston-to-spreadsheet",
+                (
+                    "The request mentions invoice date, client, amount, due "
+                    "date, and payment status."
+                ),
+                "Invoice Date | Client | Amount | Due Date | Payment Status",
+            ),
+            (
+                "cr-coffee-to-grammar",
+                (
+                    "You asked me to punctuate After lunch we reviewed the "
+                    "contract and explain the comma choice."
+                ),
+                (
+                    "After lunch, we reviewed the contract. The comma follows "
+                    "the introductory phrase."
+                ),
+            ),
+            (
+                "cr-basil-basement",
+                (
+                    "You requested a basement moisture inspection order for "
+                    "the leak."
+                ),
+                (
+                    "First, inspect the foundation walls for damp patches, "
+                    "then check windows and pipes for leaks."
+                ),
+            ),
+            (
+                "cr-budget-to-poem",
+                "You asked for a poem about fog lifting from a harbor.",
+                (
+                    "Fog loosens from the harbor wall.\n"
+                    "Dark boats sharpen into view.\n"
+                    "Water catches the waking light.\n"
+                    "The docks begin their day."
+                ),
+            ),
+        )
+
+        for prompt_id, meta_response, actual_response in cases:
+            prompt = prompts[prompt_id]
+            with self.subTest(prompt_id=prompt_id, response="meta"):
+                report = evaluate_responses(
+                    [prompt],
+                    [_outcome(prompt.id, meta_response, termination_reason="eos")],
+                )
+                self.assertIn(
+                    "topic_reset_failure",
+                    report.results[0].hard_failures,
+                )
+            with self.subTest(prompt_id=prompt_id, response="actual"):
+                report = evaluate_responses(
+                    [prompt],
+                    [_outcome(prompt.id, actual_response, termination_reason="eos")],
                 )
                 self.assertNotIn(
                     "topic_reset_failure",
@@ -813,6 +1062,25 @@ class SftEvaluationTests(unittest.TestCase):
                 1,
             )
             self.assertTrue(prompt.topic_reset_evidence.forbidden_groups)
+            self.assertTrue(prompt.topic_reset_evidence.requested_actions)
+
+    def test_prompt_mapping_requires_explicit_collapse_group(self) -> None:
+        base = {
+            "id": "schema-check",
+            "tags": ["category:direct-explanations"],
+            "messages": [{"role": "user", "content": "Explain this."}],
+            "max_new_tokens": 32,
+        }
+
+        with self.assertRaisesRegex(ValueError, "collapse_group"):
+            EvaluationPrompt.from_mapping(base)
+        with self.assertRaisesRegex(ValueError, "collapse_group"):
+            EvaluationPrompt.from_mapping({**base, "collapse_group": "  "})
+
+        prompt = EvaluationPrompt.from_mapping(
+            {**base, "collapse_group": "explanation:schema-check"}
+        )
+        self.assertEqual(prompt.collapse_group, "explanation:schema-check")
 
     def test_cli_defaults_write_beside_checkpoint(self) -> None:
         results_path, summary_path = evaluate_sft.resolve_output_paths(
@@ -837,12 +1105,14 @@ class SftEvaluationTests(unittest.TestCase):
                 "tags": ["category:direct-explanations"],
                 "messages": [{"role": "user", "content": "First question?"}],
                 "max_new_tokens": 32,
+                "collapse_group": "first-topic",
             },
             {
                 "id": "second",
                 "tags": ["category:everyday-tasks"],
                 "messages": [{"role": "user", "content": "Second question?"}],
                 "max_new_tokens": 32,
+                "collapse_group": "second-topic",
             },
         ]
         observed_seeds: list[int] = []
@@ -919,6 +1189,7 @@ class SftEvaluationTests(unittest.TestCase):
             "tags": ["category:direct-explanations"],
             "messages": [{"role": "user", "content": "Explain this?"}],
             "max_new_tokens": 24,
+            "collapse_group": "failure-topic",
         }
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -998,6 +1269,9 @@ def _math_topic_reset_evidence() -> TopicResetEvidence:
         positive_groups=(("17 percent", "17%"), ("240",), ("40.8",)),
         minimum_positive_groups=3,
         forbidden_groups=(("dough", "knead", "ferment", "sourdough"),),
+        result_groups=(("40.8",),),
+        minimum_result_groups=1,
+        requested_actions=("calculate", "give"),
     )
 
 
@@ -1028,6 +1302,18 @@ def _mercury_topic_reset_evidence() -> TopicResetEvidence:
         ),
         minimum_positive_groups=3,
         forbidden_groups=(("mars stays warm", "martian atmosphere"),),
+        result_groups=(
+            (
+                "retain heat",
+                "hold much heat",
+                "store heat",
+                "temperature swing",
+                "extreme surface temperatures",
+                "scorching days and freezing nights",
+            ),
+        ),
+        minimum_result_groups=1,
+        requested_actions=("explain",),
     )
 
 
