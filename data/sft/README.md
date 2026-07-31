@@ -33,6 +33,14 @@ Guidelines:
 - Use `runs/` for tokenized SFT artifacts, checkpoints, and experiment outputs; it is ignored by Git.
 - Do not commit private website logs or personally identifying user content.
 
+The strict audit includes a conservative topical-relevance proxy. It reports a
+conversation as supported only when the user context and final AGI answer share
+informative lexical stems or a small declared topic vocabulary; clear
+cross-topic pairs are mismatches, and ambiguous pairs are explicitly unscored.
+This proxy catches obvious answer swaps but does not establish factual correctness,
+completeness, usefulness, or full instruction following. Human review and
+behavioral evaluation remain required.
+
 Import filtered public SFT data from high-value instruction/chat datasets:
 
 ```bash

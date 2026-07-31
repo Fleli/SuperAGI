@@ -238,6 +238,148 @@ class SftAuditTests(unittest.TestCase):
         self.assertAlmostEqual(report.identity_share, 1 / 32)
         self.assertTrue(report.has_error("identity_share"))
 
+    def test_identity_share_uses_curated_and_style_identity_source_domains(self) -> None:
+        rows = [
+            _conversation(
+                "What kind of software is this?",
+                "The checkpoint generates a continuation from the text you provide.",
+                source="curated_core:identity",
+            ),
+            _conversation(
+                "Describe your role.",
+                "Think of this as a compact text generator, not a mysterious oracle.",
+                source="style_playful_direct:identity",
+            ),
+            _conversation(
+                "Can you open the live page?",
+                "I cannot browse or access current pages.",
+                source="openassistant",
+            ),
+            _conversation(
+                "What does a compiler do?",
+                "A compiler translates source code into another executable form.",
+                source="openassistant",
+            ),
+        ]
+
+        report = self._audit(
+            rows,
+            mode="mixed",
+            config=AuditConfig(
+                identity_share_limit=1.0,
+                max_repeated_ngram_count=1000,
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
+            ),
+        )
+
+        self.assertAlmostEqual(report.identity_share, 3 / 4)
+
+    def test_identity_share_does_not_double_count_source_and_text_detection(self) -> None:
+        rows = [
+            _conversation(
+                "Who are you?",
+                "I am SuperAGI, a small experimental language model.",
+                source="curated_core:identity",
+            ),
+            _conversation(
+                "What is a checksum?",
+                "A checksum is a compact value used to detect changed data.",
+                source="curated_core:technology",
+            ),
+        ]
+
+        report = self._audit(
+            rows,
+            mode="mixed",
+            config=AuditConfig(
+                identity_share_limit=1.0,
+                max_repeated_ngram_count=1000,
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
+            ),
+        )
+
+        self.assertAlmostEqual(report.identity_share, 1 / 2)
+
+    def test_topical_relevance_flags_obvious_unrelated_answer(self) -> None:
+        report = self._audit(
+            [
+                _conversation(
+                    "How do I boil pasta for dinner?",
+                    "A mortgage is a loan secured by real estate property.",
+                    source="curated_core:everyday",
+                )
+            ],
+            mode="curated",
+            config=AuditConfig(
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
+            ),
+        )
+
+        self.assertFalse(report.ok)
+        self.assertTrue(report.has_error("topical_mismatch"))
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_mismatch"],
+            1,
+        )
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_supported"],
+            0,
+        )
+
+    def test_topical_relevance_passes_representative_direct_answer(self) -> None:
+        report = self._audit(
+            [
+                _conversation(
+                    "How do I boil pasta for dinner?",
+                    "Boil the pasta in salted water until tender, then drain it.",
+                    source="curated_core:everyday",
+                )
+            ],
+            mode="curated",
+            config=AuditConfig(
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
+            ),
+        )
+
+        self.assertFalse(report.has_error("topical_mismatch"))
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_supported"],
+            1,
+        )
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_mismatch"],
+            0,
+        )
+
+    def test_topical_mismatch_is_advisory_outside_curated_core(self) -> None:
+        report = self._audit(
+            [
+                _conversation(
+                    "How do I boil pasta for dinner?",
+                    "A mortgage is a loan secured by real estate property.",
+                    source="style_playful_direct:everyday",
+                )
+            ],
+            mode="style",
+            config=AuditConfig(
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
+            ),
+        )
+
+        finding = next(
+            finding
+            for finding in report.findings
+            if finding.code == "topical_mismatch"
+        )
+        self.assertEqual(finding.severity, "warning")
+        self.assertFalse(report.has_error("topical_mismatch"))
+        self.assertTrue(report.ok)
+
     def test_fails_when_a_repeated_ngram_exceeds_the_gate(self) -> None:
         repeated = "one repeated five word phrase appears here"
         rows = [
@@ -374,7 +516,15 @@ class SftAuditTests(unittest.TestCase):
         )
 
         self.assertTrue(report.has_error("missing_behavioral_coverage"))
-        self.assertEqual(report.coverage_categories["direct_answer"], 1)
+        self.assertNotIn("direct_answer", report.coverage_categories)
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_supported"],
+            1,
+        )
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_mismatch"],
+            0,
+        )
         self.assertEqual(
             report.coverage_categories[
                 "corrections_topic_changes_multi_turn_reference"

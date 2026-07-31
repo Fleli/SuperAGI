@@ -48,6 +48,13 @@ NUMBERED_PROMPT_RE = re.compile(
     r"\b(?:be blunt about politics|explain finance)\s+\d+\b",
     re.IGNORECASE,
 )
+MECHANICAL_IDENTITY_PREFIX_RE = re.compile(
+    r"^(?:accordingly|basically|carefully|certainly|clearly|concisely|"
+    r"creatively|deliberately|directly|essentially|factually|frankly|"
+    r"naturally|notably|plainly|practically|realistically|responsively|"
+    r"simply|specifically|technically|thoughtfully)[,:]?\s",
+    re.IGNORECASE,
+)
 
 
 def _read_raw_records() -> list[dict[str, object]]:
@@ -108,6 +115,31 @@ class CuratedSftDataTests(unittest.TestCase):
         self.assertLessEqual(identity_count, 45)
         self.assertLessEqual(identity_count / len(self.records), 0.03)
 
+    def test_identity_answers_do_not_use_rotating_adverb_frames(self) -> None:
+        identity_answers = [
+            message.content
+            for record in self.records
+            if record.source == "curated_core:identity"
+            for message in record.messages
+            if message.role == "agi"
+        ]
+        mechanical_prefixes = [
+            answer
+            for answer in identity_answers
+            if MECHANICAL_IDENTITY_PREFIX_RE.search(answer)
+        ]
+        self.assertLessEqual(
+            len(mechanical_prefixes),
+            2,
+            mechanical_prefixes[:5],
+        )
+
+        opening_counts = Counter(
+            " ".join(canonical_text(answer).split()[:3])
+            for answer in identity_answers
+        )
+        self.assertLessEqual(max(opening_counts.values()), 2)
+
     def test_contains_no_known_artifacts_or_control_token_leakage(self) -> None:
         for record in self.records:
             for message in record.messages:
@@ -152,6 +184,20 @@ class CuratedSftDataTests(unittest.TestCase):
         self.assertEqual(report["coverage_categories"]["single_turn"], 750)
         self.assertEqual(report["coverage_categories"]["multi_turn"], 750)
         self.assertEqual(report["coverage_categories"]["identity_boundaries"], 40)
+        self.assertEqual(
+            report["coverage_categories"]["topical_relevance_mismatch"],
+            0,
+        )
+        topical_counts = [
+            report["coverage_categories"][f"topical_relevance_{status}"]
+            for status in ("supported", "mismatch", "unscored")
+        ]
+        self.assertEqual(sum(topical_counts), 1_500)
+        self.assertGreater(
+            report["coverage_categories"]["topical_relevance_unscored"],
+            0,
+        )
+        self.assertEqual(report["identity_share"], 40 / 1_500)
         self.assertFalse(
             any(finding["severity"] == "error" for finding in report["findings"])
         )
@@ -167,6 +213,9 @@ class CuratedSftDataTests(unittest.TestCase):
             "production input.",
             readme,
         )
+        self.assertIn("topical-relevance proxy", readme)
+        self.assertIn("does not establish factual correctness", readme)
+        self.assertIn("unscored", readme)
 
 
 if __name__ == "__main__":

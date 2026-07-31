@@ -145,10 +145,18 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("sft-staged", contents)
         self.assertIn("SFT_ANCHOR_DATA := data/sft/stages/anchor.jsonl", contents)
         self.assertIn(
-            "SFT_BROAD_DATA := data/sft/stages/anchor.jsonl,data/sft/stages/broad-mixed.jsonl,data/sft/imported/public-mixed.jsonl",
+            "SFT_BROAD_DATA := data/sft/stages/anchor.jsonl,data/sft/curated/core.jsonl,data/sft/imported/public-mixed.jsonl",
             contents,
         )
-        self.assertIn("SFT_BROAD_SOURCE_WEIGHTS :=", contents)
+        self.assertIn(
+            "SFT_BROAD_SOURCE_WEIGHTS := anchor=4,curated_core=4,no_robots=1.5,openassistant=1.25,dolly=1,ultrachat=0.8,wildchat=0.35,default=1",
+            contents,
+        )
+        self.assertNotIn(
+            "SFT_BROAD_DATA := data/sft/stages/anchor.jsonl,data/sft/stages/broad-mixed.jsonl",
+            contents,
+        )
+        self.assertNotIn("broad-mixed=2", contents)
         self.assertIn("SFT_STYLE_DATA := data/sft/stages/style-playful-direct.jsonl", contents)
         self.assertIn("SFT_ANCHOR_OUT := data/sft/runs/chat-anchor.pt", contents)
         self.assertIn("SFT_BROAD_BASE_CHECKPOINT := $(SFT_ANCHOR_OUT)", contents)

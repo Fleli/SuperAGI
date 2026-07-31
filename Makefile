@@ -253,7 +253,7 @@ SFT_ANCHOR_LR_WARMUP_STEPS := 50
 SFT_ANCHOR_WEIGHT_DECAY := 0.0
 SFT_ANCHOR_CHECKPOINT_INTERVAL := 250
 SFT_ANCHOR_LOG_INTERVAL := 50
-SFT_BROAD_DATA := data/sft/stages/anchor.jsonl,data/sft/stages/broad-mixed.jsonl,data/sft/imported/public-mixed.jsonl
+SFT_BROAD_DATA := data/sft/stages/anchor.jsonl,data/sft/curated/core.jsonl,data/sft/imported/public-mixed.jsonl
 SFT_BROAD_BASE_CHECKPOINT := $(SFT_ANCHOR_OUT)
 SFT_BROAD_OUT := data/sft/runs/chat-broad.pt
 SFT_BROAD_METRICS := data/sft/runs/chat-broad-metrics.jsonl
@@ -265,7 +265,7 @@ SFT_BROAD_LR_WARMUP_STEPS := 100
 SFT_BROAD_WEIGHT_DECAY := 0.01
 SFT_BROAD_CHECKPOINT_INTERVAL := 250
 SFT_BROAD_LOG_INTERVAL := 50
-SFT_BROAD_SOURCE_WEIGHTS := anchor=4,broad-mixed=2,no_robots=1.5,openassistant=1.25,dolly=1,ultrachat=0.8,wildchat=0.35,default=1
+SFT_BROAD_SOURCE_WEIGHTS := anchor=4,curated_core=4,no_robots=1.5,openassistant=1.25,dolly=1,ultrachat=0.8,wildchat=0.35,default=1
 SFT_STYLE_DATA := data/sft/stages/style-playful-direct.jsonl
 SFT_STYLE_BASE_CHECKPOINT := $(SFT_BROAD_OUT)
 SFT_STYLE_OUT := data/sft/runs/chat-playful-direct.pt

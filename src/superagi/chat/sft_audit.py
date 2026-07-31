@@ -25,6 +25,7 @@ from superagi.ingestion.tokenizer import (
 
 AuditMode = Literal["curated", "mixed", "style"]
 AuditSeverity = Literal["error", "warning"]
+TopicalRelevance = Literal["supported", "mismatch", "unscored"]
 
 _LEAKED_CONTROL_TOKEN_RE = re.compile(
     "|".join(re.escape(token) for token in SPECIAL_TOKENS),
@@ -41,6 +42,217 @@ _IDENTITY_OR_LIMITATION_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_IDENTITY_DOMAIN_RE = re.compile(r"(?:^|[_-])identity(?:$|[_-])", re.IGNORECASE)
+_TOPICAL_WORD_RE = re.compile(r"[a-z][a-z0-9']+")
+_TOPICAL_STOPWORDS = frozenset(
+    {
+        "a",
+        "about",
+        "after",
+        "again",
+        "all",
+        "also",
+        "am",
+        "an",
+        "and",
+        "answer",
+        "are",
+        "as",
+        "at",
+        "be",
+        "because",
+        "before",
+        "being",
+        "but",
+        "by",
+        "can",
+        "could",
+        "did",
+        "do",
+        "does",
+        "explain",
+        "for",
+        "from",
+        "give",
+        "had",
+        "has",
+        "have",
+        "help",
+        "how",
+        "i",
+        "if",
+        "in",
+        "into",
+        "is",
+        "it",
+        "its",
+        "just",
+        "make",
+        "me",
+        "more",
+        "my",
+        "of",
+        "on",
+        "or",
+        "please",
+        "should",
+        "so",
+        "some",
+        "that",
+        "the",
+        "their",
+        "them",
+        "then",
+        "there",
+        "this",
+        "to",
+        "use",
+        "want",
+        "was",
+        "way",
+        "we",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "will",
+        "with",
+        "would",
+        "you",
+        "your",
+    }
+)
+# This vocabulary is intentionally small. It catches obvious topic swaps; it is not
+# a semantic model and does not establish factuality, completeness, or usefulness.
+_TOPIC_GROUPS: Mapping[str, frozenset[str]] = {
+    "food": frozenset(
+        {
+            "bake",
+            "boil",
+            "bread",
+            "breakfast",
+            "cook",
+            "dinner",
+            "drink",
+            "food",
+            "ingredient",
+            "meal",
+            "oven",
+            "pasta",
+            "pizza",
+            "recipe",
+            "salad",
+            "sauce",
+            "snack",
+            "sugar",
+            "toast",
+        }
+    ),
+    "finance": frozenset(
+        {
+            "bank",
+            "budget",
+            "cost",
+            "credit",
+            "debt",
+            "expense",
+            "finance",
+            "interest",
+            "invest",
+            "loan",
+            "market",
+            "money",
+            "mortgage",
+            "property",
+            "purchase",
+            "rent",
+            "saving",
+            "stock",
+            "tax",
+        }
+    ),
+    "health": frozenset(
+        {
+            "doctor",
+            "exercise",
+            "fever",
+            "health",
+            "laxative",
+            "medicine",
+            "pain",
+            "pharmacist",
+            "sickness",
+            "sleep",
+            "strength",
+            "symptom",
+            "training",
+            "treatment",
+        }
+    ),
+    "technology": frozenset(
+        {
+            "app",
+            "code",
+            "compiler",
+            "computer",
+            "database",
+            "internet",
+            "network",
+            "password",
+            "phone",
+            "program",
+            "software",
+            "wifi",
+        }
+    ),
+    "civics": frozenset(
+        {
+            "campaign",
+            "civic",
+            "congress",
+            "election",
+            "government",
+            "law",
+            "parliament",
+            "policy",
+            "politic",
+            "vote",
+        }
+    ),
+    "science_math": frozenset(
+        {
+            "algebra",
+            "atom",
+            "biology",
+            "calculus",
+            "chemistry",
+            "equation",
+            "math",
+            "physics",
+            "science",
+            "theorem",
+        }
+    ),
+    "travel": frozenset(
+        {
+            "airport",
+            "bus",
+            "car",
+            "drive",
+            "driver",
+            "flight",
+            "fuel",
+            "hotel",
+            "insurance",
+            "mileage",
+            "passport",
+            "train",
+            "travel",
+        }
+    ),
+}
 
 _CURATED_DOMAINS = (
     "everyday",
@@ -233,7 +445,17 @@ def audit_sft_corpus(
     ]
     _append_duplicate_findings(records, responses, mode, audit_config, findings)
     _append_content_findings(records, audit_config, findings)
-    coverage_categories = _coverage_categories(records)
+    topical_relevance = [
+        _conversation_topical_relevance(record) for record in records
+    ]
+    coverage_categories = _coverage_categories(records, topical_relevance)
+    _append_topical_relevance_findings(
+        records,
+        topical_relevance,
+        mode,
+        audit_config,
+        findings,
+    )
     _append_behavioral_coverage_findings(
         records,
         mode,
@@ -575,18 +797,51 @@ def _append_content_findings(
             )
 
 
-def _coverage_categories(records: Sequence[SftConversation]) -> dict[str, int]:
+def _coverage_categories(
+    records: Sequence[SftConversation],
+    topical_relevance: Sequence[TopicalRelevance],
+) -> dict[str, int]:
     domain_counts = Counter(_source_domain(record.source) for record in records)
     single_turn = sum(_agi_turn_count(record) == 1 for record in records)
     multi_turn = sum(_agi_turn_count(record) > 1 for record in records)
+    topical_counts = Counter(topical_relevance)
     return {
-        "direct_answer": len(records),
+        "topical_relevance_supported": topical_counts["supported"],
+        "topical_relevance_mismatch": topical_counts["mismatch"],
+        "topical_relevance_unscored": topical_counts["unscored"],
         "corrections_topic_changes_multi_turn_reference": domain_counts["repair"],
         "uncertainty_safety": domain_counts["health_safety"],
         "identity_boundaries": domain_counts["identity"],
         "single_turn": single_turn,
         "multi_turn": multi_turn,
     }
+
+
+def _append_topical_relevance_findings(
+    records: Sequence[SftConversation],
+    topical_relevance: Sequence[TopicalRelevance],
+    mode: AuditMode,
+    config: AuditConfig,
+    findings: list[AuditFinding],
+) -> None:
+    mismatches = [
+        _topical_relevance_example(record)
+        for record, status in zip(records, topical_relevance, strict=True)
+        if status == "mismatch"
+    ]
+    if not mismatches:
+        return
+    findings.append(
+        AuditFinding(
+            code="topical_mismatch",
+            severity="error" if mode == "curated" else "warning",
+            message=(
+                f"found {len(mismatches)} obvious prompt/answer topic swaps; "
+                "the conservative lexical proxy leaves ambiguous pairs unscored"
+            ),
+            examples=tuple(mismatches[: config.example_limit]),
+        )
+    )
 
 
 def _append_behavioral_coverage_findings(
@@ -910,14 +1165,7 @@ def _append_repetition_findings(
 def _identity_share(records: Sequence[SftConversation]) -> float:
     if not records:
         return 0.0
-    return sum(
-        any(
-            message.role == "agi"
-            and bool(_IDENTITY_OR_LIMITATION_RE.search(message.content))
-            for message in record.messages
-        )
-        for record in records
-    ) / len(records)
+    return sum(_is_identity_conversation(record) for record in records) / len(records)
 
 
 def _identity_examples(
@@ -926,6 +1174,8 @@ def _identity_examples(
 ) -> tuple[str, ...]:
     examples: list[str] = []
     for record in records:
+        if not _is_identity_conversation(record):
+            continue
         match = next(
             (
                 message.content
@@ -935,9 +1185,119 @@ def _identity_examples(
             ),
             None,
         )
-        if match is not None:
-            examples.append(f"{record.source}: {match[:160]}")
+        if match is None:
+            match = next(
+                (
+                    message.content
+                    for message in record.messages
+                    if message.role == "agi"
+                ),
+                "",
+            )
+        examples.append(f"{record.source}: {match[:160]}")
     return tuple(examples[: config.example_limit])
+
+
+def _is_identity_conversation(record: SftConversation) -> bool:
+    source_domain = _source_domain(record.source)
+    if _IDENTITY_DOMAIN_RE.search(source_domain):
+        return True
+    return any(
+        message.role == "agi"
+        and bool(_IDENTITY_OR_LIMITATION_RE.search(message.content))
+        for message in record.messages
+    )
+
+
+def classify_topical_relevance(prompt: str, answer: str) -> TopicalRelevance:
+    """Conservatively detect lexical support or an obvious cross-topic swap.
+
+    ``unscored`` is deliberate: lexical overlap cannot validate factuality,
+    instruction following, or a context-dependent answer.
+    """
+
+    prompt_terms = _topical_terms(prompt)
+    answer_terms = _topical_terms(answer)
+    if not prompt_terms or not answer_terms:
+        return "unscored"
+    if prompt_terms & answer_terms:
+        return "supported"
+
+    prompt_topics = _recognized_topics(prompt_terms)
+    answer_topics = _recognized_topics(answer_terms)
+    if prompt_topics & answer_topics:
+        return "supported"
+    if prompt_topics and answer_topics and prompt_topics.isdisjoint(answer_topics):
+        return "mismatch"
+    return "unscored"
+
+
+def _conversation_topical_relevance(
+    record: SftConversation,
+) -> TopicalRelevance:
+    pair = _final_user_agi_pair(record)
+    if pair is None:
+        return "unscored"
+    _, answer = pair
+    prompt_context = " ".join(
+        message.content for message in record.messages if message.role == "user"
+    )
+    return classify_topical_relevance(prompt_context, answer)
+
+
+def _final_user_agi_pair(record: SftConversation) -> tuple[str, str] | None:
+    for index in range(len(record.messages) - 1, 0, -1):
+        answer = record.messages[index]
+        prompt = record.messages[index - 1]
+        if answer.role == "agi" and prompt.role == "user":
+            return prompt.content, answer.content
+    return None
+
+
+def _topical_relevance_example(record: SftConversation) -> str:
+    pair = _final_user_agi_pair(record)
+    if pair is None:
+        return record.source
+    prompt, answer = pair
+    return f"{record.source}: user={prompt[:80]!r} agi={answer[:100]!r}"
+
+
+def _topical_terms(text: str) -> frozenset[str]:
+    normalized = canonical_text(text).replace("wi fi", "wifi")
+    terms: set[str] = set()
+    for raw_word in _TOPICAL_WORD_RE.findall(normalized):
+        word = raw_word.removesuffix("'s")
+        if word in _TOPICAL_STOPWORDS:
+            continue
+        terms.update(_topical_word_forms(word))
+    return frozenset(terms)
+
+
+def _topical_word_forms(word: str) -> frozenset[str]:
+    forms = {word}
+    if len(word) >= 5 and word.endswith("s"):
+        forms.add(word[:-1])
+    for suffix in ("ing", "ed", "es", "s"):
+        if len(word) - len(suffix) >= 4 and word.endswith(suffix):
+            stem = word[: -len(suffix)]
+            forms.add(stem)
+            if suffix in {"ing", "ed"}:
+                forms.add(f"{stem}e")
+            break
+    return frozenset(forms)
+
+
+def _recognized_topics(terms: frozenset[str]) -> frozenset[str]:
+    return frozenset(
+        topic
+        for topic, vocabulary in _TOPIC_GROUPS.items()
+        if terms
+        & {
+            form
+            for word in vocabulary
+            for form in _topical_word_forms(word)
+        }
+    )
 
 
 def _curated_sampling_mass(
