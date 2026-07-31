@@ -191,8 +191,10 @@ SFT_BASE_CHECKPOINT := $(CHECKPOINT)
 SFT_OUT := data/sft/runs/chat-sft.pt
 CHAT_CHECKPOINT := $(SFT_OUT)
 SFT_METRICS := data/sft/runs/metrics.jsonl
+SFT_RUN_DIR :=
 SFT_STEPS := 3000
 SFT_BATCH := 8
+SFT_GRAD_ACCUM_STEPS := 1
 SFT_LR := 3e-5
 SFT_LR_MIN := 3e-6
 SFT_LR_WARMUP_STEPS := 10
@@ -200,7 +202,11 @@ SFT_WEIGHT_DECAY := 0.01
 SFT_GRAD_CLIP := 1.0
 SFT_DEVICE := auto
 SFT_CHECKPOINT_INTERVAL := 250
+SFT_CHECKPOINT_KEEP := 3
 SFT_LOG_INTERVAL := 50
+SFT_MIXED_PRECISION := auto
+SFT_FUSED_ADAMW := auto
+SFT_ACTIVATION_CHECKPOINTING := 0
 SFT_VALIDATION_FRACTION := 0.05
 SFT_VALIDATION_BATCHES := 10
 SFT_MAX_EXAMPLES := 0
@@ -729,17 +735,21 @@ sft-train: setup
 	$(PYTHON) scripts/train_sft.py \
 		--base-checkpoint "$(SFT_BASE_CHECKPOINT)" \
 		--data "$(SFT_DATA)" \
-		--out "$(SFT_OUT)" \
-		--metrics "$(SFT_METRICS)" \
+		$(if $(SFT_RUN_DIR),--run-dir "$(SFT_RUN_DIR)",--out "$(SFT_OUT)" --metrics "$(SFT_METRICS)") \
 		--steps "$(SFT_STEPS)" \
 		--batch "$(SFT_BATCH)" \
+		--grad-accum-steps "$(SFT_GRAD_ACCUM_STEPS)" \
 		--lr "$(SFT_LR)" \
 		--lr-min "$(SFT_LR_MIN)" \
 		--lr-warmup-steps "$(SFT_LR_WARMUP_STEPS)" \
 		--weight-decay "$(SFT_WEIGHT_DECAY)" \
 		--grad-clip "$(SFT_GRAD_CLIP)" \
 		--checkpoint-interval "$(SFT_CHECKPOINT_INTERVAL)" \
+		--checkpoint-keep "$(SFT_CHECKPOINT_KEEP)" \
 		--log-interval "$(SFT_LOG_INTERVAL)" \
+		--mixed-precision "$(SFT_MIXED_PRECISION)" \
+		--fused-adamw "$(SFT_FUSED_ADAMW)" \
+		--activation-checkpointing "$(SFT_ACTIVATION_CHECKPOINTING)" \
 		--validation-fraction "$(SFT_VALIDATION_FRACTION)" \
 		--validation-batches "$(SFT_VALIDATION_BATCHES)" \
 		--max-examples "$(SFT_MAX_EXAMPLES)" \

@@ -309,6 +309,7 @@ def evaluate_sft_loss(
     pad_token_id: int,
     device: torch.device,
     max_batches: int,
+    mixed_precision_dtype: torch.dtype | None = None,
 ) -> float:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
@@ -319,9 +320,11 @@ def evaluate_sft_loss(
 
     was_training = model.training
     model.eval()
-    losses: list[float] = []
+    total_weighted_loss = 0.0
+    total_supervised_tokens = 0
+    batch_count = 0
     for start in range(0, len(examples), batch_size):
-        if len(losses) >= max_batches:
+        if batch_count >= max_batches:
             break
         batch_examples = examples[start : start + batch_size]
         input_ids, target_ids = collate_sft_batch(
@@ -329,13 +332,25 @@ def evaluate_sft_loss(
             pad_token_id=pad_token_id,
             device=device,
         )
-        _, loss = model(input_ids, target_ids)
+        with torch.amp.autocast(
+            device_type=device.type,
+            dtype=mixed_precision_dtype,
+            enabled=mixed_precision_dtype is not None,
+        ):
+            _, loss = model(input_ids, target_ids)
         if loss is None:
             raise RuntimeError("model did not return a validation loss")
-        losses.append(float(loss.item()))
+        supervised_tokens = int(target_ids.ne(IGNORE_INDEX).sum().item())
+        if supervised_tokens == 0:
+            raise RuntimeError("SFT validation batch has no supervised tokens")
+        total_weighted_loss += float(loss.item()) * supervised_tokens
+        total_supervised_tokens += supervised_tokens
+        batch_count += 1
     if was_training:
         model.train()
-    return sum(losses) / len(losses)
+    if total_supervised_tokens == 0:
+        raise RuntimeError("SFT validation produced no supervised tokens")
+    return total_weighted_loss / total_supervised_tokens
 
 
 def _weight_for_source(

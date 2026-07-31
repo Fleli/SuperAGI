@@ -381,6 +381,47 @@ class SftTrainingTests(unittest.TestCase):
         for before, after in zip(before_parameters, model.parameters(), strict=True):
             self.assertTrue(torch.equal(before, after))
 
+    def test_evaluates_validation_loss_weighted_by_supervised_tokens(self) -> None:
+        class ControlledLossModel(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.anchor = torch.nn.Parameter(torch.tensor(0.0))
+
+            def forward(
+                self,
+                input_ids: torch.Tensor,
+                target_ids: torch.Tensor,
+            ) -> tuple[None, torch.Tensor]:
+                supervised = int(target_ids.ne(IGNORE_INDEX).sum().item())
+                loss = self.anchor * 0 + (2.0 if supervised == 1 else 4.0)
+                return None, loss
+
+        examples = [
+            TokenizedSftExample(
+                text="one label",
+                input_ids=(1, 2),
+                target_ids=(IGNORE_INDEX, 3),
+                supervised_token_count=1,
+            ),
+            TokenizedSftExample(
+                text="three labels",
+                input_ids=(1, 2, 3, 4),
+                target_ids=(IGNORE_INDEX, 3, 4, 5),
+                supervised_token_count=3,
+            ),
+        ]
+
+        validation_loss = evaluate_sft_loss(
+            ControlledLossModel(),
+            examples,
+            batch_size=1,
+            pad_token_id=0,
+            device=torch.device("cpu"),
+            max_batches=2,
+        )
+
+        self.assertAlmostEqual(validation_loss, 3.5)
+
     def test_parses_sft_source_weights(self) -> None:
         weights = parse_sft_source_weights("anchor=4,wildchat=0.35,default=1")
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import torch
@@ -19,13 +20,17 @@ from superagi.chat.sft_training import (
     source_summary,
     split_sft_examples,
 )
-from superagi.model.checkpoint import load_checkpoint, save_checkpoint
+from superagi.model.checkpoint import (
+    load_checkpoint,
+    retain_checkpoint_snapshot,
+    save_checkpoint,
+)
 from superagi.training.train import (
     MetricSnapshot,
     TrainConfig,
     append_metrics_jsonl,
     learning_rate_for_step,
-    train_step,
+    train_accumulated_step,
 )
 
 
@@ -35,8 +40,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--base-checkpoint", required=True)
     parser.add_argument("--data", required=True)
-    parser.add_argument("--out", required=True)
-    parser.add_argument("--metrics", required=True)
+    parser.add_argument(
+        "--run-dir",
+        default="",
+        help="Directory for latest.pt, best.pt, final.pt, snapshots/, and metrics.jsonl.",
+    )
+    parser.add_argument(
+        "--out",
+        default="",
+        help="Deprecated compatibility alias for the final checkpoint path.",
+    )
+    parser.add_argument(
+        "--metrics",
+        default="",
+        help="Deprecated compatibility alias for the metrics JSONL path.",
+    )
     parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-5)
@@ -45,11 +63,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--checkpoint-interval", type=int, default=50)
+    parser.add_argument("--checkpoint-keep", type=int, default=3)
     parser.add_argument(
         "--log-interval",
         type=int,
         default=0,
         help="Print train-loss progress every N steps without checkpointing; 0 logs on checkpoints only.",
+    )
+    parser.add_argument("--grad-accum-steps", type=int, default=1)
+    parser.add_argument(
+        "--mixed-precision",
+        choices=("none", "auto", "float16", "bfloat16"),
+        default="auto",
+    )
+    parser.add_argument(
+        "--fused-adamw",
+        choices=("auto", "on", "off"),
+        default="auto",
+    )
+    parser.add_argument(
+        "--activation-checkpointing",
+        choices=("0", "1"),
+        default="0",
     )
     parser.add_argument("--validation-fraction", type=float, default=0.05)
     parser.add_argument("--validation-batches", type=int, default=10)
@@ -73,8 +108,12 @@ def main() -> int:
     args = parse_args()
     if args.steps <= 0:
         raise SystemExit("--steps must be positive")
+    if args.grad_accum_steps <= 0:
+        raise SystemExit("--grad-accum-steps must be positive")
     if args.checkpoint_interval < 0:
         raise SystemExit("--checkpoint-interval must be non-negative")
+    if args.checkpoint_keep < 0:
+        raise SystemExit("--checkpoint-keep must be non-negative")
     if args.log_interval < 0:
         raise SystemExit("--log-interval must be non-negative")
     if not 0 <= args.validation_fraction < 1:
@@ -84,10 +123,25 @@ def main() -> int:
     if args.max_examples < 0:
         raise SystemExit("--max-examples must be non-negative")
 
+    if bool(args.run_dir.strip()) == bool(args.out.strip()):
+        raise SystemExit("supply exactly one of --run-dir or --out")
+    if args.out.strip() and not args.metrics.strip():
+        raise SystemExit("--metrics is required with deprecated --out")
+
     base_path = Path(args.base_checkpoint)
     data_paths = _parse_data_paths(args.data)
-    out_path = Path(args.out)
-    metrics_path = Path(args.metrics)
+    if args.run_dir.strip():
+        run_dir = Path(args.run_dir)
+        final_alias_path: Path | None = None
+        metrics_path = run_dir / "metrics.jsonl"
+    else:
+        final_alias_path = Path(args.out)
+        run_dir = final_alias_path.parent
+        metrics_path = Path(args.metrics)
+    latest_path = run_dir / "latest.pt"
+    best_path = run_dir / "best.pt"
+    final_path = run_dir / "final.pt"
+    snapshots_path = run_dir / "snapshots"
     try:
         source_weights = parse_sft_source_weights(args.source_weights)
     except ValueError as error:
@@ -171,11 +225,18 @@ def main() -> int:
         )
 
     device = _resolve_device(args.device)
+    checkpoint.model.config = replace(
+        checkpoint.model.config,
+        activation_checkpointing=args.activation_checkpointing == "1",
+    )
     model = checkpoint.model.to(device)
+    mixed_precision_dtype = _resolve_mixed_precision_dtype(args.mixed_precision, device)
+    grad_scaler = _build_grad_scaler(mixed_precision_dtype, device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.lr,
         weight_decay=args.weight_decay,
+        **_adamw_kwargs(args.fused_adamw, device),
     )
     config = TrainConfig(
         batch_size=args.batch,
@@ -189,29 +250,38 @@ def main() -> int:
     generator = torch.Generator()
     generator.manual_seed(args.seed)
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    run_dir.mkdir(parents=True, exist_ok=True)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
 
     losses: list[float] = []
     metrics: list[MetricSnapshot] = []
+    best_validation_loss: float | None = None
+    best_selection_loss: float | None = None
     start_time = time.perf_counter()
     for step_index in range(1, args.steps + 1):
         learning_rate = learning_rate_for_step(config, step_index)
         _set_optimizer_learning_rate(optimizer, learning_rate)
-        input_ids, target_ids = sample_sft_batch(
-            train_examples,
-            batch_size=args.batch,
-            pad_token_id=sft_pad_token_id,
-            device=device,
-            generator=generator,
-            source_weights=source_weights,
-        )
-        train_loss = train_step(
+        def _microbatches() -> list[tuple[torch.Tensor, torch.Tensor]]:
+            return [
+                sample_sft_batch(
+                    train_examples,
+                    batch_size=args.batch,
+                    pad_token_id=sft_pad_token_id,
+                    device=device,
+                    generator=generator,
+                    source_weights=source_weights,
+                )
+                for _ in range(args.grad_accum_steps)
+            ]
+
+        train_loss = train_accumulated_step(
             model=model,
             optimizer=optimizer,
-            input_ids=input_ids,
-            target_ids=target_ids,
+            batches=_microbatches(),
+            microbatch_count=args.grad_accum_steps,
             grad_clip=args.grad_clip,
+            mixed_precision_dtype=mixed_precision_dtype,
+            grad_scaler=grad_scaler,
         )
         losses.append(train_loss)
 
@@ -234,6 +304,7 @@ def main() -> int:
                     pad_token_id=sft_pad_token_id,
                     device=device,
                     max_batches=args.validation_batches,
+                    mixed_precision_dtype=mixed_precision_dtype,
                 )
                 if validation_examples
                 else None
@@ -247,25 +318,51 @@ def main() -> int:
             )
             metrics.append(metric)
             append_metrics_jsonl(metrics_path, [metric])
+            metadata = _build_metadata(
+                checkpoint=checkpoint,
+                base_path=base_path,
+                data_paths=data_paths,
+                metrics_path=metrics_path,
+                args=args,
+                source_weights=source_weights,
+                step=step_index,
+                train_examples=len(train_examples),
+                validation_examples=len(validation_examples),
+                skipped_examples=skipped_examples,
+            )
             save_checkpoint(
-                out_path,
+                latest_path,
                 model=model,
                 vocab=checkpoint.vocab,
                 losses=losses,
                 metrics=[asdict(item) for item in metrics],
-                metadata=_build_metadata(
-                    checkpoint=checkpoint,
-                    base_path=base_path,
-                    data_paths=data_paths,
-                    metrics_path=metrics_path,
-                    args=args,
-                    source_weights=source_weights,
-                    step=step_index,
-                    train_examples=len(train_examples),
-                    validation_examples=len(validation_examples),
-                    skipped_examples=skipped_examples,
-                ),
+                metadata=metadata,
             )
+            retain_checkpoint_snapshot(
+                latest_path,
+                snapshots_path,
+                step=step_index,
+                keep=args.checkpoint_keep,
+            )
+            selection_loss = validation_loss if validation_loss is not None else train_loss
+            if best_selection_loss is None or selection_loss < best_selection_loss:
+                best_selection_loss = selection_loss
+                best_validation_loss = validation_loss
+                best_metadata = dict(metadata)
+                best_metadata.update(
+                    {
+                        "best_validation_loss": best_validation_loss,
+                        "best_validation_step": step_index,
+                    }
+                )
+                save_checkpoint(
+                    best_path,
+                    model=model,
+                    vocab=checkpoint.vocab,
+                    losses=losses,
+                    metrics=[asdict(item) for item in metrics],
+                    metadata=best_metadata,
+                )
             validation_text = (
                 f"validation_loss={validation_loss:.6f} "
                 if validation_loss is not None
@@ -277,7 +374,9 @@ def main() -> int:
                 f"train_loss={train_loss:.6f} "
                 f"{validation_text}"
                 f"learning_rate={learning_rate:.8f} "
-                f"elapsed_seconds={metric.elapsed_seconds:.2f}",
+                f"elapsed_seconds={metric.elapsed_seconds:.2f} "
+                f"supervised_tokens_per_second={_sft_tokens_per_second(step_index, args, train_examples, metric.elapsed_seconds):.2f} "
+                f"examples_per_second={(step_index * args.batch * args.grad_accum_steps) / metric.elapsed_seconds:.2f}",
                 flush=True,
             )
             clear_sft_device_cache(device)
@@ -292,7 +391,13 @@ def main() -> int:
                 flush=True,
             )
 
-    print(f"SFT checkpoint: {out_path}")
+    if not best_path.exists():
+        raise RuntimeError("SFT did not produce a best checkpoint")
+    shutil.copy2(best_path, final_path)
+    if final_alias_path is not None:
+        shutil.copy2(best_path, final_alias_path)
+    print(f"SFT run directory: {run_dir}")
+    print(f"SFT checkpoint: {final_path}")
     print(f"SFT metrics: {metrics_path}")
     return 0
 
@@ -320,6 +425,7 @@ def _build_metadata(
             "sft_metrics_path": str(metrics_path),
             "sft_steps": step,
             "sft_batch_size": args.batch,
+            "sft_grad_accum_steps": args.grad_accum_steps,
             "sft_learning_rate": args.lr,
             "sft_min_learning_rate": args.lr_min,
             "sft_warmup_steps": args.lr_warmup_steps,
@@ -330,6 +436,10 @@ def _build_metadata(
             "sft_validation_batches": args.validation_batches,
             "sft_max_examples": args.max_examples,
             "sft_log_interval": args.log_interval,
+            "sft_mixed_precision": args.mixed_precision,
+            "sft_fused_adamw": args.fused_adamw,
+            "sft_activation_checkpointing": args.activation_checkpointing == "1",
+            "sft_checkpoint_keep": args.checkpoint_keep,
             "sft_source_weights": source_weights,
             "sft_skipped_examples": skipped_examples,
         }
@@ -354,6 +464,56 @@ def _set_optimizer_learning_rate(
 ) -> None:
     for parameter_group in optimizer.param_groups:
         parameter_group["lr"] = learning_rate
+
+
+def _resolve_mixed_precision_dtype(
+    mixed_precision: str,
+    device: torch.device,
+) -> torch.dtype | None:
+    if mixed_precision == "none":
+        return None
+    if mixed_precision == "auto":
+        return torch.float16 if device.type == "cuda" else None
+    if mixed_precision == "float16":
+        return torch.float16
+    if mixed_precision == "bfloat16":
+        return torch.bfloat16
+    raise ValueError(f"unsupported mixed precision setting: {mixed_precision}")
+
+
+def _build_grad_scaler(
+    mixed_precision_dtype: torch.dtype | None,
+    device: torch.device,
+) -> torch.amp.GradScaler | None:
+    if mixed_precision_dtype != torch.float16 or device.type != "cuda":
+        return None
+    return torch.amp.GradScaler(device.type, enabled=True)
+
+
+def _adamw_kwargs(mode: str, device: torch.device) -> dict[str, bool]:
+    if mode == "off" or device.type != "cuda":
+        return {}
+    return {"fused": True}
+
+
+def _sft_tokens_per_second(
+    step: int,
+    args: argparse.Namespace,
+    examples: list[object] | tuple[object, ...],
+    elapsed_seconds: float,
+) -> float:
+    if elapsed_seconds <= 0:
+        return 0.0
+    # Example lengths vary, so this is deliberately a supervised-example proxy.
+    mean_tokens = 0.0
+    if examples:
+        mean_tokens = sum(
+            float(getattr(example, "supervised_token_count", 0))
+            for example in examples
+        ) / len(examples)
+    return (
+        step * args.batch * args.grad_accum_steps * mean_tokens / elapsed_seconds
+    )
 
 
 def _parse_data_paths(value: str) -> list[Path]:
