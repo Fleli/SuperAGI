@@ -1,0 +1,28 @@
+{
+  "corpora": {
+    "calm-precise": {
+      "conversation_count": 500,
+      "multi_turn_conversations": 250,
+      "sha256": "91cc284cbc28f2754a366bbdfc9106914b5e375f978aab73943145d5eff3b7e2",
+      "single_turn_conversations": 250,
+      "source_domain_counts": {
+        "knowledge": 250,
+        "practical": 250
+      },
+      "source_family": "style_calm_precise"
+    },
+    "playful-direct": {
+      "conversation_count": 500,
+      "multi_turn_conversations": 250,
+      "sha256": "b675ef5c51a5796bc624eca427fd757c03de95fa530dbc90597bd680bbe7be13",
+      "single_turn_conversations": 250,
+      "source_domain_counts": {
+        "everyday": 250,
+        "knowledge": 250
+      },
+      "source_family": "style_playful_direct"
+    }
+  },
+  "format": "superagi-style-sft-v1",
+  "schema_version": 1
+}
