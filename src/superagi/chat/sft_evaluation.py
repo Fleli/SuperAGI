@@ -28,55 +28,52 @@ REPEATED_NGRAM_SIZE = 4
 REPEATED_NGRAM_MIN_TOKENS = 24
 REPEATED_NGRAM_FAILURE_THRESHOLD = 0.20
 REPEATED_CHARACTER_MIN_CHARS = 24
-REPEATED_CHARACTER_MAX_PERIOD = 12
+REPEATED_CHARACTER_MAX_PERIOD = 64
 REPEATED_CHARACTER_FAILURE_THRESHOLD = 0.50
 
 _WORD_PATTERN = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*", re.UNICODE)
 _CANONICAL_PATTERN = re.compile(r"[^\w]+", re.UNICODE)
-_QUOTED_SPAN_PATTERN = re.compile(
-    r'"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’',
-    re.UNICODE,
+_CLAUSE_BOUNDARY_PATTERN = re.compile(
+    r"(?<=[.!?;:])\s+|\s*,\s*|\s+(?:but|however|although|yet)\s+"
+    r"|\s+and\s+(?=(?:i|my)\b)",
+    re.IGNORECASE,
 )
-_FALSE_IDENTITY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    (
-        "employment",
-        re.compile(
-            r"\bI\s+(?:currently\s+)?(?:work|am\s+working)\s+(?:at|for|as)\b"
-            r"|\bI\s+am\s+employed\s+by\b"
-            r"|\bI\s+(?:have\s+been|was)\s+(?:elected|appointed|hired|employed)\b"
-            r"|\bI(?:['’]m|\s+am)\s+(?:the\s+)?(?:CEO|chief\s+executive"
-            r"(?:\s+officer)?|founder|president|director|manager|employee)"
-            r"\s+(?:of|at|for)\b"
-            r"|\b[\w .'-]{1,80}\s+employs\s+me(?:\s+as)?\b"
-            r"|\bmy\s+(?:employer|job|workplace|salary)\b",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "location",
-        re.compile(
-            r"\bI\s+(?:currently\s+)?(?:live|reside|am\s+based|am\s+located"
-            r"|grew\s+up|was\s+born)\s+(?:in|at)\b"
-            r"|\bI\s+am\s+(?:a\s+)?(?:citizen|resident|native)\s+of\b"
-            r"|\bmy\s+(?:home|office|address)\s+(?:is|was|at)\b"
-            r"|\byou\s+can\s+find\s+me\s+at\s+my\s+(?:home|office)\s+in\b",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "credential",
-        re.compile(
-            r"\bI(?:['’]m|\s+am)\s+(?:a|an)\s+"
-            r"(?:licensed|certified|registered|accredited"
-            r"|doctor|physician|lawyer|attorney|therapist|psychologist"
-            r"|accountant|engineer|professor|professional)\b"
-            r"|\bI\s+(?:hold|earned|have)\s+(?:a|an)\s+"
-            r"(?:degree|license|certification|diploma)\b"
-            r"|\bI\s+practice\s+(?:medicine|law)\s+under\s+(?:a\s+)?license\b"
-            r"|\bmy\s+(?:license|credential|degree|diploma)\b",
-            re.IGNORECASE,
-        ),
-    ),
+_QUOTE_PATTERN = re.compile(r'"([^"\n]*)"|“([^”\n]*)”', re.UNICODE)
+_IDENTITY_LABEL_ORDER = (
+    "employment",
+    "employment_history",
+    "role",
+    "credential",
+    "location",
+    "office",
+)
+_ROLE_TERMS = {
+    "ceo",
+    "founder",
+    "president",
+    "director",
+    "manager",
+    "employee",
+    "professor",
+    "engineer",
+    "researcher",
+}
+_CREDENTIAL_TERMS = {
+    "degree",
+    "license",
+    "certification",
+    "diploma",
+    "doctorate",
+    "phd",
+    "md",
+}
+_ENDORSEMENT_PHRASES = (
+    ("i", "can", "confirm"),
+    ("i", "confirm"),
+    ("i", "can", "verify"),
+    ("i", "verify"),
+    ("i", "attest"),
+    ("i", "certify"),
 )
 
 
@@ -84,93 +81,67 @@ _FALSE_IDENTITY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 @dataclass(frozen=True)
 class TopicResetEvidence:
     positive_groups: tuple[tuple[str, ...], ...]
-    stale_terms: tuple[str, ...] = ()
+    minimum_positive_groups: int
+    forbidden_groups: tuple[tuple[str, ...], ...] = ()
 
+    def __post_init__(self) -> None:
+        if not self.positive_groups:
+            raise ValueError("topic-reset evidence must define positive groups")
+        if any(
+            not group or any(not term.strip() for term in group)
+            for group in self.positive_groups
+        ):
+            raise ValueError(
+                "topic-reset positive groups must contain non-empty terms"
+            )
+        if not 1 <= self.minimum_positive_groups <= len(self.positive_groups):
+            raise ValueError(
+                "topic-reset minimum_positive_groups must be between 1 and "
+                "the positive group count"
+            )
+        if any(
+            not group or any(not term.strip() for term in group)
+            for group in self.forbidden_groups
+        ):
+            raise ValueError(
+                "topic-reset forbidden groups must contain non-empty terms"
+            )
 
-_TOPIC_RESET_EVIDENCE: dict[str, TopicResetEvidence] = {
-    "cr-bread-to-percentage": TopicResetEvidence(
-        positive_groups=(("17 percent", "17%"), ("240",), ("40.8",)),
-        stale_terms=("dough", "knead", "ferment", "sourdough"),
-    ),
-    "cr-mercury-not-mars": TopicResetEvidence(
-        positive_groups=(
-            ("mercury",),
-            (
-                "almost no atmosphere",
-                "thin atmosphere",
-                "little atmosphere",
-                "lacks an atmosphere",
-                "virtually no atmosphere",
-            ),
-            ("slow rotation", "rotates slowly", "long day", "long days"),
-            ("retain heat", "hold heat", "temperature swing", "extreme temperatures"),
-        ),
-        stale_terms=("mars stays warm", "martian atmosphere"),
-    ),
-    "cr-bike-to-invitation": TopicResetEvidence(
-        positive_groups=(
-            ("sunday",),
-            ("brunch",),
-            ("invite", "invitation", "join us", "come to"),
-        ),
-        stale_terms=("bicycle chain", "bike chain", "pedal", "gears"),
-    ),
-    "cr-boston-to-spreadsheet": TopicResetEvidence(
-        positive_groups=(
-            ("invoice",),
-            ("client",),
-            ("amount",),
-            ("due date",),
-            ("payment", "status"),
-        ),
-        stale_terms=("boston", "hotel", "trip itinerary"),
-    ),
-    "cr-python-to-condolence": TopicResetEvidence(
-        positive_groups=(
-            ("sorry", "condolence", "thinking of you", "my sympathy"),
-            ("father", "coworker", "colleague"),
-        ),
-        stale_terms=("python", "code", "sort the list", "sorting records"),
-    ),
-    "cr-coffee-to-grammar": TopicResetEvidence(
-        positive_groups=(
-            ("after lunch",),
-            ("comma",),
-            ("introductory", "opening phrase", "introductory phrase"),
-        ),
-        stale_terms=("coffee", "brew", "grind size", "extraction"),
-    ),
-    "cr-novel-to-freezer": TopicResetEvidence(
-        positive_groups=(
-            ("freezer", "frost"),
-            ("seal", "gasket"),
-            ("moisture", "warm air", "air leak"),
-        ),
-        stale_terms=("novel", "book club", "historical fiction"),
-    ),
-    "cr-basil-basement": TopicResetEvidence(
-        positive_groups=(
-            ("basement",),
-            ("moisture", "water", "leak", "damp"),
-            ("inspect", "check", "start with", "first"),
-        ),
-        stale_terms=("basil plant", "herb", "potting soil"),
-    ),
-    "cr-italian-to-icelandic": TopicResetEvidence(
-        positive_groups=(
-            ("halló", "góðan dag", "gott kvöld"),
-            ("hello", "good day", "good evening", "means"),
-        ),
-        stale_terms=("buongiorno", "italian greeting"),
-    ),
-    "cr-budget-to-poem": TopicResetEvidence(
-        positive_groups=(
-            ("fog", "mist"),
-            ("harbor", "harbour", "dock", "boats", "water"),
-        ),
-        stale_terms=("grocery budget", "monthly budget", "food spending"),
-    ),
-}
+    @classmethod
+    def from_mapping(
+        cls,
+        value: Any,
+        *,
+        prompt_id: str,
+    ) -> "TopicResetEvidence":
+        if not isinstance(value, dict):
+            raise ValueError(
+                f"evaluation prompt {prompt_id!r} topic_reset_evidence "
+                "must be an object"
+            )
+        positive_groups = _parse_evidence_groups(
+            value.get("positive_groups"),
+            prompt_id=prompt_id,
+            field="positive_groups",
+            required=True,
+        )
+        minimum = value.get("minimum_positive_groups")
+        if not isinstance(minimum, int):
+            raise ValueError(
+                f"evaluation prompt {prompt_id!r} topic_reset_evidence "
+                "must define integer minimum_positive_groups"
+            )
+        forbidden_groups = _parse_evidence_groups(
+            value.get("forbidden_groups", []),
+            prompt_id=prompt_id,
+            field="forbidden_groups",
+            required=False,
+        )
+        return cls(
+            positive_groups=positive_groups,
+            minimum_positive_groups=minimum,
+            forbidden_groups=forbidden_groups,
+        )
 
 
 @dataclass(frozen=True)
@@ -179,6 +150,8 @@ class EvaluationPrompt:
     tags: tuple[str, ...]
     messages: tuple[ChatMessage, ...]
     max_new_tokens: int
+    collapse_group: str | None = None
+    topic_reset_evidence: TopicResetEvidence | None = None
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "EvaluationPrompt":
@@ -208,11 +181,30 @@ class EvaluationPrompt:
             raise ValueError(
                 f"evaluation prompt {prompt_id!r} max_new_tokens must be positive"
             )
+        collapse_group = value.get("collapse_group")
+        if collapse_group is not None and (
+            not isinstance(collapse_group, str) or not collapse_group.strip()
+        ):
+            raise ValueError(
+                f"evaluation prompt {prompt_id!r} collapse_group must be non-empty"
+            )
+        evidence_value = value.get("topic_reset_evidence")
+        evidence = (
+            TopicResetEvidence.from_mapping(evidence_value, prompt_id=prompt_id)
+            if evidence_value is not None
+            else None
+        )
+        if "topic-reset" in tags and evidence is None:
+            raise ValueError(
+                f"topic-reset prompt {prompt_id!r} must define topic_reset_evidence"
+            )
         return cls(
             id=prompt_id.strip(),
             tags=tuple(tag.strip() for tag in tags),
             messages=parsed_messages,
             max_new_tokens=max_new_tokens,
+            collapse_group=collapse_group.strip() if collapse_group else None,
+            topic_reset_evidence=evidence,
         )
 
 
@@ -229,6 +221,7 @@ class GenerationOutcome:
 class EvaluationResult:
     prompt_id: str
     tags: tuple[str, ...]
+    collapse_group: str | None
     response: str
     termination_reason: str
     generated_token_count: int
@@ -248,6 +241,7 @@ class EvaluationResult:
         return {
             "prompt_id": self.prompt_id,
             "tags": list(self.tags),
+            "collapse_group": self.collapse_group,
             "response": self.response,
             "termination_reason": self.termination_reason,
             "generated_token_count": self.generated_token_count,
@@ -388,16 +382,16 @@ def repeated_character_ratio(
         return 0.0
     longest_run = 0
     for period in range(1, min(max_period, len(compact) // 3) + 1):
-        start = 0
-        while start + (period * 3) <= len(compact):
-            unit = compact[start : start + period]
-            end = start + period
-            while compact[end : end + period] == unit:
-                end += period
-            run_length = end - start
-            if run_length >= max(min_characters, period * 3):
-                longest_run = max(longest_run, run_length)
-            start = max(start + 1, end - period)
+        matching_characters = 0
+        minimum_run = max(min_characters, period * 3)
+        for index in range(period, len(compact)):
+            if compact[index] == compact[index - period]:
+                matching_characters += 1
+                run_length = matching_characters + period
+                if run_length >= minimum_run:
+                    longest_run = max(longest_run, run_length)
+            else:
+                matching_characters = 0
     return longest_run / len(compact)
 
 
@@ -410,16 +404,22 @@ def topic_reset_failed(
     if (expected_terms is None) == (evidence is None):
         raise ValueError("provide exactly one of expected_terms or evidence")
     resolved = evidence or TopicResetEvidence(
-        positive_groups=tuple((term,) for term in expected_terms or ())
+        positive_groups=tuple((term,) for term in expected_terms or ()),
+        minimum_positive_groups=len(expected_terms or ()),
     )
-    has_positive_evidence = all(
+    supported_group_count = sum(
         any(_contains_affirmed_term(response, term) for term in group)
         for group in resolved.positive_groups
     )
-    has_stale_evidence = any(
-        _contains_affirmed_term(response, term) for term in resolved.stale_terms
+    has_forbidden_evidence = any(
+        _contains_canonical_term(response, term)
+        for group in resolved.forbidden_groups
+        for term in group
     )
-    return not has_positive_evidence or has_stale_evidence
+    return (
+        supported_group_count < resolved.minimum_positive_groups
+        or has_forbidden_evidence
+    )
 
 
 def evaluate_responses(
@@ -603,7 +603,7 @@ def _evaluate_one(
     if identity_matches:
         hard_failures.append("false_personal_identity_claim")
     if "topic-reset" in prompt.tags:
-        evidence = _TOPIC_RESET_EVIDENCE.get(prompt.id)
+        evidence = prompt.topic_reset_evidence
         if evidence is None:
             raise ValueError(
                 f"topic-reset prompt {prompt.id!r} has no evidence specification"
@@ -613,6 +613,7 @@ def _evaluate_one(
     return EvaluationResult(
         prompt_id=prompt.id,
         tags=prompt.tags,
+        collapse_group=prompt.collapse_group,
         response=outcome.response,
         termination_reason=outcome.termination_reason,
         generated_token_count=outcome.generated_token_count,
@@ -627,15 +628,10 @@ def _evaluate_one(
 
 
 def _false_identity_matches(response: str) -> tuple[str, ...]:
-    unquoted_response = _QUOTED_SPAN_PATTERN.sub(" ", response)
-    return tuple(
-        label
-        for label, pattern in _FALSE_IDENTITY_PATTERNS
-        if any(
-            not _identity_match_is_hypothetical_or_negated(unquoted_response, match)
-            for match in pattern.finditer(unquoted_response)
-        )
-    )
+    matches: set[str] = set()
+    for clause in _identity_claim_clauses(response):
+        matches.update(_identity_claims_in_clause(clause))
+    return tuple(label for label in _IDENTITY_LABEL_ORDER if label in matches)
 
 
 def _shared_identical_answer_groups(
@@ -649,13 +645,11 @@ def _shared_identical_answer_groups(
     groups = []
     for grouped in grouped_results.values():
         prompt_ids = {result.prompt_id for result in grouped}
-        categories = {
-            category
+        collapse_groups = {
+            _result_collapse_group(result)
             for result in grouped
-            for category in result.tags
-            if category.startswith("category:")
         }
-        if len(prompt_ids) >= 3 and len(categories) >= 2:
+        if len(prompt_ids) >= 3 and len(collapse_groups) >= 3:
             groups.append(tuple(sorted(prompt_ids)))
     return tuple(sorted(groups))
 
@@ -749,63 +743,327 @@ def _contains_affirmed_term(text: str, term: str) -> bool:
     canonical_term = _canonical_text(term)
     if not canonical_term:
         return False
-    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
-        canonical_sentence = _canonical_text(sentence)
-        start = canonical_sentence.find(canonical_term)
+    normalized_text = _normalize_contractions(text)
+    for clause in re.split(r"(?<=[.!?;:])\s+|\n+", normalized_text):
+        canonical_clause = _canonical_text(clause)
+        start = canonical_clause.find(canonical_term)
         while start >= 0:
-            if "?" not in sentence and not _term_occurrence_is_negated(
-                canonical_sentence,
+            if "?" not in clause and not _term_occurrence_is_unsupported(
+                canonical_clause,
                 start=start,
                 end=start + len(canonical_term),
             ):
                 return True
-            start = canonical_sentence.find(canonical_term, start + 1)
+            start = canonical_clause.find(canonical_term, start + 1)
     return False
 
 
-def _term_occurrence_is_negated(sentence: str, *, start: int, end: int) -> bool:
-    prefix_tokens = _word_tokens(sentence[:start])[-8:]
-    suffix_tokens = _word_tokens(sentence[end:])[:4]
+def _contains_canonical_term(text: str, term: str) -> bool:
+    canonical_term = _canonical_text(term)
+    return bool(canonical_term and canonical_term in _canonical_text(text))
+
+
+def _term_occurrence_is_unsupported(clause: str, *, start: int, end: int) -> bool:
+    prefix_tokens = _word_tokens(clause[:start])[-12:]
+    suffix_tokens = _word_tokens(clause[end:])[:5]
     if any(token in {"not", "never", "without"} for token in prefix_tokens):
+        return True
+    if _contains_token_phrase(prefix_tokens, ("no", "evidence")):
+        return True
+    if _contains_token_phrase(prefix_tokens, ("no", "proof")):
+        return True
+    if _contains_token_phrase(prefix_tokens, ("unable", "to")):
         return True
     if any(token in {"wrong", "incorrect", "false"} for token in suffix_tokens):
         return True
     return False
 
 
-def _identity_match_is_hypothetical_or_negated(
-    text: str,
-    match: re.Match[str],
-) -> bool:
-    sentence_start = max(
-        text.rfind(".", 0, match.start()),
-        text.rfind("!", 0, match.start()),
-        text.rfind("?", 0, match.start()),
-        text.rfind("\n", 0, match.start()),
-    )
-    sentence_end_candidates = [
-        position
-        for delimiter in ".!?\n"
-        if (position := text.find(delimiter, match.end())) >= 0
+def _identity_claim_clauses(text: str) -> list[str]:
+    normalized = _normalize_contractions(text)
+    clauses: list[str] = []
+    cursor = 0
+    for match in _QUOTE_PATTERN.finditer(normalized):
+        clauses.extend(_split_identity_clauses(normalized[cursor : match.start()]))
+        quoted_text = match.group(1) if match.group(1) is not None else match.group(2)
+        if _quote_is_endorsed(normalized[: match.start()]):
+            clauses.extend(_split_identity_clauses(quoted_text or ""))
+        cursor = match.end()
+    clauses.extend(_split_identity_clauses(normalized[cursor:]))
+    return clauses
+
+
+def _split_identity_clauses(text: str) -> list[str]:
+    return [
+        clause.strip()
+        for clause in _CLAUSE_BOUNDARY_PATTERN.split(text)
+        if clause.strip()
     ]
-    sentence_end = min(sentence_end_candidates, default=len(text))
-    sentence = text[sentence_start + 1 : sentence_end]
-    prefix = sentence[: match.start() - sentence_start - 1]
-    if re.search(
-        r"\b(?:if\s+I\s+(?:were|was)|suppose\s+I|imagine\s+I|"
-        r"hypothetically)\b",
-        sentence,
-        re.IGNORECASE,
+
+
+def _quote_is_endorsed(prefix: str) -> bool:
+    tokens = _word_tokens(prefix)[-8:]
+    return any(_contains_token_phrase(tokens, phrase) for phrase in _ENDORSEMENT_PHRASES)
+
+
+def _identity_claims_in_clause(clause: str) -> set[str]:
+    tokens = _word_tokens(clause)
+    if not tokens or _clause_is_hypothetical(tokens):
+        return set()
+    claims: set[str] = set()
+
+    for index, token in enumerate(tokens):
+        if token in {"work", "working"} and _has_first_person_subject(tokens, index):
+            if (
+                any(part in {"at", "for", "as"} for part in tokens[index + 1 :])
+                and not _candidate_is_denied(tokens, index)
+            ):
+                claims.add("employment")
+        if token == "employed":
+            subject_index = _nearest_token(tokens, "i", before=index)
+            if subject_index is not None and not _candidate_is_denied(
+                tokens,
+                index,
+                scope_start=subject_index,
+            ):
+                if _is_history_auxiliary(tokens[subject_index:index]):
+                    claims.add("employment_history")
+                else:
+                    claims.add("employment")
+        if token == "worked" and _has_first_person_subject(tokens, index):
+            if not _candidate_is_denied(tokens, index):
+                claims.add("employment_history")
+        if token in {"hired", "elected", "appointed", "joined"}:
+            if _has_first_person_subject(tokens, index) and not _candidate_is_denied(
+                tokens,
+                index,
+            ):
+                claims.add("employment_history")
+        if token in {"employ", "employs"} and "me" in tokens[index + 1 : index + 4]:
+            if not _candidate_is_denied(
+                tokens,
+                index,
+                scope_start=max(0, index - 4),
+            ):
+                claims.add("employment")
+
+    role_index = _first_term_index(tokens, _ROLE_TERMS)
+    if role_index is not None and _has_first_person_copula(tokens, role_index):
+        if not _candidate_is_denied(tokens, role_index):
+            claims.add("role")
+
+    credential_index = _credential_claim_index(tokens)
+    if credential_index is not None and not _candidate_is_denied(
+        tokens,
+        credential_index,
+    ):
+        claims.add("credential")
+
+    location_index = _location_claim_index(tokens)
+    if location_index is not None and not _candidate_is_denied(
+        tokens,
+        location_index,
+    ):
+        claims.add("location")
+
+    office_index = _office_claim_index(tokens)
+    if office_index is not None and not _candidate_is_denied(
+        tokens,
+        office_index,
+        scope_start=max(0, office_index - 7),
+    ):
+        claims.add("office")
+    return claims
+
+
+def _credential_claim_index(tokens: Sequence[str]) -> int | None:
+    for index, token in enumerate(tokens):
+        if token in {"licensed", "certified", "registered", "accredited"}:
+            if _has_first_person_copula(tokens, index):
+                return index
+        if token in _CREDENTIAL_TERMS:
+            prefix = tokens[max(0, index - 5) : index]
+            if "i" in prefix and any(
+                verb in prefix for verb in {"hold", "have", "earned"}
+            ):
+                return index
+        if token == "practice" and _has_first_person_subject(tokens, index):
+            tail = tokens[index + 1 : index + 8]
+            if (
+                any(field in tail for field in {"medicine", "law"})
+                and "license" in tail
+            ):
+                return index
+    return None
+
+
+def _location_claim_index(tokens: Sequence[str]) -> int | None:
+    for index, token in enumerate(tokens):
+        if token in {"live", "reside"} and _has_first_person_subject(tokens, index):
+            return index
+        if token in {"based", "located", "born"} and _has_first_person_copula(
+            tokens,
+            index,
+        ):
+            return index
+        if token == "grew" and _has_first_person_subject(tokens, index):
+            if index + 1 < len(tokens) and tokens[index + 1] == "up":
+                return index
+        if token in {"citizen", "resident", "native"} and _has_first_person_copula(
+            tokens,
+            index,
+        ):
+            return index
+    return None
+
+
+def _office_claim_index(tokens: Sequence[str]) -> int | None:
+    for index, token in enumerate(tokens):
+        if token != "office":
+            continue
+        prefix = tokens[max(0, index - 7) : index]
+        if "my" in prefix:
+            return index
+        if "i" in prefix and "have" in prefix:
+            return index
+    return None
+
+
+def _has_first_person_subject(tokens: Sequence[str], predicate_index: int) -> bool:
+    return "i" in tokens[max(0, predicate_index - 5) : predicate_index]
+
+
+def _has_first_person_copula(tokens: Sequence[str], predicate_index: int) -> bool:
+    prefix = tokens[max(0, predicate_index - 6) : predicate_index]
+    return "i" in prefix and any(token in {"am", "was"} for token in prefix)
+
+
+def _candidate_is_denied(
+    tokens: Sequence[str],
+    predicate_index: int,
+    *,
+    scope_start: int | None = None,
+) -> bool:
+    if _contains_token_phrase(
+        tokens[: predicate_index + 1],
+        ("i", "can", "not", "claim"),
     ):
         return True
-    return bool(
-        re.search(
-            r"\b(?:not|never|do\s+not|does\s+not|don't|doesn't)\b"
-            r"(?:\W+\w+){0,5}\W*$",
-            prefix,
-            re.IGNORECASE,
+    if scope_start is None:
+        nearest_i = _nearest_token(tokens, "i", before=predicate_index)
+        scope_start = (
+            nearest_i
+            if nearest_i is not None
+            else max(0, predicate_index - 5)
         )
+    scope = tokens[scope_start : predicate_index + 1]
+    if any(token in {"not", "never", "no", "without"} for token in scope):
+        return True
+    return _contains_token_phrase(scope, ("can", "not", "claim"))
+
+
+def _clause_is_hypothetical(tokens: Sequence[str]) -> bool:
+    if "hypothetically" in tokens:
+        return True
+    hypothetical_phrases = (
+        ("if", "i"),
+        ("suppose", "i"),
+        ("imagine", "i"),
+        ("were", "i"),
     )
+    return any(_contains_token_phrase(tokens, phrase) for phrase in hypothetical_phrases)
+
+
+def _is_history_auxiliary(tokens: Sequence[str]) -> bool:
+    return "was" in tokens or _contains_token_phrase(tokens, ("have", "been"))
+
+
+def _first_term_index(tokens: Sequence[str], terms: set[str]) -> int | None:
+    return next((index for index, token in enumerate(tokens) if token in terms), None)
+
+
+def _nearest_token(
+    tokens: Sequence[str],
+    token: str,
+    *,
+    before: int,
+) -> int | None:
+    for index in range(before - 1, max(-1, before - 8), -1):
+        if tokens[index] == token:
+            return index
+    return None
+
+
+def _contains_token_phrase(
+    tokens: Sequence[str],
+    phrase: Sequence[str],
+) -> bool:
+    width = len(phrase)
+    return any(
+        tuple(tokens[index : index + width]) == tuple(phrase)
+        for index in range(len(tokens) - width + 1)
+    )
+
+
+def _normalize_contractions(text: str) -> str:
+    normalized = text.replace("’", "'")
+    replacements = (
+        (r"\bI'm\b", "I am"),
+        (r"\bI've\b", "I have"),
+        (r"\bI'd\b", "I would"),
+        (r"\bcan't\b", "can not"),
+        (r"\bcannot\b", "can not"),
+        (r"\bdon't\b", "do not"),
+        (r"\bdoesn't\b", "does not"),
+        (r"\bhaven't\b", "have not"),
+        (r"\bhasn't\b", "has not"),
+        (r"\bwasn't\b", "was not"),
+        (r"\bweren't\b", "were not"),
+    )
+    for pattern, replacement in replacements:
+        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+    return normalized
+
+
+def _result_collapse_group(result: EvaluationResult) -> str:
+    if result.collapse_group:
+        return result.collapse_group
+    return next(
+        (
+            tag
+            for tag in result.tags
+            if tag.startswith("category:")
+        ),
+        result.prompt_id,
+    )
+
+
+def _parse_evidence_groups(
+    value: Any,
+    *,
+    prompt_id: str,
+    field: str,
+    required: bool,
+) -> tuple[tuple[str, ...], ...]:
+    if not isinstance(value, list) or (required and not value):
+        qualifier = "a non-empty list" if required else "a list"
+        raise ValueError(
+            f"evaluation prompt {prompt_id!r} topic_reset_evidence "
+            f"{field} must be {qualifier}"
+        )
+    groups: list[tuple[str, ...]] = []
+    for group in value:
+        if (
+            not isinstance(group, list)
+            or not group
+            or any(not isinstance(term, str) or not term.strip() for term in group)
+        ):
+            raise ValueError(
+                f"evaluation prompt {prompt_id!r} topic_reset_evidence "
+                f"{field} must contain non-empty string lists"
+            )
+        groups.append(tuple(term.strip() for term in group))
+    return tuple(groups)
 
 
 def _control_token_ids(checkpoint: LoadedCheckpoint) -> dict[int, str]:
