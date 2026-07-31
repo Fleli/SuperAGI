@@ -228,7 +228,11 @@ SFT_IMPORT_MAX_EXAMPLES_PER_SOURCE := 5000
 SFT_IMPORT_MAX_CONTEXT_TOKENS := 900
 SFT_IMPORT_MAX_MESSAGES := 8
 SFT_IMPORT_MAX_AGI_CHARS := 1200
+SFT_IMPORT_MAX_AGI_TOKENS := 512
 SFT_IMPORT_MIN_AGI_CHARS := 20
+SFT_IMPORT_CROSS_EXAMPLE_NGRAM_SIZE := 5
+SFT_IMPORT_MAX_CROSS_EXAMPLE_NGRAM_COUNT := 3
+SFT_IMPORT_NGRAM_REFERENCE_DATA :=
 SFT_EVAL_CHECKPOINT := data/sft/runs/300m/core/best.pt
 SFT_EVAL_PROMPTS := data/sft/eval_prompts.jsonl
 SFT_EVAL_RESULTS :=
@@ -416,7 +420,11 @@ SFT_CLOUD_CONFIG_ARGS = \
 	--config "import.max_context_tokens=$(SFT_IMPORT_MAX_CONTEXT_TOKENS)" \
 	--config "import.max_messages=$(SFT_IMPORT_MAX_MESSAGES)" \
 	--config "import.max_agi_chars=$(SFT_IMPORT_MAX_AGI_CHARS)" \
+	--config "import.max_agi_tokens=$(SFT_IMPORT_MAX_AGI_TOKENS)" \
 	--config "import.min_agi_chars=$(SFT_IMPORT_MIN_AGI_CHARS)" \
+	--config "import.cross_example_ngram_size=$(SFT_IMPORT_CROSS_EXAMPLE_NGRAM_SIZE)" \
+	--config "import.max_cross_example_ngram_count=$(SFT_IMPORT_MAX_CROSS_EXAMPLE_NGRAM_COUNT)" \
+	--config "import.ngram_reference_data=data/sft/curated/core.jsonl" \
 	--config "core.data=$(SFT_CLOUD_CORE_DATA)" \
 	--config "core.source_weights=$(SFT_CLOUD_CORE_SOURCE_WEIGHTS)" \
 	--config "core.steps=$(SFT_CLOUD_CORE_STEPS)" \
@@ -928,7 +936,11 @@ sft-import-public: setup
 		--max-context-tokens "$(SFT_IMPORT_MAX_CONTEXT_TOKENS)" \
 		--max-messages "$(SFT_IMPORT_MAX_MESSAGES)" \
 		--max-agi-chars "$(SFT_IMPORT_MAX_AGI_CHARS)" \
+		--max-agi-tokens "$(SFT_IMPORT_MAX_AGI_TOKENS)" \
 		--min-agi-chars "$(SFT_IMPORT_MIN_AGI_CHARS)" \
+		--cross-example-ngram-size "$(SFT_IMPORT_CROSS_EXAMPLE_NGRAM_SIZE)" \
+		--max-cross-example-ngram-count "$(SFT_IMPORT_MAX_CROSS_EXAMPLE_NGRAM_COUNT)" \
+		$(if $(strip $(SFT_IMPORT_NGRAM_REFERENCE_DATA)),--ngram-reference-data "$(SFT_IMPORT_NGRAM_REFERENCE_DATA)",) \
 		--seed "$(SFT_IMPORT_SEED)"
 	@printf '==> [sft-import-public] Finished importing public SFT datasets\n'
 
@@ -1186,6 +1198,7 @@ runpod-sft-300m-preflight:
 			SFT_IMPORT_CHECKPOINT="$(SFT_CLOUD_BASE_CHECKPOINT)" \
 			SFT_IMPORT_OUT="$(SFT_CLOUD_PUBLIC_DATA)" \
 			SFT_IMPORT_METADATA="$(SFT_CLOUD_PUBLIC_METADATA)" \
+			SFT_IMPORT_NGRAM_REFERENCE_DATA="data/sft/curated/core.jsonl" \
 			SFT_IMPORT_SEED="$(SFT_CLOUD_SEED)"; \
 		$(PYTHON) scripts/preflight_sft_300m.py \
 			--repository-root "." \

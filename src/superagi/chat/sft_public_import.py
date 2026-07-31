@@ -63,9 +63,12 @@ class ImportFilterConfig:
     max_context_tokens: int = 900
     min_agi_chars: int = 20
     max_agi_chars: int = 1200
+    max_agi_tokens: int = 512
     max_user_chars: int = 4000
     max_messages: int = 8
     max_repeated_five_grams: int = 3
+    cross_example_ngram_size: int = 5
+    max_cross_example_ngram_count: int = 3
     near_duplicate_threshold: float = 0.88
 
 
@@ -210,10 +213,22 @@ class PublicSftImporter:
     def import_conversations(
         self,
         conversations: Iterable[tuple[str, Sequence[ChatMessage | Mapping[str, str]]]],
+        *,
+        ngram_reference_conversations: Iterable[
+            Sequence[ChatMessage | Mapping[str, str]]
+        ] = (),
     ) -> ImportResult:
         stats = ImportStats()
         examples: list[ImportedSftExample] = []
         seen_answers: set[str] = set()
+        response_ngram_counts: Counter[str] = Counter()
+        for raw_messages in ngram_reference_conversations:
+            response_ngram_counts.update(
+                _response_ngram_counts(
+                    _coerce_messages(raw_messages),
+                    self.filter_config.cross_example_ngram_size,
+                )
+            )
         prepared_conversations = self._prepare_conversations(conversations)
         near_duplicate_index = _JaccardCandidateIndex(
             self.filter_config.near_duplicate_threshold,
@@ -246,6 +261,17 @@ class PublicSftImporter:
                 stats.reject(rejection_reason)
                 continue
             assert tokenized is not None
+            candidate_ngram_counts = _response_ngram_counts(
+                prepared.messages,
+                self.filter_config.cross_example_ngram_size,
+            )
+            if any(
+                response_ngram_counts[ngram] + count
+                > self.filter_config.max_cross_example_ngram_count
+                for ngram, count in candidate_ngram_counts.items()
+            ):
+                stats.reject("cross_example_repetition")
+                continue
             examples.append(
                 ImportedSftExample(
                     source=prepared.source,
@@ -257,6 +283,7 @@ class PublicSftImporter:
             for answer in prepared.normalized_answers:
                 seen_answers.add(answer)
                 near_duplicate_index.add(answer)
+            response_ngram_counts.update(candidate_ngram_counts)
             stats.accepted += 1
 
         self._near_duplicate_comparisons = near_duplicate_index.comparison_count
@@ -367,6 +394,14 @@ class PublicSftImporter:
         self,
         messages: tuple[ChatMessage, ...],
     ) -> tuple[str | None, TokenizedSftExample | None]:
+        for message in messages:
+            if message.role != "agi":
+                continue
+            if (
+                len(self.tokenizer.encode_with_offsets(message.content).ids)
+                > self.filter_config.max_agi_tokens
+            ):
+                return "answer_token_limit", None
         try:
             tokenized = tokenize_sft_messages(messages, self.tokenizer)
         except ValueError:
@@ -536,6 +571,23 @@ def _normalized_agi_answers(messages: Sequence[ChatMessage]) -> tuple[str, ...]:
         for message in messages
         if message.role == "agi"
     )
+
+
+def _response_ngram_counts(
+    messages: Sequence[ChatMessage],
+    ngram_size: int,
+) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for message in messages:
+        if message.role != "agi":
+            continue
+        words = canonical_text(message.content).split()
+        response_ngrams = {
+            " ".join(words[index : index + ngram_size])
+            for index in range(len(words) - ngram_size + 1)
+        }
+        counts.update(response_ngrams)
+    return counts
 
 
 def seeded_source_sample(

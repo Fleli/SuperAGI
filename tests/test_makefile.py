@@ -45,6 +45,8 @@ class MakefileTests(unittest.TestCase):
                 "SFT_CLOUD_CALM_SOURCE_WEIGHTS := "
                 "curated_core=1,style_calm_precise=7,default=1"
             ),
+            "SFT_IMPORT_MAX_AGI_TOKENS := 512",
+            "SFT_IMPORT_MAX_CROSS_EXAMPLE_NGRAM_COUNT := 3",
         ]
         for expected in expected_defaults:
             self.assertIn(expected, contents)
@@ -65,6 +67,10 @@ class MakefileTests(unittest.TestCase):
         self.assertIn('SFT_AUDIT_MODE="mixed"', recipe)
         self.assertIn(
             'SFT_AUDIT_REPORT="$(SFT_CLOUD_AUDIT_REPORT)"',
+            recipe,
+        )
+        self.assertIn(
+            'SFT_IMPORT_NGRAM_REFERENCE_DATA="data/sft/curated/core.jsonl"',
             recipe,
         )
         self.assertIn('--public-data "$(SFT_CLOUD_PUBLIC_DATA)"', recipe)
@@ -306,6 +312,17 @@ class MakefileTests(unittest.TestCase):
         self.assertIn('--checkpoint "$(SFT_IMPORT_CHECKPOINT)"', contents)
         self.assertIn('--sources "$(SFT_IMPORT_SOURCES)"', contents)
         self.assertIn('--max-context-tokens "$(SFT_IMPORT_MAX_CONTEXT_TOKENS)"', contents)
+        self.assertIn('--max-agi-tokens "$(SFT_IMPORT_MAX_AGI_TOKENS)"', contents)
+        self.assertIn(
+            '--max-cross-example-ngram-count '
+            '"$(SFT_IMPORT_MAX_CROSS_EXAMPLE_NGRAM_COUNT)"',
+            contents,
+        )
+        self.assertIn(
+            '$(if $(strip $(SFT_IMPORT_NGRAM_REFERENCE_DATA)),'
+            '--ngram-reference-data "$(SFT_IMPORT_NGRAM_REFERENCE_DATA)",)',
+            contents,
+        )
         self.assertIn('--seed "$(SFT_IMPORT_SEED)"', contents)
         self.assertIn("==> [sft-import-public] Importing public SFT datasets", contents)
 

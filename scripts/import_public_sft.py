@@ -22,6 +22,7 @@ from superagi.chat.sft_public_import import (
     iter_openassistant_conversations,
     seeded_source_sample,
 )
+from superagi.chat.sft import load_sft_records
 from superagi.model.checkpoint import load_checkpoint
 
 
@@ -76,7 +77,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-context-tokens", type=int, default=900)
     parser.add_argument("--max-messages", type=int, default=8)
     parser.add_argument("--max-agi-chars", type=int, default=1200)
+    parser.add_argument("--max-agi-tokens", type=int, default=512)
     parser.add_argument("--min-agi-chars", type=int, default=20)
+    parser.add_argument("--cross-example-ngram-size", type=int, default=5)
+    parser.add_argument(
+        "--max-cross-example-ngram-count",
+        type=int,
+        default=3,
+    )
+    parser.add_argument(
+        "--ngram-reference-data",
+        default="",
+        help="Comma-separated SFT JSONL paths whose AGI responses consume the n-gram budget.",
+    )
     parser.add_argument("--seed", type=int, default=1337)
     return parser
 
@@ -98,8 +111,17 @@ def run_import(args: argparse.Namespace) -> int:
             max_context_tokens=args.max_context_tokens,
             min_agi_chars=args.min_agi_chars,
             max_agi_chars=args.max_agi_chars,
+            max_agi_tokens=args.max_agi_tokens,
             max_messages=args.max_messages,
+            cross_example_ngram_size=args.cross_example_ngram_size,
+            max_cross_example_ngram_count=args.max_cross_example_ngram_count,
         ),
+    )
+    ngram_reference_paths = _parse_optional_paths(args.ngram_reference_data)
+    ngram_reference_conversations = tuple(
+        record.messages
+        for path in ngram_reference_paths
+        for record in load_sft_records(path)
     )
 
     candidates: list[tuple[str, object]] = []
@@ -116,7 +138,10 @@ def run_import(args: argparse.Namespace) -> int:
         candidates.extend(source_candidates)
         candidate_counts[source] = len(source_candidates)
 
-    imported = importer.import_conversations(candidates)
+    imported = importer.import_conversations(
+        candidates,
+        ngram_reference_conversations=ngram_reference_conversations,
+    )
     accepted_by_source: dict[str, list[ImportedSftExample]] = defaultdict(list)
     for example in imported.examples:
         accepted_by_source[_source_family(example.source)].append(example)
@@ -163,6 +188,8 @@ def run_import(args: argparse.Namespace) -> int:
         selected_counts=selected_counts,
         accepted_before_limit=imported.stats.accepted,
         result=result,
+        ngram_reference_paths=ngram_reference_paths,
+        ngram_reference_conversation_count=len(ngram_reference_conversations),
     )
     print(f"Wrote {len(all_examples)} public SFT examples to {args.out}")
     print(f"Metadata: {args.metadata}")
@@ -225,6 +252,10 @@ def _parse_sources(value: str) -> tuple[str, ...]:
     return sources
 
 
+def _parse_optional_paths(value: str) -> tuple[Path, ...]:
+    return tuple(Path(item.strip()) for item in value.split(",") if item.strip())
+
+
 def _append_source_metadata(
     metadata_path: Path,
     *,
@@ -235,6 +266,8 @@ def _append_source_metadata(
     selected_counts: Mapping[str, int],
     accepted_before_limit: int,
     result: ImportResult,
+    ngram_reference_paths: tuple[Path, ...],
+    ngram_reference_conversation_count: int,
 ) -> None:
     payload = json.loads(metadata_path.read_text(encoding="utf-8"))
     source_summaries = {
@@ -265,6 +298,12 @@ def _append_source_metadata(
     payload["rejection_reasons"] = rejection_reasons
     payload["exact_duplicate_count"] = rejection_reasons.get("duplicate_answer", 0)
     payload["near_duplicate_count"] = rejection_reasons.get("near_duplicate", 0)
+    payload["ngram_reference_data"] = [
+        str(path) for path in ngram_reference_paths
+    ]
+    payload["ngram_reference_conversation_count"] = (
+        ngram_reference_conversation_count
+    )
     payload["licenses_note"] = (
         "Review each upstream dataset license before using imported SFT data outside "
         "local learning experiments."

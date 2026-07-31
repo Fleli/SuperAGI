@@ -130,6 +130,7 @@ class PublicSftImportTests(unittest.TestCase):
                 max_context_tokens=40,
                 min_agi_chars=5,
                 max_agi_chars=3000,
+                max_agi_tokens=10000,
                 max_repeated_five_grams=1,
             ),
         )
@@ -157,6 +158,131 @@ class PublicSftImportTests(unittest.TestCase):
         self.assertEqual(imported.stats.rejected_by_reason["duplicate_answer"], 1)
         self.assertEqual(imported.stats.rejected_by_reason["too_long"], 1)
         self.assertEqual(imported.stats.rejected_by_reason["repeated_phrase"], 1)
+
+    def test_importer_rejects_response_above_token_budget(self) -> None:
+        long_answer = " ".join(f"token{index}" for index in range(40))
+        tokenizer = BpeTokenizer.from_texts(
+            [
+                "<bos><user> Short question\n<agi> A concise useful answer.<eos>\n",
+                f"<bos><user> Long question\n<agi> {long_answer}<eos>\n",
+            ],
+            vocab_size=300,
+            min_frequency=1,
+        )
+        importer = PublicSftImporter(
+            tokenizer=tokenizer,
+            filter_config=ImportFilterConfig(
+                min_agi_chars=5,
+                max_agi_chars=3000,
+                max_agi_tokens=len(
+                    tokenizer.encode_with_offsets(
+                        "A concise useful answer."
+                    ).ids
+                ),
+            ),
+        )
+
+        imported = importer.import_conversations(
+            [
+                (
+                    "short:1",
+                    [
+                        {"role": "user", "content": "Short question"},
+                        {"role": "agi", "content": "A concise useful answer."},
+                    ],
+                ),
+                (
+                    "long:1",
+                    [
+                        {"role": "user", "content": "Long question"},
+                        {"role": "agi", "content": long_answer},
+                    ],
+                ),
+            ]
+        )
+
+        self.assertEqual(
+            [example.source for example in imported.examples],
+            ["short:1"],
+        )
+        self.assertEqual(
+            imported.stats.rejected_by_reason["answer_token_limit"],
+            1,
+        )
+
+    def test_importer_enforces_ngram_budget_against_reference_corpus(self) -> None:
+        shared = "shared boilerplate phrase appears right here"
+        tokenizer = BpeTokenizer.from_texts(
+            [
+                f"<bos><user> Reference\n<agi> {shared} with reference details.<eos>\n",
+                f"<bos><user> First\n<agi> {shared} followed by alpha beta gamma.<eos>\n",
+                f"<bos><user> Second\n<agi> {shared} followed by delta epsilon zeta.<eos>\n",
+                "<bos><user> Third\n<agi> A separate response with distinct useful facts.<eos>\n",
+            ],
+            vocab_size=300,
+            min_frequency=1,
+        )
+        importer = PublicSftImporter(
+            tokenizer=tokenizer,
+            filter_config=ImportFilterConfig(
+                min_agi_chars=5,
+                near_duplicate_threshold=0.99,
+                cross_example_ngram_size=5,
+                max_cross_example_ngram_count=2,
+            ),
+        )
+        reference = (
+            ChatMessage(role="user", content="Reference"),
+            ChatMessage(
+                role="agi",
+                content=f"{shared} with reference details.",
+            ),
+        )
+
+        imported = importer.import_conversations(
+            [
+                (
+                    "first:1",
+                    [
+                        {"role": "user", "content": "First"},
+                        {
+                            "role": "agi",
+                            "content": f"{shared} followed by alpha beta gamma.",
+                        },
+                    ],
+                ),
+                (
+                    "second:1",
+                    [
+                        {"role": "user", "content": "Second"},
+                        {
+                            "role": "agi",
+                            "content": f"{shared} followed by delta epsilon zeta.",
+                        },
+                    ],
+                ),
+                (
+                    "third:1",
+                    [
+                        {"role": "user", "content": "Third"},
+                        {
+                            "role": "agi",
+                            "content": "A separate response with distinct useful facts.",
+                        },
+                    ],
+                ),
+            ],
+            ngram_reference_conversations=[reference],
+        )
+
+        self.assertEqual(
+            [example.source for example in imported.examples],
+            ["first:1", "third:1"],
+        )
+        self.assertEqual(
+            imported.stats.rejected_by_reason["cross_example_repetition"],
+            1,
+        )
 
     def test_importer_rejects_global_exact_and_near_duplicate_answers(self) -> None:
         tokenizer = BpeTokenizer.from_text(
