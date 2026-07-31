@@ -173,6 +173,10 @@ def split_sft_examples(
         for example, group_key in zip(examples, effective_group_keys, strict=True)
         if (_source_family(example.source), group_key) in validation_groups
     )
+    validation_examples = _interleave_validation_sources(
+        validation_examples,
+        seed=seed,
+    )
     train_group_keys = {
         group_key
         for example, group_key in zip(examples, effective_group_keys, strict=True)
@@ -186,6 +190,39 @@ def split_sft_examples(
     if train_group_keys & validation_group_keys:
         raise AssertionError("SFT train and validation group keys must be disjoint")
     return train_examples, validation_examples
+
+
+def _interleave_validation_sources(
+    examples: Sequence[TokenizedSftExample],
+    *,
+    seed: int,
+) -> tuple[TokenizedSftExample, ...]:
+    """Build a deterministic source-balanced order for bounded validation."""
+    if len(examples) < 2:
+        return tuple(examples)
+
+    by_source: dict[str, list[TokenizedSftExample]] = {}
+    for example in examples:
+        by_source.setdefault(_source_family(example.source), []).append(example)
+
+    generator = torch.Generator()
+    generator.manual_seed(seed + 1)
+    shuffled_by_source: dict[str, list[TokenizedSftExample]] = {}
+    for source in sorted(by_source):
+        source_examples = by_source[source]
+        indices = torch.randperm(len(source_examples), generator=generator).tolist()
+        shuffled_by_source[source] = [source_examples[index] for index in indices]
+
+    ordered: list[TokenizedSftExample] = []
+    sources = tuple(sorted(shuffled_by_source))
+    offset = 0
+    while len(ordered) < len(examples):
+        for source in sources:
+            source_examples = shuffled_by_source[source]
+            if offset < len(source_examples):
+                ordered.append(source_examples[offset])
+        offset += 1
+    return tuple(ordered)
 
 
 def limit_sft_examples(

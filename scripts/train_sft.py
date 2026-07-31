@@ -47,6 +47,7 @@ from superagi.training.train import (
 
 
 TRAINER_STATE_FORMAT = "superagi-sft-trainer-state-v2"
+VALIDATION_PROTOCOL = "source-interleaved-v1"
 
 
 _load_committed_recovery_bundle = load_committed_recovery_bundle
@@ -879,6 +880,7 @@ def _build_run_signature(
         "activation_checkpointing": args.activation_checkpointing,
         "validation_fraction": args.validation_fraction,
         "validation_batches": args.validation_batches,
+        "validation_protocol": VALIDATION_PROTOCOL,
         "max_examples": args.max_examples,
         "source_weights": dict(sorted(source_weights.items())),
         "seed": args.seed,

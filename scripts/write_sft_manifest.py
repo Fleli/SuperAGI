@@ -623,9 +623,19 @@ def _run_manifest(
         run_name=run_name,
     )
 
+    best_checkpoint = _artifact_record(best_path, repository_root)
+    final_checkpoint = _artifact_record(final_path, repository_root)
+    if (
+        final_checkpoint["sha256"] != best_checkpoint["sha256"]
+        or final_checkpoint["size_bytes"] != best_checkpoint["size_bytes"]
+    ):
+        raise ValueError(
+            f"{run_name} final checkpoint does not match evaluated best checkpoint"
+        )
+
     artifacts = {
-        "best_checkpoint": _artifact_record(best_path, repository_root),
-        "final_checkpoint": _artifact_record(final_path, repository_root),
+        "best_checkpoint": best_checkpoint,
+        "final_checkpoint": final_checkpoint,
         "evaluation_results": _artifact_record(
             evaluation_results_path,
             repository_root,

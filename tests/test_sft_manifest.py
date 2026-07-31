@@ -264,6 +264,24 @@ class SftManifestWriterTests(unittest.TestCase):
 
             self.assertFalse(paths["output"].exists())
 
+    def test_refuses_final_checkpoint_that_does_not_match_evaluated_best(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            paths = _write_complete_run(root)
+            final_path = root / "data/sft/runs/300m/playful/final.pt"
+            _write_checkpoint_archive(
+                final_path,
+                payload=b"valid-but-unevaluated-checkpoint",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "playful final checkpoint does not match evaluated best checkpoint",
+            ):
+                write_sft_manifest.main(_arguments(root, paths))
+
+            self.assertFalse(paths["output"].exists())
+
     def test_refuses_base_record_and_run_config_identity_mismatches(self) -> None:
         mismatch_cases = {
             "base SHA record": (
@@ -588,7 +606,7 @@ def _write_complete_run(root: Path) -> dict[str, Path]:
         )
         _write_checkpoint_archive(
             run_dir / "final.pt",
-            payload=f"{run_name}-final-checkpoint".encode("ascii"),
+            payload=f"{run_name}-best-checkpoint".encode("ascii"),
         )
         _write_jsonl(
             run_dir / "metrics.jsonl",

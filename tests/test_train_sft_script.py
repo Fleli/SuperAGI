@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import call, patch
 
 import torch
@@ -29,6 +30,48 @@ SPEC.loader.exec_module(train_sft)
 
 
 class TrainSftScriptTests(unittest.TestCase):
+    def test_run_signature_versions_source_interleaved_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            base = root / "base.pt"
+            data = root / "data.jsonl"
+            base.write_bytes(b"base")
+            data.write_text("{}\n", encoding="utf-8")
+            args = SimpleNamespace(
+                steps=10,
+                batch=2,
+                grad_accum_steps=1,
+                lr=1e-5,
+                lr_min=1e-6,
+                lr_warmup_steps=1,
+                weight_decay=0.01,
+                grad_clip=1.0,
+                checkpoint_interval=5,
+                checkpoint_keep=2,
+                log_interval=5,
+                mixed_precision="none",
+                fused_adamw="off",
+                activation_checkpointing=False,
+                validation_fraction=0.1,
+                validation_batches=2,
+                max_examples=0,
+                seed=1337,
+            )
+
+            signature = train_sft._build_run_signature(
+                args=args,
+                base_path=base,
+                base_checkpoint_sha256=hashlib.sha256(b"base").hexdigest(),
+                data_paths=(data,),
+                source_weights={},
+                backend_signature={},
+            )
+
+        self.assertEqual(
+            signature["validation_protocol"],
+            "source-interleaved-v1",
+        )
+
     def test_atomic_recovery_bundle_resumes_prior_generation_at_each_boundary(
         self,
     ) -> None:

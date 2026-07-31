@@ -199,6 +199,41 @@ class SftTrainingTests(unittest.TestCase):
             )
         )
 
+    def test_split_interleaves_validation_sources_for_bounded_evaluation(self) -> None:
+        examples = [
+            TokenizedSftExample(
+                text=f"curated-{index}",
+                input_ids=(index, index + 1),
+                target_ids=(IGNORE_INDEX, index + 2),
+                supervised_token_count=1,
+                source=f"curated_core:{index}",
+                group_key=f"curated-{index}",
+            )
+            for index in range(20)
+        ] + [
+            TokenizedSftExample(
+                text=f"style-{index}",
+                input_ids=(index, index + 1),
+                target_ids=(IGNORE_INDEX, index + 2),
+                supervised_token_count=1,
+                source=f"style_playful_direct:{index}",
+                group_key=f"style-{index}",
+            )
+            for index in range(20)
+        ]
+
+        _, validation_examples = split_sft_examples(
+            examples,
+            validation_fraction=0.5,
+            seed=123,
+        )
+
+        self.assertEqual(len(validation_examples), 20)
+        self.assertEqual(
+            {example.source.split(":", maxsplit=1)[0] for example in validation_examples[:2]},
+            {"curated_core", "style_playful_direct"},
+        )
+
     def test_split_keeps_shared_group_in_validation_for_singleton_source_family(
         self,
     ) -> None:
