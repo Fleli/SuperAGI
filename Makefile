@@ -192,6 +192,7 @@ SFT_OUT := data/sft/runs/chat-sft.pt
 CHAT_CHECKPOINT := $(SFT_OUT)
 SFT_METRICS := data/sft/runs/metrics.jsonl
 SFT_RUN_DIR :=
+SFT_RESUME := 0
 SFT_STEPS := 3000
 SFT_BATCH := 8
 SFT_GRAD_ACCUM_STEPS := 1
@@ -736,6 +737,7 @@ sft-train: setup
 		--base-checkpoint "$(SFT_BASE_CHECKPOINT)" \
 		--data "$(SFT_DATA)" \
 		$(if $(SFT_RUN_DIR),--run-dir "$(SFT_RUN_DIR)",--out "$(SFT_OUT)" --metrics "$(SFT_METRICS)") \
+		$(if $(filter 1 true yes on,$(SFT_RESUME)),--resume,) \
 		--steps "$(SFT_STEPS)" \
 		--batch "$(SFT_BATCH)" \
 		--grad-accum-steps "$(SFT_GRAD_ACCUM_STEPS)" \

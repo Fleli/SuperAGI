@@ -76,6 +76,16 @@ class MakefileTests(unittest.TestCase):
         self.assertIn('--source-weights "$(SFT_SOURCE_WEIGHTS)"', contents)
         self.assertIn('--log-interval "$(SFT_LOG_INTERVAL)"', contents)
 
+    def test_sft_train_target_wires_explicit_resume(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        self.assertIn("SFT_RESUME :=", contents)
+        self.assertIn(
+            "$(if $(filter 1 true yes on,$(SFT_RESUME)),--resume,)",
+            contents,
+        )
+
     def test_sft_import_public_target_downloads_and_filters_public_data(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
         contents = makefile.read_text(encoding="utf-8")
