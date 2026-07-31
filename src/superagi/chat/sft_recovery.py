@@ -34,6 +34,7 @@ class RecoveryBundle:
     generation_name: str
     generation_dir: Path
     latest_path: Path
+    snapshot_path: Path
     best_path: Path
     metrics_path: Path
     trainer_state_path: Path
@@ -115,9 +116,15 @@ def commit_recovery_bundle(
     manifest = {
         "format": RECOVERY_MANIFEST_FORMAT,
         "generation": generation_name,
+        "previous_generation": (
+            previous_bundle.generation_name
+            if previous_bundle is not None
+            else None
+        ),
         "step": step,
         "files": {
             "latest": _file_record(recovery_dir, latest_path),
+            "snapshot": _file_record(recovery_dir, latest_path),
             "best": _file_record(recovery_dir, best_path),
             "metrics": _file_record(recovery_dir, metrics_path),
             "trainer_state": _file_record(recovery_dir, trainer_state_path),
@@ -157,17 +164,32 @@ def load_committed_recovery_bundle(run_dir: Path) -> RecoveryBundle:
         recovery_dir,
         _required_string(pointer, "manifest", "recovery pointer"),
     )
+    expected_manifest_path = (
+        recovery_dir / "generations" / generation_name / "manifest.json"
+    ).resolve(strict=False)
+    if manifest_path != expected_manifest_path:
+        raise SystemExit("recovery pointer manifest is outside its generation")
     if _sha256_file(manifest_path) != pointer.get("manifest_sha256"):
         raise SystemExit("recovery generation manifest does not match its pointer")
+    return _load_recovery_generation(run_dir, generation_name)
 
+
+def _load_recovery_generation(
+    run_dir: Path,
+    generation_name: str,
+) -> RecoveryBundle:
+    if Path(generation_name).name != generation_name:
+        raise SystemExit("recovery generation name is invalid")
+    recovery_dir = run_dir / "recovery"
+    generation_dir = recovery_dir / "generations" / generation_name
+    manifest_path = generation_dir / "manifest.json"
     manifest = _read_json_mapping(manifest_path, "recovery generation manifest")
     if manifest.get("format") != RECOVERY_MANIFEST_FORMAT:
         raise SystemExit(
             "recovery generation manifest has an unsupported or corrupt format"
         )
     if manifest.get("generation") != generation_name:
-        raise SystemExit("recovery pointer and generation manifest disagree")
-    generation_dir = recovery_dir / "generations" / generation_name
+        raise SystemExit("recovery generation manifest name does not match")
     if manifest_path.parent.resolve(strict=False) != generation_dir.resolve(
         strict=False
     ):
@@ -180,6 +202,11 @@ def load_committed_recovery_bundle(run_dir: Path) -> RecoveryBundle:
         name: _validated_file_record(recovery_dir, files, name)
         for name in ("latest", "best", "metrics", "trainer_state")
     }
+    resolved_files["snapshot"] = (
+        _validated_file_record(recovery_dir, files, "snapshot")
+        if "snapshot" in files
+        else resolved_files["latest"]
+    )
     try:
         trainer_state = torch.load(
             resolved_files["trainer_state"],
@@ -196,6 +223,7 @@ def load_committed_recovery_bundle(run_dir: Path) -> RecoveryBundle:
         generation_name=generation_name,
         generation_dir=generation_dir,
         latest_path=resolved_files["latest"],
+        snapshot_path=resolved_files["snapshot"],
         best_path=resolved_files["best"],
         metrics_path=resolved_files["metrics"],
         trainer_state_path=resolved_files["trainer_state"],
@@ -227,16 +255,30 @@ def prune_recovery_generations(
     if not generations_dir.is_dir():
         return
     retained_count = max(2, keep)
-    generation_dirs = sorted(
-        (
-            path
-            for path in generations_dir.iterdir()
-            if path.is_dir() and path.name.startswith("generation-")
-        ),
-        key=lambda path: path.name,
-    )
-    for stale_dir in generation_dirs[:-retained_count]:
-        shutil.rmtree(stale_dir)
+    active_bundle = load_committed_recovery_bundle(run_dir)
+    retained_names: set[str] = set()
+    bundle = active_bundle
+    while len(retained_names) < retained_count:
+        if bundle.generation_name in retained_names:
+            raise SystemExit("recovery generation ancestry contains a cycle")
+        retained_names.add(bundle.generation_name)
+        previous_generation = bundle.manifest.get("previous_generation")
+        if previous_generation is None:
+            break
+        if not isinstance(previous_generation, str) or not previous_generation:
+            raise SystemExit(
+                "recovery generation manifest has invalid previous_generation"
+            )
+        bundle = _load_recovery_generation(run_dir, previous_generation)
+
+    generation_dirs = [
+        path
+        for path in generations_dir.iterdir()
+        if path.is_dir() and path.name.startswith("generation-")
+    ]
+    for generation_dir in generation_dirs:
+        if generation_dir.name not in retained_names:
+            shutil.rmtree(generation_dir)
     _prune_unreferenced_best_objects(recovery_dir)
 
 

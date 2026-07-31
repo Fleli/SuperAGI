@@ -383,6 +383,11 @@ def main() -> int:
             best_path=best_path,
             metrics_path=metrics_path,
         )
+        _publish_recovery_snapshot(
+            current_bundle,
+            snapshots_path=snapshots_path,
+            keep=args.checkpoint_keep,
+        )
 
     start_time = time.perf_counter()
     for step_index in range(first_step, args.steps + 1):
@@ -545,7 +550,11 @@ def main() -> int:
                     best_path=best_path,
                     metrics_path=metrics_path,
                 )
-                snapshot_source = current_bundle.latest_path
+                _publish_recovery_snapshot(
+                    current_bundle,
+                    snapshots_path=snapshots_path,
+                    keep=args.checkpoint_keep,
+                )
             else:
                 _save_checkpoint_atomic(
                     latest_path,
@@ -566,13 +575,12 @@ def main() -> int:
                         metrics=serialized_metrics,
                         metadata=best_metadata,
                     )
-                snapshot_source = latest_path
-            retain_checkpoint_snapshot(
-                snapshot_source,
-                snapshots_path,
-                step=step_index,
-                keep=args.checkpoint_keep,
-            )
+                retain_checkpoint_snapshot(
+                    latest_path,
+                    snapshots_path,
+                    step=step_index,
+                    keep=args.checkpoint_keep,
+                )
             if production_mode:
                 prune_recovery_generations(
                     run_dir,
@@ -717,6 +725,23 @@ def _seed_global_torch_rng(seed: int) -> None:
 def _recovery_commit_boundary(name: str) -> None:
     if name not in RECOVERY_COMMIT_BOUNDARIES:
         raise ValueError(f"unknown recovery commit boundary: {name}")
+
+
+def _publish_recovery_snapshot(
+    bundle: RecoveryBundle,
+    *,
+    snapshots_path: Path,
+    keep: int,
+) -> Path | None:
+    step = bundle.manifest.get("step")
+    if isinstance(step, bool) or not isinstance(step, int) or step <= 0:
+        raise SystemExit("recovery generation manifest has invalid step")
+    return retain_checkpoint_snapshot(
+        bundle.snapshot_path,
+        snapshots_path,
+        step=step,
+        keep=keep,
+    )
 
 
 def _restore_global_torch_rng(state: Mapping[str, Any]) -> None:

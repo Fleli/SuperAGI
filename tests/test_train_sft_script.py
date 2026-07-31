@@ -158,6 +158,151 @@ class TrainSftScriptTests(unittest.TestCase):
                             msg=f"{boundary}: {name}",
                         )
 
+    def test_recovery_pruning_protects_active_generation_from_same_step_failures(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            base_path, data_path = _write_tiny_training_fixture(root)
+            run_dir = root / "run"
+            argv = _training_argv(
+                base_path=base_path,
+                data_path=data_path,
+                run_dir=run_dir,
+                steps=2,
+            )
+            original_train_step = train_sft.train_accumulated_step
+            completed_steps = 0
+
+            def interrupt_after_one_step(*args: object, **kwargs: object) -> float:
+                nonlocal completed_steps
+                if completed_steps == 1:
+                    raise RuntimeError("simulated interruption")
+                completed_steps += 1
+                return original_train_step(*args, **kwargs)
+
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(train_sft, "evaluate_sft_loss", side_effect=[2.0]),
+                patch.object(
+                    train_sft,
+                    "train_accumulated_step",
+                    side_effect=interrupt_after_one_step,
+                ),
+                self.assertRaisesRegex(RuntimeError, "simulated interruption"),
+            ):
+                train_sft.main()
+
+            active_before = train_sft._load_committed_recovery_bundle(run_dir)
+            self.assertEqual(active_before.trainer_state["completed_step"], 1)
+
+            for boundary in ("generation_manifest", "pointer", "pointer"):
+                with self.subTest(boundary=boundary):
+                    def fail_at_boundary(name: str) -> None:
+                        if name == boundary:
+                            raise RuntimeError(f"injected failure: {boundary}")
+
+                    with (
+                        patch.object(sys, "argv", argv + ["--resume"]),
+                        patch.object(
+                            train_sft,
+                            "evaluate_sft_loss",
+                            side_effect=[1.5],
+                        ),
+                        patch.object(
+                            train_sft,
+                            "_recovery_commit_boundary",
+                            side_effect=fail_at_boundary,
+                        ),
+                        self.assertRaisesRegex(
+                            RuntimeError,
+                            f"injected failure: {boundary}",
+                        ),
+                    ):
+                        train_sft.main()
+
+            generation_dirs = list(
+                (run_dir / "recovery" / "generations").glob("generation-*")
+            )
+            failed_step_names = [
+                path.name
+                for path in generation_dirs
+                if path.name.startswith("generation-000000002-")
+            ]
+            self.assertEqual(len(failed_step_names), 3)
+            self.assertEqual(len(set(failed_step_names)), 3)
+
+            train_sft.prune_recovery_generations(run_dir, keep=2)
+
+            active_after = train_sft._load_committed_recovery_bundle(run_dir)
+            self.assertEqual(
+                active_after.generation_name,
+                active_before.generation_name,
+            )
+            self.assertTrue(active_after.generation_dir.is_dir())
+            self.assertEqual(
+                [
+                    path.name
+                    for path in (
+                        run_dir / "recovery" / "generations"
+                    ).glob("generation-*")
+                ],
+                [active_before.generation_name],
+            )
+
+    def test_resume_republishes_snapshot_after_post_pointer_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            base_path, data_path = _write_tiny_training_fixture(root)
+            run_dir = root / "run"
+            argv = _training_argv(
+                base_path=base_path,
+                data_path=data_path,
+                run_dir=run_dir,
+                steps=1,
+            )
+
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(train_sft, "evaluate_sft_loss", side_effect=[2.0]),
+                patch.object(
+                    train_sft,
+                    "retain_checkpoint_snapshot",
+                    side_effect=RuntimeError("post-pointer snapshot failure"),
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "post-pointer snapshot failure",
+                ),
+            ):
+                train_sft.main()
+
+            committed = train_sft._load_committed_recovery_bundle(run_dir)
+            self.assertEqual(committed.trainer_state["completed_step"], 1)
+            self.assertEqual(
+                committed.manifest["files"]["snapshot"],
+                committed.manifest["files"]["latest"],
+            )
+            self.assertEqual(committed.snapshot_path, committed.latest_path)
+            self.assertFalse(
+                (run_dir / "snapshots" / "checkpoint-step-000000001.pt").exists()
+            )
+
+            with patch.object(sys, "argv", argv + ["--resume"]):
+                self.assertEqual(train_sft.main(), 0)
+
+            retained_snapshot = (
+                run_dir / "snapshots" / "checkpoint-step-000000001.pt"
+            )
+            self.assertEqual(
+                retained_snapshot.read_bytes(),
+                committed.latest_path.read_bytes(),
+            )
+            self.assertEqual(
+                (run_dir / "final.pt").read_bytes(),
+                (run_dir / "best.pt").read_bytes(),
+            )
+
     def test_rejects_base_checkpoint_collision_with_production_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             run_dir = Path(tmp_dir) / "run"
