@@ -26,8 +26,9 @@ Guidelines:
   production personality corpora. Each contains 500 conversations with an
   exact 250 single-turn and 250 multi-turn split.
 - Train either style from the same broad checkpoint. Each style phase mixes
-  `curated/core.jsonl` with its personality corpus so tone does not replace
-  the core instruction-following behavior.
+  `curated/core.jsonl` with its personality corpus at approximately 70%
+  personality examples and 30% core examples by effective sampling mass. This
+  keeps tone prominent without dropping core instruction-following behavior.
 - Use `diagnostics/overfit-50.jsonl` only as a pipeline sanity check. It is a
   tiny identity dataset designed to overfit hard, not a balanced chat dataset.
 - Keep AGI answers concise and honest about model limitations.
@@ -133,7 +134,13 @@ This writes separate checkpoints for each phase:
 - `data/sft/runs/chat-calm-precise.pt`
 
 The final two checkpoints are sibling variants trained from
-`data/sft/runs/chat-broad.pt`. Run either personality phase independently with:
+`data/sft/runs/chat-broad.pt`. The staged target then evaluates both variants
+through the fixed behavioral gates and stops if either fails. Results are
+written separately under `data/sft/evaluations/` as
+`playful-direct.results.jsonl`, `playful-direct.summary.json`,
+`calm-precise.results.jsonl`, and `calm-precise.summary.json`.
+
+Run either personality phase independently with:
 
 ```bash
 make sft-style-playful \

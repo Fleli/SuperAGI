@@ -48,13 +48,22 @@
     "identity_boundaries": 0,
     "multi_turn": 250,
     "single_turn": 250,
-    "topical_relevance_mismatch": 0,
-    "topical_relevance_supported": 344,
-    "topical_relevance_unscored": 156,
+    "topical_relevance_mismatch": 1,
+    "topical_relevance_supported": 330,
+    "topical_relevance_unscored": 169,
     "uncertainty_safety": 0
   },
   "curated_sampling_mass": null,
-  "findings": [],
+  "findings": [
+    {
+      "code": "topical_mismatch",
+      "examples": [
+        "style_calm_precise:practical: user='One hotel agreed to change the date, but I do not know when I will return.' agi='Ask for a transferable credit with a clear expiration date rather than choosing a speculative date. '"
+      ],
+      "message": "found 1 obvious prompt/answer topic swaps; the conservative lexical proxy leaves ambiguous pairs unscored",
+      "severity": "warning"
+    }
+  ],
   "identity_share": 0.0,
   "mode": "style",
   "ok": true,

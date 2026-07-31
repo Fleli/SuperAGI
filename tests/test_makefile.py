@@ -242,11 +242,11 @@ class MakefileTests(unittest.TestCase):
             contents,
         )
         self.assertIn(
-            "SFT_STYLE_PLAYFUL_SOURCE_WEIGHTS := curated_core=1,style_playful_direct=2,default=1",
+            "SFT_STYLE_PLAYFUL_SOURCE_WEIGHTS := curated_core=1,style_playful_direct=7,default=1",
             contents,
         )
         self.assertIn(
-            "SFT_STYLE_CALM_SOURCE_WEIGHTS := curated_core=1,style_calm_precise=2,default=1",
+            "SFT_STYLE_CALM_SOURCE_WEIGHTS := curated_core=1,style_calm_precise=7,default=1",
             contents,
         )
         self.assertNotIn("data/sft/stages/style-playful-direct.jsonl", contents)
@@ -283,6 +283,80 @@ class MakefileTests(unittest.TestCase):
         self.assertIn('$(MAKE) sft-style-playful', contents)
         self.assertIn('$(MAKE) sft-style-calm', contents)
         self.assertIn("==> [sft-staged] Finished staged supervised chat training", contents)
+
+    def test_style_sampling_mass_is_seventy_percent_per_variant(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        makefile = repository_root / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+        core_count = _jsonl_count(
+            repository_root / "data" / "sft" / "curated" / "core.jsonl"
+        )
+        self.assertEqual(core_count, 1500)
+
+        variants = {
+            "playful": (
+                "SFT_STYLE_PLAYFUL_SOURCE_WEIGHTS",
+                "style_playful_direct",
+                repository_root
+                / "data"
+                / "sft"
+                / "styles"
+                / "playful-direct.jsonl",
+            ),
+            "calm": (
+                "SFT_STYLE_CALM_SOURCE_WEIGHTS",
+                "style_calm_precise",
+                repository_root
+                / "data"
+                / "sft"
+                / "styles"
+                / "calm-precise.jsonl",
+            ),
+        }
+        for name, (assignment, style_family, style_path) in variants.items():
+            with self.subTest(style=name):
+                style_count = _jsonl_count(style_path)
+                self.assertEqual(style_count, 500)
+                weights = _parse_source_weights(
+                    _make_assignment(contents, assignment)
+                )
+                style_mass = style_count * weights[style_family]
+                core_mass = core_count * weights["curated_core"]
+                effective_style_share = style_mass / (style_mass + core_mass)
+                self.assertAlmostEqual(effective_style_share, 0.70)
+
+    def test_staged_sft_evaluates_both_personalities_with_gates(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+        staged_recipe = _target_recipe(contents, "sft-staged")
+        evaluation_recipe = _target_recipe(contents, "sft-evaluate-styles")
+
+        self.assertIn("make sft-evaluate-styles", contents)
+        self.assertLess(
+            staged_recipe.index("$(MAKE) sft-style-calm"),
+            staged_recipe.index("$(MAKE) sft-evaluate-styles"),
+        )
+        self.assertEqual(evaluation_recipe.count("$(MAKE) sft-evaluate"), 2)
+        expected_routes = [
+            'SFT_EVAL_CHECKPOINT="$(SFT_STYLE_PLAYFUL_OUT)"',
+            'SFT_EVAL_RESULTS="$(SFT_STYLE_PLAYFUL_EVAL_RESULTS)"',
+            'SFT_EVAL_SUMMARY="$(SFT_STYLE_PLAYFUL_EVAL_SUMMARY)"',
+            'SFT_EVAL_CHECKPOINT="$(SFT_STYLE_CALM_OUT)"',
+            'SFT_EVAL_RESULTS="$(SFT_STYLE_CALM_EVAL_RESULTS)"',
+            'SFT_EVAL_SUMMARY="$(SFT_STYLE_CALM_EVAL_SUMMARY)"',
+        ]
+        for route in expected_routes:
+            self.assertIn(route, evaluation_recipe)
+        self.assertNotEqual(
+            _make_assignment(contents, "SFT_STYLE_PLAYFUL_EVAL_RESULTS"),
+            _make_assignment(contents, "SFT_STYLE_CALM_EVAL_RESULTS"),
+        )
+        self.assertNotEqual(
+            _make_assignment(contents, "SFT_STYLE_PLAYFUL_EVAL_SUMMARY"),
+            _make_assignment(contents, "SFT_STYLE_CALM_EVAL_SUMMARY"),
+        )
+        self.assertNotIn("-$(MAKE) sft-evaluate", evaluation_recipe)
+        self.assertNotIn("|| true", evaluation_recipe)
 
     def test_local_sft_targets_run_staged_behavior_then_public_then_style(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
@@ -649,3 +723,31 @@ class MakefileTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+def _target_recipe(contents: str, target: str) -> str:
+    marker = f"\n{target}:"
+    start = contents.index(marker) + 1
+    remainder = contents[start:]
+    return remainder.split("\n\n", 1)[0]
+
+
+def _make_assignment(contents: str, name: str) -> str:
+    prefix = f"{name} :="
+    for line in contents.splitlines():
+        if line.startswith(prefix):
+            return line.removeprefix(prefix).strip()
+    raise AssertionError(f"Missing Make assignment: {name}")
+
+
+def _parse_source_weights(value: str) -> dict[str, float]:
+    return {
+        name.strip(): float(weight)
+        for item in value.split(",")
+        for name, weight in (item.split("=", 1),)
+    }
+
+
+def _jsonl_count(path: Path) -> int:
+    return sum(
+        1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    )

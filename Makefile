@@ -284,12 +284,17 @@ SFT_STYLE_PLAYFUL_DATA := data/sft/curated/core.jsonl,data/sft/styles/playful-di
 SFT_STYLE_PLAYFUL_BASE_CHECKPOINT := $(SFT_BROAD_OUT)
 SFT_STYLE_PLAYFUL_OUT := data/sft/runs/chat-playful-direct.pt
 SFT_STYLE_PLAYFUL_METRICS := data/sft/runs/chat-playful-direct-metrics.jsonl
-SFT_STYLE_PLAYFUL_SOURCE_WEIGHTS := curated_core=1,style_playful_direct=2,default=1
+SFT_STYLE_PLAYFUL_SOURCE_WEIGHTS := curated_core=1,style_playful_direct=7,default=1
+SFT_STYLE_PLAYFUL_EVAL_RESULTS := data/sft/evaluations/playful-direct.results.jsonl
+SFT_STYLE_PLAYFUL_EVAL_SUMMARY := data/sft/evaluations/playful-direct.summary.json
 SFT_STYLE_CALM_DATA := data/sft/curated/core.jsonl,data/sft/styles/calm-precise.jsonl
 SFT_STYLE_CALM_BASE_CHECKPOINT := $(SFT_BROAD_OUT)
 SFT_STYLE_CALM_OUT := data/sft/runs/chat-calm-precise.pt
 SFT_STYLE_CALM_METRICS := data/sft/runs/chat-calm-precise-metrics.jsonl
-SFT_STYLE_CALM_SOURCE_WEIGHTS := curated_core=1,style_calm_precise=2,default=1
+SFT_STYLE_CALM_SOURCE_WEIGHTS := curated_core=1,style_calm_precise=7,default=1
+SFT_STYLE_CALM_EVAL_RESULTS := data/sft/evaluations/calm-precise.results.jsonl
+SFT_STYLE_CALM_EVAL_SUMMARY := data/sft/evaluations/calm-precise.summary.json
+SFT_STYLE_EVAL_DEVICE := $(SFT_DEVICE)
 SFT_STYLE_STEPS := 600
 SFT_STYLE_BATCH := 8
 SFT_STYLE_LR := 3e-6
@@ -343,7 +348,7 @@ SFT_LOCAL_STYLE_DATA := data/sft/curated/core.jsonl,data/sft/styles/playful-dire
 SFT_LOCAL_STYLE_BASE_CHECKPOINT := $(SFT_LOCAL_PUBLIC_OUT)
 SFT_LOCAL_STYLE_OUT := data/sft/runs/chat-style-local.pt
 SFT_LOCAL_STYLE_METRICS := data/sft/runs/chat-style-local-metrics.jsonl
-SFT_LOCAL_STYLE_SOURCE_WEIGHTS := curated_core=1,style_playful_direct=2,default=1
+SFT_LOCAL_STYLE_SOURCE_WEIGHTS := curated_core=1,style_playful_direct=7,default=1
 SFT_LOCAL_STYLE_STEPS := 200
 SFT_LOCAL_STYLE_BATCH := 1
 SFT_LOCAL_STYLE_LR := 2e-6
@@ -359,7 +364,7 @@ SFT_LOCAL_SMOKE_ANCHOR_STEPS := 120
 SFT_LOCAL_SMOKE_PUBLIC_STEPS := 160
 SFT_LOCAL_SMOKE_BATCH := 1
 
-.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 ingest-stream-sources train sft-audit sft-import-public sft-evaluate sft-train sft-overfit-50 sft-anchor sft-broad sft-style-playful sft-style-calm sft-staged sft-prepare-local sft-anchor-local sft-public-local sft-style-local sft-core-local sft-local sft-local-smoke params train-export-run train-4090 train-200m train-h100 train-300m runpod-train-300m std-train export-model generate run-model chat smoke-train clean-generated
+.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 ingest-stream-sources train sft-audit sft-import-public sft-evaluate sft-evaluate-styles sft-train sft-overfit-50 sft-anchor sft-broad sft-style-playful sft-style-calm sft-staged sft-prepare-local sft-anchor-local sft-public-local sft-style-local sft-core-local sft-local sft-local-smoke params train-export-run train-4090 train-200m train-h100 train-300m runpod-train-300m std-train export-model generate run-model chat smoke-train clean-generated
 
 help:
 	@echo "SuperAGI pipeline targets"
@@ -387,6 +392,7 @@ help:
 	@echo "  make sft-import-public SFT_IMPORT_CHECKPOINT=./best-200m-current.pt"
 	@echo "  make sft-train SFT_BASE_CHECKPOINT=data/checkpoints/best.pt SFT_STEPS=200 SFT_SOURCE_WEIGHTS=anchor=4,wildchat=0.35"
 	@echo "  make sft-evaluate SFT_EVAL_CHECKPOINT=data/sft/runs/300m/core/best.pt"
+	@echo "  make sft-evaluate-styles  Evaluate both staged personality checkpoints"
 	@echo "  make sft-local-smoke SFT_LOCAL_BASE_CHECKPOINT=./best-300m-current.pt"
 	@echo "  make sft-local SFT_LOCAL_BASE_CHECKPOINT=./best-300m-current.pt"
 	@echo "  make sft-overfit-50 SFT_OVERFIT_BASE_CHECKPOINT=./best-current-cloud.pt"
@@ -917,6 +923,21 @@ sft-style-calm:
 		SFT_SOURCE_WEIGHTS="$(SFT_STYLE_CALM_SOURCE_WEIGHTS)"
 	@printf '==> [sft-style-calm] Finished calm precise style SFT phase\n'
 
+sft-evaluate-styles:
+	@printf '==> [sft-evaluate-styles] Evaluating playful direct checkpoint\n'
+	$(MAKE) sft-evaluate \
+		SFT_EVAL_CHECKPOINT="$(SFT_STYLE_PLAYFUL_OUT)" \
+		SFT_EVAL_RESULTS="$(SFT_STYLE_PLAYFUL_EVAL_RESULTS)" \
+		SFT_EVAL_SUMMARY="$(SFT_STYLE_PLAYFUL_EVAL_SUMMARY)" \
+		SFT_EVAL_DEVICE="$(SFT_STYLE_EVAL_DEVICE)"
+	@printf '==> [sft-evaluate-styles] Evaluating calm precise checkpoint\n'
+	$(MAKE) sft-evaluate \
+		SFT_EVAL_CHECKPOINT="$(SFT_STYLE_CALM_OUT)" \
+		SFT_EVAL_RESULTS="$(SFT_STYLE_CALM_EVAL_RESULTS)" \
+		SFT_EVAL_SUMMARY="$(SFT_STYLE_CALM_EVAL_SUMMARY)" \
+		SFT_EVAL_DEVICE="$(SFT_STYLE_EVAL_DEVICE)"
+	@printf '==> [sft-evaluate-styles] Both personality checkpoints passed\n'
+
 sft-staged:
 	@printf '==> [sft-staged] Starting staged supervised chat training\n'
 	$(MAKE) sft-anchor \
@@ -927,6 +948,7 @@ sft-staged:
 		SFT_STYLE_PLAYFUL_BASE_CHECKPOINT="$(SFT_BROAD_OUT)"
 	$(MAKE) sft-style-calm \
 		SFT_STYLE_CALM_BASE_CHECKPOINT="$(SFT_BROAD_OUT)"
+	$(MAKE) sft-evaluate-styles
 	@printf 'Final playful staged checkpoint: $(SFT_STAGED_PLAYFUL_OUT)\n'
 	@printf 'Final calm staged checkpoint: $(SFT_STAGED_CALM_OUT)\n'
 	@printf '==> [sft-staged] Finished staged supervised chat training\n'

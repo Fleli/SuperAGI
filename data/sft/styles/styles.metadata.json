@@ -14,7 +14,7 @@
     "playful-direct": {
       "conversation_count": 500,
       "multi_turn_conversations": 250,
-      "sha256": "28d526136a3d542e7d5587b53a8f0b3a87e0eb79c7c7d5b5ae70d4d32469caf8",
+      "sha256": "a4e986894b504b99a1e19ea4f24f9f91f7a897a96dc6e1f819c8d5ccf4bf3169",
       "single_turn_conversations": 250,
       "source_domain_counts": {
         "everyday": 250,

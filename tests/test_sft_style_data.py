@@ -120,6 +120,20 @@ def _first_sentence(text: str) -> str:
     return canonical_text(SENTENCE_END_RE.split(text.strip(), maxsplit=1)[0])
 
 
+def _normalized_sentences(text: str) -> frozenset[str]:
+    return frozenset(
+        canonical_text(sentence)
+        for sentence in SENTENCE_END_RE.split(text.strip())
+        if canonical_text(sentence)
+    )
+
+
+def _agi_messages(record: object) -> tuple[str, ...]:
+    return tuple(
+        message.content for message in record.messages if message.role == "agi"
+    )
+
+
 def _read_raw_records(path: Path) -> list[dict[str, object]]:
     return [
         json.loads(line)
@@ -282,6 +296,84 @@ class StyleSftDataTests(unittest.TestCase):
                 f"{len(same_first_sentences)} of {len(shared_prompts)} shared "
                 f"prompts have the same final-answer first sentence"
             ),
+        )
+
+    def test_exact_sentences_are_rare_across_shared_conversations(self) -> None:
+        calm_by_prompt = {
+            _user_transcript(record): record
+            for record in self.records["calm-precise"]
+        }
+        playful_by_prompt = {
+            _user_transcript(record): record
+            for record in self.records["playful-direct"]
+        }
+        shared_prompts = sorted(set(calm_by_prompt).intersection(playful_by_prompt))
+        conversations_with_shared_sentences = []
+        for prompt in shared_prompts:
+            calm_sentences = frozenset().union(
+                *(
+                    _normalized_sentences(answer)
+                    for answer in _agi_messages(calm_by_prompt[prompt])
+                )
+            )
+            playful_sentences = frozenset().union(
+                *(
+                    _normalized_sentences(answer)
+                    for answer in _agi_messages(playful_by_prompt[prompt])
+                )
+            )
+            shared_sentences = sorted(calm_sentences.intersection(playful_sentences))
+            if shared_sentences:
+                conversations_with_shared_sentences.append(
+                    (prompt, shared_sentences)
+                )
+
+        shared_sentence_share = (
+            len(conversations_with_shared_sentences) / len(shared_prompts)
+        )
+        self.assertLessEqual(
+            shared_sentence_share,
+            0.20,
+            (
+                f"{len(conversations_with_shared_sentences)} of "
+                f"{len(shared_prompts)} shared conversations contain an exact "
+                f"normalized AGI sentence: "
+                f"{conversations_with_shared_sentences[:10]}"
+            ),
+        )
+
+    def test_aligned_agi_turns_rarely_share_an_exact_sentence(self) -> None:
+        calm_by_prompt = {
+            _user_transcript(record): record
+            for record in self.records["calm-precise"]
+        }
+        playful_by_prompt = {
+            _user_transcript(record): record
+            for record in self.records["playful-direct"]
+        }
+        shared_prompts = sorted(set(calm_by_prompt).intersection(playful_by_prompt))
+        aligned_turns_with_shared_sentences = []
+        for prompt in shared_prompts:
+            calm_answers = _agi_messages(calm_by_prompt[prompt])
+            playful_answers = _agi_messages(playful_by_prompt[prompt])
+            self.assertEqual(len(calm_answers), len(playful_answers), prompt)
+            for turn_index, (calm_answer, playful_answer) in enumerate(
+                zip(calm_answers, playful_answers, strict=True)
+            ):
+                shared_sentences = sorted(
+                    _normalized_sentences(calm_answer).intersection(
+                        _normalized_sentences(playful_answer)
+                    )
+                )
+                if shared_sentences:
+                    aligned_turns_with_shared_sentences.append(
+                        (prompt, turn_index, shared_sentences)
+                    )
+
+        self.assertLessEqual(
+            len(aligned_turns_with_shared_sentences),
+            60,
+            aligned_turns_with_shared_sentences[:10],
         )
 
     def test_contains_no_identity_training_or_generated_artifacts(self) -> None:

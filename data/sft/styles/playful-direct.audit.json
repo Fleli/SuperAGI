@@ -49,8 +49,8 @@
     "multi_turn": 250,
     "single_turn": 250,
     "topical_relevance_mismatch": 0,
-    "topical_relevance_supported": 330,
-    "topical_relevance_unscored": 170,
+    "topical_relevance_supported": 322,
+    "topical_relevance_unscored": 178,
     "uncertainty_safety": 0
   },
   "curated_sampling_mass": null,
@@ -809,8 +809,8 @@
   "response_count": 750,
   "response_length_quantiles": {
     "p50": 28,
-    "p90": 34,
-    "p95": 36,
+    "p90": 35,
+    "p95": 37,
     "p99": 40
   },
   "source_counts": {
@@ -822,9 +822,9 @@
     "2": 250
   },
   "word_quantiles": {
-    "p50": 50,
+    "p50": 53,
     "p90": 78,
     "p95": 81,
-    "p99": 87
+    "p99": 89
   }
 }
