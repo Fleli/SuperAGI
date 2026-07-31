@@ -368,10 +368,11 @@ SFT_CLOUD_BASE_CHECKPOINT := data/checkpoints/best.pt
 SFT_CLOUD_RUN_ROOT := data/sft/runs/300m
 SFT_CLOUD_BASE_SHA_RECORD := $(SFT_CLOUD_RUN_ROOT)/base-checkpoint.json
 SFT_CLOUD_RUN_CONFIG := $(SFT_CLOUD_RUN_ROOT)/run-config.json
+SFT_CLOUD_PREFLIGHT_STATE := $(SFT_CLOUD_RUN_ROOT)/preflight-state.txt
 SFT_CLOUD_AUDIT_REPORT := $(SFT_CLOUD_RUN_ROOT)/audit.json
 SFT_CLOUD_MANIFEST := $(SFT_CLOUD_RUN_ROOT)/manifest.json
-SFT_CLOUD_PUBLIC_DATA := data/sft/imported/public-mixed.jsonl
-SFT_CLOUD_PUBLIC_METADATA := data/sft/imported/public-mixed.metadata.json
+SFT_CLOUD_PUBLIC_DATA := $(SFT_CLOUD_RUN_ROOT)/inputs/public-mixed.jsonl
+SFT_CLOUD_PUBLIC_METADATA := $(SFT_CLOUD_RUN_ROOT)/inputs/public-mixed.metadata.json
 SFT_CLOUD_CORE_DATA := data/sft/curated/core.jsonl,$(SFT_CLOUD_PUBLIC_DATA)
 SFT_CLOUD_CORE_SOURCE_WEIGHTS := curated_core=4,no_robots=1.5,openassistant=1.25,dolly=1,ultrachat=0.8,wildchat=0,default=1
 SFT_CLOUD_CORE_RUN_DIR := $(SFT_CLOUD_RUN_ROOT)/core
@@ -1113,6 +1114,9 @@ runpod-sft-300m-preflight:
 		--base-checkpoint "$(SFT_CLOUD_BASE_CHECKPOINT)" \
 		--sha-record "$(SFT_CLOUD_BASE_SHA_RECORD)" \
 		--run-config "$(SFT_CLOUD_RUN_CONFIG)" \
+		--public-data "$(SFT_CLOUD_PUBLIC_DATA)" \
+		--public-metadata "$(SFT_CLOUD_PUBLIC_METADATA)" \
+		--state-file "$(SFT_CLOUD_PREFLIGHT_STATE)" \
 		--require-path "data/sft/curated/core.jsonl" \
 		--require-path "data/sft/curated/core.audit.json" \
 		--require-path "data/sft/curated/core.metadata.json" \
@@ -1173,17 +1177,35 @@ runpod-sft-300m-preflight:
 		--config "evaluation.min_nonempty_response_rate=$(SFT_EVAL_MIN_NONEMPTY_RESPONSE_RATE)" \
 		--config "evaluation.max_repetition_failure_rate=$(SFT_EVAL_MAX_REPETITION_FAILURE_RATE)" \
 		--config "evaluation.min_topic_reset_pass_rate=$(SFT_EVAL_MIN_TOPIC_RESET_PASS_RATE)"
-	$(MAKE) sft-import-public \
-		SFT_IMPORT_CHECKPOINT="$(SFT_CLOUD_BASE_CHECKPOINT)" \
-		SFT_IMPORT_OUT="$(SFT_CLOUD_PUBLIC_DATA)" \
-		SFT_IMPORT_METADATA="$(SFT_CLOUD_PUBLIC_METADATA)" \
-		SFT_IMPORT_SEED="$(SFT_CLOUD_SEED)"
+	@set -e; \
+	preflight_state=$$(cat "$(SFT_CLOUD_PREFLIGHT_STATE)"); \
+	if [ "$$preflight_state" = "prepare" ]; then \
+		$(MAKE) sft-import-public \
+			SFT_IMPORT_CHECKPOINT="$(SFT_CLOUD_BASE_CHECKPOINT)" \
+			SFT_IMPORT_OUT="$(SFT_CLOUD_PUBLIC_DATA)" \
+			SFT_IMPORT_METADATA="$(SFT_CLOUD_PUBLIC_METADATA)" \
+			SFT_IMPORT_SEED="$(SFT_CLOUD_SEED)"; \
+		$(PYTHON) scripts/preflight_sft_300m.py \
+			--repository-root "." \
+			--base-checkpoint "$(SFT_CLOUD_BASE_CHECKPOINT)" \
+			--sha-record "$(SFT_CLOUD_BASE_SHA_RECORD)" \
+			--run-config "$(SFT_CLOUD_RUN_CONFIG)" \
+			--public-data "$(SFT_CLOUD_PUBLIC_DATA)" \
+			--public-metadata "$(SFT_CLOUD_PUBLIC_METADATA)" \
+			--record-public; \
+	elif [ "$$preflight_state" = "resume" ]; then \
+		printf '==> [runpod-sft-300m-preflight] Immutable public import already sealed; skipping download\n'; \
+	else \
+		printf 'Unknown SFT preflight state: %s\n' "$$preflight_state" >&2; \
+		exit 1; \
+	fi
 	$(PYTHON) scripts/preflight_sft_300m.py \
 		--repository-root "." \
 		--base-checkpoint "$(SFT_CLOUD_BASE_CHECKPOINT)" \
 		--sha-record "$(SFT_CLOUD_BASE_SHA_RECORD)" \
-		--require-path "$(SFT_CLOUD_PUBLIC_DATA)" \
-		--require-path "$(SFT_CLOUD_PUBLIC_METADATA)" \
+		--run-config "$(SFT_CLOUD_RUN_CONFIG)" \
+		--public-data "$(SFT_CLOUD_PUBLIC_DATA)" \
+		--public-metadata "$(SFT_CLOUD_PUBLIC_METADATA)" \
 		--verify-only
 	$(MAKE) sft-audit \
 		SFT_AUDIT_DATA="$(SFT_CLOUD_CORE_DATA)" \
@@ -1197,6 +1219,14 @@ runpod-sft-300m:
 	@printf '==> [runpod-sft-300m] Starting one-command 300M production SFT workflow\n'
 	$(MAKE) runpod-sft-300m-preflight \
 		SFT_CLOUD_BASE_CHECKPOINT="$(SFT_CLOUD_BASE_CHECKPOINT)"
+	$(PYTHON) scripts/preflight_sft_300m.py \
+		--repository-root "." \
+		--base-checkpoint "$(SFT_CLOUD_BASE_CHECKPOINT)" \
+		--sha-record "$(SFT_CLOUD_BASE_SHA_RECORD)" \
+		--run-config "$(SFT_CLOUD_RUN_CONFIG)" \
+		--public-data "$(SFT_CLOUD_PUBLIC_DATA)" \
+		--public-metadata "$(SFT_CLOUD_PUBLIC_METADATA)" \
+		--verify-only
 	@set -e; \
 	run_dir="$(SFT_CLOUD_CORE_RUN_DIR)"; \
 	if [ -f "$$run_dir/final.pt" ]; then \
@@ -1234,6 +1264,14 @@ runpod-sft-300m:
 		SFT_EVAL_SUMMARY="$(SFT_CLOUD_CORE_RUN_DIR)/evaluation.summary.json" \
 		SFT_EVAL_DEVICE="$(SFT_CLOUD_DEVICE)" \
 		SFT_EVAL_SEED="$(SFT_CLOUD_SEED)"
+	$(PYTHON) scripts/preflight_sft_300m.py \
+		--repository-root "." \
+		--base-checkpoint "$(SFT_CLOUD_BASE_CHECKPOINT)" \
+		--sha-record "$(SFT_CLOUD_BASE_SHA_RECORD)" \
+		--run-config "$(SFT_CLOUD_RUN_CONFIG)" \
+		--public-data "$(SFT_CLOUD_PUBLIC_DATA)" \
+		--public-metadata "$(SFT_CLOUD_PUBLIC_METADATA)" \
+		--verify-only
 	@set -e; \
 	run_dir="$(SFT_CLOUD_PLAYFUL_RUN_DIR)"; \
 	if [ -f "$$run_dir/final.pt" ]; then \
@@ -1271,6 +1309,14 @@ runpod-sft-300m:
 		SFT_EVAL_SUMMARY="$(SFT_CLOUD_PLAYFUL_RUN_DIR)/evaluation.summary.json" \
 		SFT_EVAL_DEVICE="$(SFT_CLOUD_DEVICE)" \
 		SFT_EVAL_SEED="$(SFT_CLOUD_SEED)"
+	$(PYTHON) scripts/preflight_sft_300m.py \
+		--repository-root "." \
+		--base-checkpoint "$(SFT_CLOUD_BASE_CHECKPOINT)" \
+		--sha-record "$(SFT_CLOUD_BASE_SHA_RECORD)" \
+		--run-config "$(SFT_CLOUD_RUN_CONFIG)" \
+		--public-data "$(SFT_CLOUD_PUBLIC_DATA)" \
+		--public-metadata "$(SFT_CLOUD_PUBLIC_METADATA)" \
+		--verify-only
 	@set -e; \
 	run_dir="$(SFT_CLOUD_CALM_RUN_DIR)"; \
 	if [ -f "$$run_dir/final.pt" ]; then \
@@ -1312,15 +1358,29 @@ runpod-sft-300m:
 		--repository-root "." \
 		--base-checkpoint "$(SFT_CLOUD_BASE_CHECKPOINT)" \
 		--sha-record "$(SFT_CLOUD_BASE_SHA_RECORD)" \
+		--run-config "$(SFT_CLOUD_RUN_CONFIG)" \
+		--public-data "$(SFT_CLOUD_PUBLIC_DATA)" \
+		--public-metadata "$(SFT_CLOUD_PUBLIC_METADATA)" \
 		--verify-only
 	$(PYTHON) scripts/write_sft_manifest.py \
 		--repository-root "." \
 		--output "$(SFT_CLOUD_MANIFEST)" \
 		--base-checkpoint "$(SFT_CLOUD_BASE_CHECKPOINT)" \
+		--base-sha-record "$(SFT_CLOUD_BASE_SHA_RECORD)" \
 		--core-run-dir "$(SFT_CLOUD_CORE_RUN_DIR)" \
 		--playful-run-dir "$(SFT_CLOUD_PLAYFUL_RUN_DIR)" \
 		--calm-run-dir "$(SFT_CLOUD_CALM_RUN_DIR)" \
+		--public-import-data "$(SFT_CLOUD_PUBLIC_DATA)" \
 		--public-import-metadata "$(SFT_CLOUD_PUBLIC_METADATA)" \
+		--curated-core-data "data/sft/curated/core.jsonl" \
+		--curated-core-metadata "data/sft/curated/core.metadata.json" \
+		--curated-core-audit "data/sft/curated/core.audit.json" \
+		--playful-style-data "data/sft/styles/playful-direct.jsonl" \
+		--playful-style-audit "data/sft/styles/playful-direct.audit.json" \
+		--calm-style-data "data/sft/styles/calm-precise.jsonl" \
+		--calm-style-audit "data/sft/styles/calm-precise.audit.json" \
+		--style-metadata "data/sft/styles/styles.metadata.json" \
+		--eval-prompts "$(SFT_EVAL_PROMPTS)" \
 		--audit-report "$(SFT_CLOUD_AUDIT_REPORT)" \
 		--run-config "$(SFT_CLOUD_RUN_CONFIG)"
 	@printf 'SFT production manifest: $(SFT_CLOUD_MANIFEST)\n'

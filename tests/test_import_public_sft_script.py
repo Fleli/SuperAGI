@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,6 +32,49 @@ class ImportPublicSftScriptTests(unittest.TestCase):
         args = parser.parse_args(["--checkpoint", "checkpoint.pt", "--seed", "99"])
 
         self.assertEqual(args.seed, 99)
+
+    def test_all_public_sources_pin_immutable_dataset_revisions(self) -> None:
+        for source, spec in import_public_sft.SOURCE_DATASETS.items():
+            with self.subTest(source=source):
+                dataset_name, split, revision = spec
+                self.assertTrue(dataset_name)
+                self.assertTrue(split)
+                self.assertRegex(revision, re.compile(r"^[0-9a-f]{40}$"))
+
+    def test_source_loader_uses_pinned_revision(self) -> None:
+        dataset_name, split, revision = import_public_sft.SOURCE_DATASETS["no_robots"]
+        rows = [
+            {
+                "messages": [
+                    {"role": "user", "content": "Explain trees."},
+                    {
+                        "role": "assistant",
+                        "content": "Trees are perennial plants with woody stems.",
+                    },
+                ]
+            }
+        ]
+
+        with patch.object(
+            import_public_sft,
+            "load_dataset",
+            return_value=rows,
+        ) as load_dataset:
+            candidates = list(
+                import_public_sft._iter_source_candidates(
+                    source="no_robots",
+                    max_rows=1,
+                    max_messages=8,
+                )
+            )
+
+        self.assertEqual(len(candidates), 1)
+        load_dataset.assert_called_once_with(
+            dataset_name,
+            split=split,
+            streaming=True,
+            revision=revision,
+        )
 
     def test_run_import_filters_globally_and_writes_selection_metadata(self) -> None:
         tokenizer = BpeTokenizer.from_text(
@@ -124,6 +168,17 @@ class ImportPublicSftScriptTests(unittest.TestCase):
         self.assertEqual(metadata["near_duplicate_count"], 0)
         self.assertEqual(metadata["filter_config"]["near_duplicate_threshold"], 0.88)
         self.assertGreater(metadata["token_counts"]["total"], 0)
+        self.assertEqual(
+            metadata["dataset_revisions"],
+            {
+                source: {
+                    "dataset": import_public_sft.SOURCE_DATASETS[source][0],
+                    "split": import_public_sft.SOURCE_DATASETS[source][1],
+                    "revision": import_public_sft.SOURCE_DATASETS[source][2],
+                }
+                for source in ("dolly", "no_robots")
+            },
+        )
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import tempfile
 import unittest
@@ -201,6 +202,198 @@ class Sft300mPreflightTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "run configuration changed"):
                 module.main([*arguments, "--config", "core.batch=4"])
+
+    def test_records_public_import_identity_and_distinguishes_resume(self) -> None:
+        module = _load_preflight_module(self)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            checkpoint_path = _write_bpe_checkpoint(
+                root / "base.pt",
+                context_length=1024,
+            )
+            sha_record = root / "runs" / "base-checkpoint.json"
+            run_config = root / "runs" / "run-config.json"
+            state_file = root / "runs" / "preflight-state.txt"
+            public_data = root / "data" / "sft" / "imported" / "public.jsonl"
+            public_metadata = (
+                root / "data" / "sft" / "imported" / "public.metadata.json"
+            )
+            arguments = [
+                "--repository-root",
+                str(root),
+                "--base-checkpoint",
+                str(checkpoint_path),
+                "--sha-record",
+                str(sha_record),
+                "--run-config",
+                str(run_config),
+                "--public-data",
+                str(public_data),
+                "--public-metadata",
+                str(public_metadata),
+                "--state-file",
+                str(state_file),
+                "--config",
+                "core.batch=2",
+            ]
+
+            self.assertEqual(module.main(arguments), 0)
+            self.assertEqual(state_file.read_text(encoding="utf-8"), "prepare\n")
+            prepared_config = json.loads(run_config.read_text(encoding="utf-8"))
+            self.assertEqual(prepared_config["schema_version"], 2)
+            self.assertEqual(prepared_config["inputs"], {})
+
+            public_data.parent.mkdir(parents=True)
+            public_data.write_text('{"source":"dolly"}\n', encoding="utf-8")
+            public_metadata.write_text(
+                '{"written_count":1,"sources":{"dolly":{"selected":1}}}\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(module.main([*arguments, "--record-public"]), 0)
+
+            sealed_config = json.loads(run_config.read_text(encoding="utf-8"))
+            self.assertEqual(
+                sealed_config["inputs"]["public_jsonl"]["sha256"],
+                hashlib.sha256(public_data.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(
+                sealed_config["inputs"]["public_metadata"]["sha256"],
+                hashlib.sha256(public_metadata.read_bytes()).hexdigest(),
+            )
+
+            self.assertEqual(module.main(arguments), 0)
+            self.assertEqual(state_file.read_text(encoding="utf-8"), "resume\n")
+
+    def test_resume_rejects_mutated_public_import_bytes(self) -> None:
+        module = _load_preflight_module(self)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            checkpoint_path = _write_bpe_checkpoint(
+                root / "base.pt",
+                context_length=1024,
+            )
+            public_data = root / "public.jsonl"
+            public_metadata = root / "public.metadata.json"
+            arguments = [
+                "--repository-root",
+                str(root),
+                "--base-checkpoint",
+                str(checkpoint_path),
+                "--sha-record",
+                str(root / "base-checkpoint.json"),
+                "--run-config",
+                str(root / "run-config.json"),
+                "--public-data",
+                str(public_data),
+                "--public-metadata",
+                str(public_metadata),
+                "--state-file",
+                str(root / "preflight-state.txt"),
+                "--config",
+                "core.batch=2",
+            ]
+            module.main(arguments)
+            public_data.write_text('{"source":"dolly"}\n', encoding="utf-8")
+            public_metadata.write_text(
+                '{"written_count":1,"sources":{"dolly":{"selected":1}}}\n',
+                encoding="utf-8",
+            )
+            module.main([*arguments, "--record-public"])
+            public_data.write_text('{"source":"changed"}\n', encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "public_jsonl.*changed.*new SFT run directory",
+            ):
+                module.main(arguments)
+
+    def test_preparation_refuses_unsealed_existing_public_files(self) -> None:
+        module = _load_preflight_module(self)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            checkpoint_path = _write_bpe_checkpoint(
+                root / "base.pt",
+                context_length=1024,
+            )
+            public_data = root / "runs" / "inputs" / "public.jsonl"
+            public_metadata = root / "runs" / "inputs" / "public.metadata.json"
+            public_data.parent.mkdir(parents=True)
+            public_data.write_text('{"source":"partial"}\n', encoding="utf-8")
+            public_metadata.write_text('{"partial":true}\n', encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "unsealed public import.*new SFT run directory",
+            ):
+                module.main(
+                    [
+                        "--repository-root",
+                        str(root),
+                        "--base-checkpoint",
+                        str(checkpoint_path),
+                        "--sha-record",
+                        str(root / "runs" / "base-checkpoint.json"),
+                        "--run-config",
+                        str(root / "runs" / "run-config.json"),
+                        "--public-data",
+                        str(public_data),
+                        "--public-metadata",
+                        str(public_metadata),
+                        "--state-file",
+                        str(root / "runs" / "preflight-state.txt"),
+                        "--config",
+                        "core.batch=2",
+                    ]
+                )
+
+    def test_verify_only_requires_sealed_public_import_identity(self) -> None:
+        module = _load_preflight_module(self)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            checkpoint_path = _write_bpe_checkpoint(
+                root / "base.pt",
+                context_length=1024,
+            )
+            public_data = root / "public.jsonl"
+            public_metadata = root / "public.metadata.json"
+            arguments = [
+                "--repository-root",
+                str(root),
+                "--base-checkpoint",
+                str(checkpoint_path),
+                "--sha-record",
+                str(root / "base-checkpoint.json"),
+                "--run-config",
+                str(root / "run-config.json"),
+                "--public-data",
+                str(public_data),
+                "--public-metadata",
+                str(public_metadata),
+                "--state-file",
+                str(root / "preflight-state.txt"),
+                "--config",
+                "core.batch=2",
+            ]
+            module.main(arguments)
+
+            with self.assertRaisesRegex(ValueError, "public import identity"):
+                module.main(
+                    [
+                        "--repository-root",
+                        str(root),
+                        "--base-checkpoint",
+                        str(checkpoint_path),
+                        "--sha-record",
+                        str(root / "base-checkpoint.json"),
+                        "--run-config",
+                        str(root / "run-config.json"),
+                        "--public-data",
+                        str(public_data),
+                        "--public-metadata",
+                        str(public_metadata),
+                        "--verify-only",
+                    ]
+                )
 
 
 def _load_preflight_module(test_case: unittest.TestCase) -> ModuleType:

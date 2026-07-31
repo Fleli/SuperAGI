@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+RUN_CONFIG_SCHEMA_VERSION = 2
 RUN_NAMES = ("core", "playful", "calm")
 
 
@@ -25,6 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="data/sft/runs/300m/manifest.json",
     )
     parser.add_argument("--base-checkpoint", required=True)
+    parser.add_argument("--base-sha-record", required=True)
     parser.add_argument(
         "--core-run-dir",
         default="data/sft/runs/300m/core",
@@ -38,8 +40,48 @@ def build_parser() -> argparse.ArgumentParser:
         default="data/sft/runs/300m/calm",
     )
     parser.add_argument(
+        "--public-import-data",
+        default="data/sft/imported/public-mixed.jsonl",
+    )
+    parser.add_argument(
         "--public-import-metadata",
         default="data/sft/imported/public-mixed.metadata.json",
+    )
+    parser.add_argument(
+        "--curated-core-data",
+        default="data/sft/curated/core.jsonl",
+    )
+    parser.add_argument(
+        "--curated-core-metadata",
+        default="data/sft/curated/core.metadata.json",
+    )
+    parser.add_argument(
+        "--curated-core-audit",
+        default="data/sft/curated/core.audit.json",
+    )
+    parser.add_argument(
+        "--playful-style-data",
+        default="data/sft/styles/playful-direct.jsonl",
+    )
+    parser.add_argument(
+        "--playful-style-audit",
+        default="data/sft/styles/playful-direct.audit.json",
+    )
+    parser.add_argument(
+        "--calm-style-data",
+        default="data/sft/styles/calm-precise.jsonl",
+    )
+    parser.add_argument(
+        "--calm-style-audit",
+        default="data/sft/styles/calm-precise.audit.json",
+    )
+    parser.add_argument(
+        "--style-metadata",
+        default="data/sft/styles/styles.metadata.json",
+    )
+    parser.add_argument(
+        "--eval-prompts",
+        default="data/sft/eval_prompts.jsonl",
     )
     parser.add_argument(
         "--audit-report",
@@ -57,12 +99,47 @@ def main(argv: list[str] | None = None) -> int:
     repository_root = Path(args.repository_root).resolve()
     output_path = _resolve_path(args.output, repository_root)
     base_path = _resolve_path(args.base_checkpoint, repository_root)
-    public_metadata_path = _resolve_path(
-        args.public_import_metadata,
-        repository_root,
-    )
+    base_record_path = _resolve_path(args.base_sha_record, repository_root)
     audit_path = _resolve_path(args.audit_report, repository_root)
     run_config_path = _resolve_path(args.run_config, repository_root)
+    source_paths = {
+        "public_jsonl": _resolve_path(args.public_import_data, repository_root),
+        "public_metadata": _resolve_path(
+            args.public_import_metadata,
+            repository_root,
+        ),
+        "curated_core_jsonl": _resolve_path(
+            args.curated_core_data,
+            repository_root,
+        ),
+        "curated_core_metadata": _resolve_path(
+            args.curated_core_metadata,
+            repository_root,
+        ),
+        "curated_core_audit": _resolve_path(
+            args.curated_core_audit,
+            repository_root,
+        ),
+        "playful_style_jsonl": _resolve_path(
+            args.playful_style_data,
+            repository_root,
+        ),
+        "playful_style_audit": _resolve_path(
+            args.playful_style_audit,
+            repository_root,
+        ),
+        "calm_style_jsonl": _resolve_path(
+            args.calm_style_data,
+            repository_root,
+        ),
+        "calm_style_audit": _resolve_path(
+            args.calm_style_audit,
+            repository_root,
+        ),
+        "style_metadata": _resolve_path(args.style_metadata, repository_root),
+        "evaluation_prompts": _resolve_path(args.eval_prompts, repository_root),
+        "mixed_audit": audit_path,
+    }
     run_dirs = {
         "core": _resolve_path(args.core_run_dir, repository_root),
         "playful": _resolve_path(args.playful_run_dir, repository_root),
@@ -72,8 +149,8 @@ def main(argv: list[str] | None = None) -> int:
     manifest = build_manifest(
         repository_root=repository_root,
         base_path=base_path,
-        public_metadata_path=public_metadata_path,
-        audit_path=audit_path,
+        base_record_path=base_record_path,
+        source_paths=source_paths,
         run_config_path=run_config_path,
         run_dirs=run_dirs,
     )
@@ -86,16 +163,17 @@ def build_manifest(
     *,
     repository_root: Path,
     base_path: Path,
-    public_metadata_path: Path,
-    audit_path: Path,
+    base_record_path: Path,
+    source_paths: Mapping[str, Path],
     run_config_path: Path,
     run_dirs: Mapping[str, Path],
 ) -> dict[str, Any]:
     root = repository_root.resolve()
     _require_within_repository(root, base_path)
-    _require_within_repository(root, public_metadata_path)
-    _require_within_repository(root, audit_path)
+    _require_within_repository(root, base_record_path)
     _require_within_repository(root, run_config_path)
+    for source_path in source_paths.values():
+        _require_within_repository(root, source_path)
     if set(run_dirs) != set(RUN_NAMES):
         raise ValueError(
             "run directories must contain exactly core, playful, and calm"
@@ -107,13 +185,22 @@ def build_manifest(
         _require_file(base_path, "base checkpoint"),
         root,
     )
+    base_record = _load_json_object(
+        _require_file(base_record_path, "base SHA record"),
+        "base SHA record",
+    )
+    _validate_base_record(
+        base_record,
+        base_artifact=base_artifact,
+    )
+    source_artifacts = _source_artifacts(source_paths, repository_root=root)
     public_metadata = _load_json_object(
-        _require_file(public_metadata_path, "public import metadata"),
+        source_paths["public_metadata"],
         "public import metadata",
     )
     _validate_public_metadata(public_metadata)
     audit_report = _load_json_object(
-        _require_file(audit_path, "audit report"),
+        source_paths["mixed_audit"],
         "audit report",
     )
     _validate_audit_report(audit_report)
@@ -121,8 +208,13 @@ def build_manifest(
         _require_file(run_config_path, "run config"),
         "run config",
     )
-    if not run_config:
-        raise ValueError("run config must be a non-empty JSON object")
+    _validate_run_config(
+        run_config,
+        base_record=base_record,
+        source_artifacts=source_artifacts,
+        source_paths=source_paths,
+        repository_root=root,
+    )
 
     runs = {
         run_name: _run_manifest(
@@ -136,20 +228,328 @@ def build_manifest(
         "schema_version": SCHEMA_VERSION,
         "created_at_utc": _utc_timestamp(),
         "base_checkpoint": base_artifact,
+        "base_checkpoint_record": {
+            **_artifact_record(base_record_path, root),
+            "identity": base_record,
+        },
         "run_config": run_config,
         "run_config_artifact": _artifact_record(run_config_path, root),
-        "source_metadata": {
-            "audit_report": {
-                **_artifact_record(audit_path, root),
-                "summary": audit_report,
-            },
-            "public_import": {
-                **_artifact_record(public_metadata_path, root),
-                "summary": public_metadata,
-            },
-        },
+        "source_artifacts": source_artifacts,
         "runs": runs,
     }
+
+
+def _source_artifacts(
+    source_paths: Mapping[str, Path],
+    *,
+    repository_root: Path,
+) -> dict[str, dict[str, Any]]:
+    expected_names = {
+        "public_jsonl",
+        "public_metadata",
+        "curated_core_jsonl",
+        "curated_core_metadata",
+        "curated_core_audit",
+        "playful_style_jsonl",
+        "playful_style_audit",
+        "calm_style_jsonl",
+        "calm_style_audit",
+        "style_metadata",
+        "evaluation_prompts",
+        "mixed_audit",
+    }
+    if set(source_paths) != expected_names:
+        raise ValueError("source paths do not match the manifest schema")
+
+    artifacts: dict[str, dict[str, Any]] = {}
+    for name in sorted(expected_names):
+        path = _require_file(
+            source_paths[name],
+            f"required artifact for source input: {name}",
+        )
+        artifacts[name] = _artifact_record(path, repository_root)
+
+    metadata_names = (
+        "curated_core_metadata",
+        "style_metadata",
+    )
+    for name in metadata_names:
+        payload = _load_json_object(source_paths[name], name.replace("_", " "))
+        if not payload:
+            raise ValueError(f"{name.replace('_', ' ')} must not be empty")
+        artifacts[name]["summary"] = payload
+
+    audit_names = (
+        "curated_core_audit",
+        "playful_style_audit",
+        "calm_style_audit",
+        "mixed_audit",
+    )
+    for name in audit_names:
+        payload = _load_json_object(source_paths[name], name.replace("_", " "))
+        _validate_audit_report(payload)
+        artifacts[name]["summary"] = payload
+
+    public_metadata = _load_json_object(
+        source_paths["public_metadata"],
+        "public import metadata",
+    )
+    _validate_public_metadata(public_metadata)
+    artifacts["public_metadata"]["summary"] = public_metadata
+    return artifacts
+
+
+def _validate_base_record(
+    payload: Mapping[str, Any],
+    *,
+    base_artifact: Mapping[str, Any],
+) -> None:
+    if payload.get("path") != base_artifact["path"]:
+        raise ValueError("base SHA record path does not match the base checkpoint")
+    if payload.get("sha256") != base_artifact["sha256"]:
+        raise ValueError("base SHA record hash does not match the base checkpoint")
+    context_length = payload.get("context_length")
+    if (
+        not isinstance(context_length, int)
+        or isinstance(context_length, bool)
+        or context_length < 1024
+    ):
+        raise ValueError("base SHA record has an invalid context length")
+    special_token_ids = payload.get("special_token_ids")
+    required_tokens = {"<pad>", "<bos>", "<eos>", "<user>", "<agi>", "<system>"}
+    if (
+        not isinstance(special_token_ids, dict)
+        or set(special_token_ids) != required_tokens
+        or any(
+            not isinstance(token_id, int) or isinstance(token_id, bool)
+            for token_id in special_token_ids.values()
+        )
+        or len(set(special_token_ids.values())) != len(required_tokens)
+    ):
+        raise ValueError("base SHA record has invalid special token identities")
+
+
+def _validate_run_config(
+    payload: Mapping[str, Any],
+    *,
+    base_record: Mapping[str, Any],
+    source_artifacts: Mapping[str, Mapping[str, Any]],
+    source_paths: Mapping[str, Path],
+    repository_root: Path,
+) -> None:
+    if payload.get("schema_version") != RUN_CONFIG_SCHEMA_VERSION:
+        raise ValueError(
+            f"run config must use schema_version {RUN_CONFIG_SCHEMA_VERSION}"
+        )
+    if payload.get("base_checkpoint") != base_record:
+        raise ValueError(
+            "run config base checkpoint identity does not match the "
+            "base SHA record"
+        )
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, dict) or set(inputs) != {
+        "public_jsonl",
+        "public_metadata",
+    }:
+        raise ValueError(
+            "run config inputs must contain public_jsonl and public_metadata"
+        )
+    for name in ("public_jsonl", "public_metadata"):
+        expected = {
+            key: source_artifacts[name][key]
+            for key in ("path", "sha256", "size_bytes")
+        }
+        if inputs.get(name) != expected:
+            raise ValueError(
+                f"run config {name} identity does not match the actual artifact"
+            )
+
+    settings = payload.get("settings")
+    if not isinstance(settings, dict):
+        raise ValueError("run config settings must be a JSON object")
+    required_sections = {
+        "pipeline",
+        "import",
+        "core",
+        "style",
+        "validation",
+        "optimizer",
+        "evaluation",
+    }
+    if not required_sections.issubset(settings):
+        missing = sorted(required_sections - set(settings))
+        raise ValueError(
+            f"run config settings are missing sections: {', '.join(missing)}"
+        )
+    for section_name in required_sections:
+        if not isinstance(settings[section_name], dict):
+            raise ValueError(
+                f"run config settings.{section_name} must be a JSON object"
+            )
+
+    nonempty_string_fields = (
+        "pipeline.device",
+        "import.sources",
+        "core.data",
+        "core.source_weights",
+        "style.playful_data",
+        "style.calm_data",
+        "style.playful_source_weights",
+        "style.calm_source_weights",
+        "optimizer.mixed_precision",
+        "optimizer.fused_adamw",
+        "evaluation.prompts",
+        "evaluation.device",
+    )
+    for field in nonempty_string_fields:
+        value = _setting(payload, field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"run config {field} must be a non-empty string")
+
+    positive_integer_fields = (
+        "pipeline.seed",
+        "import.max_rows_per_source",
+        "import.max_examples_per_source",
+        "import.max_context_tokens",
+        "import.max_messages",
+        "import.max_agi_chars",
+        "import.min_agi_chars",
+        "core.steps",
+        "core.batch",
+        "core.grad_accum_steps",
+        "core.lr_warmup_steps",
+        "core.checkpoint_interval",
+        "core.checkpoint_keep",
+        "core.validation_interval",
+        "style.steps",
+        "style.batch",
+        "style.grad_accum_steps",
+        "style.lr_warmup_steps",
+        "style.checkpoint_interval",
+        "style.checkpoint_keep",
+        "style.validation_interval",
+        "validation.batches",
+        "evaluation.seed",
+        "evaluation.top_k",
+        "evaluation.repetition_window",
+    )
+    for field in positive_integer_fields:
+        value = _setting(payload, field)
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value <= 0
+        ):
+            raise ValueError(f"run config {field} must be a positive integer")
+
+    positive_number_fields = (
+        "core.lr",
+        "core.lr_min",
+        "core.weight_decay",
+        "style.lr",
+        "style.lr_min",
+        "style.weight_decay",
+        "validation.fraction",
+        "evaluation.temperature",
+        "evaluation.repetition_penalty",
+        "evaluation.min_eos_termination_rate",
+        "evaluation.min_nonempty_response_rate",
+        "evaluation.min_topic_reset_pass_rate",
+    )
+    for field in positive_number_fields:
+        value = _setting(payload, field)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+            or float(value) <= 0
+        ):
+            raise ValueError(f"run config {field} must be a positive number")
+    max_repetition_failure_rate = _setting(
+        payload,
+        "evaluation.max_repetition_failure_rate",
+    )
+    if (
+        not isinstance(max_repetition_failure_rate, (int, float))
+        or isinstance(max_repetition_failure_rate, bool)
+        or not math.isfinite(float(max_repetition_failure_rate))
+        or not 0 <= float(max_repetition_failure_rate) <= 1
+    ):
+        raise ValueError(
+            "run config evaluation.max_repetition_failure_rate "
+            "must be between zero and one"
+        )
+    activation_checkpointing = _setting(
+        payload,
+        "optimizer.activation_checkpointing",
+    )
+    if activation_checkpointing not in (0, 1, False, True):
+        raise ValueError(
+            "run config optimizer.activation_checkpointing must be boolean"
+        )
+
+    expected_paths = {
+        "core data": (
+            "core.data",
+            ",".join(
+                (
+                    _relative_path(
+                        source_paths["curated_core_jsonl"],
+                        repository_root,
+                    ),
+                    _relative_path(source_paths["public_jsonl"], repository_root),
+                )
+            ),
+        ),
+        "playful style data": (
+            "style.playful_data",
+            ",".join(
+                (
+                    _relative_path(
+                        source_paths["curated_core_jsonl"],
+                        repository_root,
+                    ),
+                    _relative_path(
+                        source_paths["playful_style_jsonl"],
+                        repository_root,
+                    ),
+                )
+            ),
+        ),
+        "calm style data": (
+            "style.calm_data",
+            ",".join(
+                (
+                    _relative_path(
+                        source_paths["curated_core_jsonl"],
+                        repository_root,
+                    ),
+                    _relative_path(
+                        source_paths["calm_style_jsonl"],
+                        repository_root,
+                    ),
+                )
+            ),
+        ),
+        "evaluation prompts": (
+            "evaluation.prompts",
+            _relative_path(source_paths["evaluation_prompts"], repository_root),
+        ),
+    }
+    for label, (field, expected) in expected_paths.items():
+        if _setting(payload, field) != expected:
+            raise ValueError(
+                f"run config {label} path does not match the manifest input"
+            )
+
+
+def _setting(payload: Mapping[str, Any], dotted_key: str) -> Any:
+    value: Any = payload["settings"]
+    for part in dotted_key.split("."):
+        if not isinstance(value, dict) or part not in value:
+            raise ValueError(f"run config is missing settings.{dotted_key}")
+        value = value[part]
+    return value
 
 
 def _run_manifest(
@@ -163,9 +563,22 @@ def _run_manifest(
         f"required artifact for {run_name}: best.pt",
     )
     _validate_checkpoint_archive(best_path, run_name=run_name)
+    final_path = _require_file(
+        run_dir / "final.pt",
+        f"required artifact for {run_name}: final.pt",
+    )
+    _validate_checkpoint_archive(
+        final_path,
+        run_name=run_name,
+        checkpoint_name="final",
+    )
     metrics_path = _require_file(
         run_dir / "metrics.jsonl",
         f"required artifact for {run_name}: metrics.jsonl",
+    )
+    evaluation_results_path = _require_file(
+        run_dir / "evaluation.jsonl",
+        f"required artifact for {run_name}: evaluation.jsonl",
     )
     evaluation_summary_path = _require_file(
         run_dir / "evaluation.summary.json",
@@ -183,25 +596,17 @@ def _run_manifest(
 
     artifacts = {
         "best_checkpoint": _artifact_record(best_path, repository_root),
+        "final_checkpoint": _artifact_record(final_path, repository_root),
+        "evaluation_results": _artifact_record(
+            evaluation_results_path,
+            repository_root,
+        ),
         "evaluation_summary": _artifact_record(
             evaluation_summary_path,
             repository_root,
         ),
         "metrics": _artifact_record(metrics_path, repository_root),
     }
-    optional_artifacts = (
-        ("evaluation_results", run_dir / "evaluation.jsonl"),
-        ("final_checkpoint", run_dir / "final.pt"),
-    )
-    for artifact_name, artifact_path in optional_artifacts:
-        if artifact_path.exists():
-            artifacts[artifact_name] = _artifact_record(
-                _require_file(
-                    artifact_path,
-                    f"required artifact for {run_name}: {artifact_name}",
-                ),
-                repository_root,
-            )
 
     return {
         "artifacts": artifacts,
@@ -270,6 +675,7 @@ def _best_validation_metric(
 def _validate_public_metadata(payload: Mapping[str, Any]) -> None:
     written_count = payload.get("written_count")
     sources = payload.get("sources")
+    dataset_revisions = payload.get("dataset_revisions")
     if (
         not isinstance(written_count, int)
         or isinstance(written_count, bool)
@@ -303,10 +709,43 @@ def _validate_public_metadata(payload: Mapping[str, Any]) -> None:
         raise ValueError(
             "public import metadata written_count does not match selected sources"
         )
+    if (
+        not isinstance(dataset_revisions, dict)
+        or set(dataset_revisions) != set(sources)
+    ):
+        raise ValueError(
+            "public import metadata dataset revisions must match its sources"
+        )
+    for source_name, source_spec in dataset_revisions.items():
+        if not isinstance(source_spec, dict):
+            raise ValueError(
+                "public import metadata dataset revisions are malformed"
+            )
+        dataset = source_spec.get("dataset")
+        split = source_spec.get("split")
+        revision = source_spec.get("revision")
+        if (
+            not isinstance(dataset, str)
+            or not dataset.strip()
+            or not isinstance(split, str)
+            or not split.strip()
+            or not isinstance(revision, str)
+            or len(revision) != 40
+            or any(character not in "0123456789abcdef" for character in revision)
+        ):
+            raise ValueError(
+                "public import metadata dataset revisions must contain "
+                f"a pinned commit for {source_name}"
+            )
 
 
-def _validate_checkpoint_archive(path: Path, *, run_name: str) -> None:
-    label = f"{run_name} best checkpoint"
+def _validate_checkpoint_archive(
+    path: Path,
+    *,
+    run_name: str,
+    checkpoint_name: str = "best",
+) -> None:
+    label = f"{run_name} {checkpoint_name} checkpoint"
     if not zipfile.is_zipfile(path):
         raise ValueError(f"{label} is not a valid PyTorch archive: {path}")
     try:

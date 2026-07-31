@@ -28,11 +28,31 @@ from superagi.model.checkpoint import load_checkpoint
 DEFAULT_SOURCES = ("no_robots", "dolly", "openassistant", "ultrachat")
 
 SOURCE_DATASETS = {
-    "no_robots": ("HuggingFaceH4/no_robots", "train"),
-    "dolly": ("databricks/databricks-dolly-15k", "train"),
-    "openassistant": ("OpenAssistant/oasst1", "train"),
-    "wildchat": ("allenai/WildChat", "train"),
-    "ultrachat": ("HuggingFaceH4/ultrachat_200k", "train_sft"),
+    "no_robots": (
+        "HuggingFaceH4/no_robots",
+        "train",
+        "e6f9a4ac5c37faeb744ba9ecf0473184d7f8105b",
+    ),
+    "dolly": (
+        "databricks/databricks-dolly-15k",
+        "train",
+        "bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a",
+    ),
+    "openassistant": (
+        "OpenAssistant/oasst1",
+        "train",
+        "fdf72ae0827c1cda404aff25b6603abec9e3399b",
+    ),
+    "wildchat": (
+        "allenai/WildChat",
+        "train",
+        "f66566ceaaeb619dd98ffb0f3bf3ce1f86775ac4",
+    ),
+    "ultrachat": (
+        "HuggingFaceH4/ultrachat_200k",
+        "train_sft",
+        "8049631c405ae6576f93f445c6b8166f76f5505a",
+    ),
 }
 
 
@@ -155,9 +175,15 @@ def _iter_source_candidates(
     max_rows: int,
     max_messages: int,
 ) -> Iterable[tuple[str, object]]:
-    dataset_name, split = SOURCE_DATASETS[source]
+    dataset_name, split, revision = SOURCE_DATASETS[source]
+    dataset = load_dataset(
+        dataset_name,
+        split=split,
+        streaming=True,
+        revision=revision,
+    )
     if source == "openassistant":
-        rows = list(_take_rows(load_dataset(dataset_name, split=split, streaming=True), max_rows))
+        rows = list(_take_rows(dataset, max_rows))
         for index, messages in enumerate(
             iter_openassistant_conversations(rows, max_messages=max_messages),
             start=1,
@@ -165,7 +191,7 @@ def _iter_source_candidates(
             yield f"{source}:{index}", messages
         return
 
-    rows = _take_rows(load_dataset(dataset_name, split=split, streaming=True), max_rows)
+    rows = _take_rows(dataset, max_rows)
     for index, row in enumerate(rows, start=1):
         if source == "no_robots":
             messages = convert_no_robots_row(row)
@@ -224,6 +250,14 @@ def _append_source_metadata(
     payload["written_count"] = len(result.examples)
     payload["accepted_before_limit"] = accepted_before_limit
     payload["sources"] = source_summaries
+    payload["dataset_revisions"] = {
+        source: {
+            "dataset": SOURCE_DATASETS[source][0],
+            "split": SOURCE_DATASETS[source][1],
+            "revision": SOURCE_DATASETS[source][2],
+        }
+        for source in sorted(sources)
+    }
     payload["selected_source_counts"] = dict(sorted(selected_counts.items()))
     payload["accepted_before_limit_source_counts"] = dict(
         sorted(accepted_before_limit_counts.items())

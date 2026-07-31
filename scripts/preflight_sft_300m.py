@@ -24,7 +24,7 @@ from superagi.ingestion.tokenizer import (  # noqa: E402
 from superagi.model.checkpoint import load_checkpoint  # noqa: E402
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 REQUIRED_SPECIAL_TOKENS = (
     PAD_TOKEN,
     BOS_TOKEN,
@@ -43,6 +43,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-checkpoint", required=True)
     parser.add_argument("--sha-record", required=True)
     parser.add_argument("--run-config", default="")
+    parser.add_argument("--public-data", default="")
+    parser.add_argument("--public-metadata", default="")
+    parser.add_argument("--state-file", default="")
     parser.add_argument("--minimum-context-length", type=int, default=1024)
     parser.add_argument("--require-path", action="append", default=[])
     parser.add_argument(
@@ -51,6 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Run setting as a dotted key=value pair; may be repeated.",
     )
+    parser.add_argument("--record-public", action="store_true")
     parser.add_argument("--verify-only", action="store_true")
     return parser
 
@@ -59,8 +63,12 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.minimum_context_length <= 0:
         raise ValueError("--minimum-context-length must be positive")
-    if not args.verify_only and not args.run_config.strip():
-        raise ValueError("--run-config is required unless --verify-only is used")
+    if args.record_public and args.verify_only:
+        raise ValueError("--record-public and --verify-only are mutually exclusive")
+    if (args.record_public or not args.verify_only) and not args.run_config.strip():
+        raise ValueError("--run-config is required for preparation and recording")
+    if bool(args.public_data.strip()) != bool(args.public_metadata.strip()):
+        raise ValueError("--public-data and --public-metadata must be provided together")
 
     root = Path(args.repository_root).resolve()
     base_path = _resolve_inside_root(
@@ -82,6 +90,27 @@ def main(argv: list[str] | None = None) -> int:
         if args.run_config.strip()
         else None
     )
+    public_paths = (
+        {
+            "public_jsonl": _resolve_inside_root(
+                args.public_data,
+                root,
+                label="public SFT JSONL",
+            ),
+            "public_metadata": _resolve_inside_root(
+                args.public_metadata,
+                root,
+                label="public SFT metadata",
+            ),
+        }
+        if args.public_data.strip()
+        else {}
+    )
+    state_file_path = (
+        _resolve_inside_root(args.state_file, root, label="preflight state file")
+        if args.state_file.strip()
+        else None
+    )
 
     checkpoint_identity = inspect_base_checkpoint(
         base_path,
@@ -95,16 +124,95 @@ def main(argv: list[str] | None = None) -> int:
         verify_only=args.verify_only,
     )
 
-    if not args.verify_only:
+    state = "resume"
+    if args.verify_only:
+        if run_config_path is not None:
+            run_config = _load_and_validate_run_config(
+                run_config_path,
+                checkpoint_identity=checkpoint_identity,
+            )
+            if public_paths:
+                _verify_public_inputs(
+                    run_config,
+                    public_paths=public_paths,
+                    repository_root=root,
+                    require_sealed=True,
+                )
+    elif args.record_public:
+        if run_config_path is None:
+            raise RuntimeError("run config path was not resolved")
+        run_config = _load_and_validate_run_config(
+            run_config_path,
+            checkpoint_identity=checkpoint_identity,
+        )
+        if not public_paths:
+            raise ValueError(
+                "--record-public requires --public-data and --public-metadata"
+            )
+        inputs = run_config["inputs"]
+        if inputs:
+            _verify_public_inputs(
+                run_config,
+                public_paths=public_paths,
+                repository_root=root,
+                require_sealed=True,
+            )
+        else:
+            _require_input_paths(tuple(public_paths.values()))
+            run_config["inputs"] = {
+                name: _artifact_identity(path, root)
+                for name, path in public_paths.items()
+            }
+            _write_json_atomic(run_config_path, run_config)
+    else:
         if run_config_path is None:
             raise RuntimeError("run config path was not resolved")
         settings = parse_config_entries(args.config)
-        run_config = {
-            "schema_version": SCHEMA_VERSION,
-            "base_checkpoint": checkpoint_identity,
-            "settings": settings,
-        }
-        _validate_or_write_run_config(run_config_path, run_config)
+        if run_config_path.exists():
+            run_config = _load_and_validate_run_config(
+                run_config_path,
+                checkpoint_identity=checkpoint_identity,
+            )
+            if run_config["settings"] != settings:
+                raise ValueError(
+                    "run configuration changed after preflight; "
+                    "use a new SFT run directory for different settings"
+                )
+        else:
+            run_config = {
+                "schema_version": SCHEMA_VERSION,
+                "base_checkpoint": checkpoint_identity,
+                "settings": settings,
+                "inputs": {},
+            }
+            _write_json_atomic(run_config_path, run_config)
+        if public_paths:
+            inputs = run_config["inputs"]
+            if inputs:
+                _verify_public_inputs(
+                    run_config,
+                    public_paths=public_paths,
+                    repository_root=root,
+                    require_sealed=True,
+                )
+            else:
+                existing_public_paths = [
+                    path for path in public_paths.values() if path.exists()
+                ]
+                if existing_public_paths:
+                    existing = ", ".join(
+                        _relative(path, root) for path in existing_public_paths
+                    )
+                    raise ValueError(
+                        "unsealed public import files already exist "
+                        f"({existing}); refusing to overwrite them. "
+                        "Inspect and seal a complete import explicitly or use "
+                        "a new SFT run directory"
+                    )
+                state = "prepare"
+
+    if state_file_path is not None:
+        _write_text_atomic(state_file_path, f"{state}\n")
 
     print(
         "SFT base preflight: "
@@ -115,6 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"SFT base SHA record: {_relative(sha_record_path, root)}", flush=True)
     if run_config_path is not None:
         print(f"SFT run config: {_relative(run_config_path, root)}", flush=True)
+    print(f"SFT preflight state: {state}", flush=True)
     return 0
 
 
@@ -204,19 +313,91 @@ def _validate_or_write_sha_record(
     _write_json_atomic(path, checkpoint_identity)
 
 
-def _validate_or_write_run_config(
+def _load_and_validate_run_config(
     path: Path,
+    *,
+    checkpoint_identity: Mapping[str, Any],
+) -> dict[str, Any]:
+    payload = _load_json_object(path, "run config")
+    if payload.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(
+            f"run config must use schema_version {SCHEMA_VERSION}; "
+            "use a new SFT run directory"
+        )
+    if payload.get("base_checkpoint") != checkpoint_identity:
+        raise ValueError(
+            "run config base checkpoint identity does not match the actual base; "
+            "use a new SFT run directory"
+        )
+    if not isinstance(payload.get("settings"), dict):
+        raise ValueError("run config settings must be a JSON object")
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, dict):
+        raise ValueError("run config inputs must be a JSON object")
+    if inputs and set(inputs) != {"public_jsonl", "public_metadata"}:
+        raise ValueError(
+            "run config inputs must contain exactly public_jsonl and public_metadata"
+        )
+    for name, artifact in inputs.items():
+        _validate_artifact_record(artifact, label=f"run config {name}")
+    return payload
+
+
+def _verify_public_inputs(
     run_config: Mapping[str, Any],
+    *,
+    public_paths: Mapping[str, Path],
+    repository_root: Path,
+    require_sealed: bool,
 ) -> None:
-    if path.exists():
-        existing = _load_json_object(path, "run config")
-        if existing != run_config:
+    inputs = run_config["inputs"]
+    if not inputs:
+        if require_sealed:
             raise ValueError(
-                "run configuration changed after preflight; "
-                "use a new SFT run directory for different settings"
+                "run config has no sealed public import identity; "
+                "complete first preparation or use a new SFT run directory"
             )
         return
-    _write_json_atomic(path, run_config)
+    for name, path in public_paths.items():
+        _require_nonempty_file(path, name)
+        actual = _artifact_identity(path, repository_root)
+        expected = inputs.get(name)
+        if expected != actual:
+            raise ValueError(
+                f"{name} changed after its import identity was recorded; "
+                "restore the exact imported file or use a new SFT run directory"
+            )
+
+
+def _artifact_identity(path: Path, repository_root: Path) -> dict[str, Any]:
+    return {
+        "path": _relative(path, repository_root),
+        "sha256": _sha256(path),
+        "size_bytes": path.stat().st_size,
+    }
+
+
+def _validate_artifact_record(value: Any, *, label: str) -> None:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    if set(value) != {"path", "sha256", "size_bytes"}:
+        raise ValueError(f"{label} has invalid fields")
+    if not isinstance(value["path"], str) or not value["path"]:
+        raise ValueError(f"{label} has an invalid path")
+    sha256 = value["sha256"]
+    if (
+        not isinstance(sha256, str)
+        or len(sha256) != 64
+        or any(character not in "0123456789abcdef" for character in sha256)
+    ):
+        raise ValueError(f"{label} has an invalid SHA-256")
+    size_bytes = value["size_bytes"]
+    if (
+        not isinstance(size_bytes, int)
+        or isinstance(size_bytes, bool)
+        or size_bytes <= 0
+    ):
+        raise ValueError(f"{label} has an invalid size")
 
 
 def _require_input_paths(paths: Sequence[Path]) -> None:
@@ -288,6 +469,22 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
         temporary_path = Path(handle.name)
         json.dump(payload, handle, ensure_ascii=True, indent=2, sort_keys=True)
         handle.write("\n")
+        handle.flush()
+    temporary_path.replace(path)
+
+
+def _write_text_atomic(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        temporary_path = Path(handle.name)
+        handle.write(value)
         handle.flush()
     temporary_path.replace(path)
 

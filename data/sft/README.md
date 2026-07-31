@@ -23,7 +23,7 @@ The target performs these phases in order:
 
 1. installs project dependencies;
 2. loads and validates the immutable base checkpoint and tokenizer;
-3. imports filtered public instruction data;
+3. imports filtered public instruction data once and seals its exact hashes;
 4. audits the mixed core corpus;
 5. trains and evaluates the core instruction checkpoint;
 6. trains and evaluates the playful/direct variant from core `best.pt`;
@@ -53,6 +53,10 @@ Preflight requires a checkpoint with at least 1,024 context tokens and unique
 `<pad>`, `<bos>`, `<eos>`, `<user>`, `<agi>`, and `<system>` tokenizer entries.
 It records the base SHA-256 before any training. A changed base checkpoint or
 changed run configuration is rejected when the same run directory is reused.
+On first preparation, preflight records `prepare` without training, imports the
+public corpus, and stores the exact JSONL and metadata hashes in
+`run-config.json`. On later invocations it records `resume`, verifies those
+bytes, and skips the download.
 
 ## Monitoring
 
@@ -88,6 +92,12 @@ tmux session and rerun the exact `make runpod-sft-300m` command. The workflow:
 - resumes an incomplete phase when its `recovery-current.json` exists; and
 - starts a fresh phase only when its run directory is empty.
 
+Before any phase is skipped or resumed, the workflow re-hashes the base
+checkpoint and the sealed public JSONL and metadata. If either imported file
+has changed or is missing, restore the exact files from durable storage or use
+a new `SFT_CLOUD_RUN_ROOT`. The workflow will not overwrite public data owned
+by an existing run.
+
 `latest.pt` is the convenient alias for the latest committed checkpoint.
 `recovery-current.json` is the authoritative pointer to the complete recovery
 generation, including trainer and optimizer state. Do not rename, move, or
@@ -119,13 +129,14 @@ The default workflow writes:
 - `data/sft/runs/300m/manifest.json`: hashes and summaries for all durable
   production artifacts.
 
-The public import is generated at:
+The public import is generated inside the run root at:
 
-- `data/sft/imported/public-mixed.jsonl`;
-- `data/sft/imported/public-mixed.metadata.json`.
+- `data/sft/runs/300m/inputs/public-mixed.jsonl`;
+- `data/sft/runs/300m/inputs/public-mixed.metadata.json`.
 
-`imported/` and `runs/` are intentionally ignored by Git. Copy completed
-checkpoints and the manifest to durable storage before terminating a pod.
+`runs/` is intentionally ignored by Git. Copy the run-owned imported corpus,
+checkpoints, run configuration, evaluation files, and manifest to durable
+storage before terminating a pod.
 
 ## Data Contract
 
@@ -142,9 +153,15 @@ Production tracked inputs are:
 - `styles/calm-precise.jsonl`: 500 reviewed calm/precise conversations; and
 - `eval_prompts.jsonl`: fixed behavioral evaluation prompts.
 
+`curated/core.jsonl` is the production curated SFT source.
+
 The matching audit and metadata files are checked during preflight. Legacy
 `stages/broad-mixed.jsonl` and bulk files under `generated/` are not production
 inputs.
+
+Corpus audits enforce structural, duplication, repetition, and configured
+source-mix gates. Topical relevance may be unscored or represented only by a
+proxy, and an audit does not establish the factual correctness of an answer.
 
 Public SFT data defaults to `no_robots`, `dolly`, `openassistant`, and
 `ultrachat`. WildChat is excluded from the default import and assigned zero

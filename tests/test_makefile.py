@@ -26,6 +26,18 @@ class MakefileTests(unittest.TestCase):
             "SFT_CLOUD_STYLE_LR_MIN := 5e-7",
             "SFT_CLOUD_STYLE_LR_WARMUP_STEPS := 50",
             (
+                "SFT_CLOUD_PUBLIC_DATA := "
+                "$(SFT_CLOUD_RUN_ROOT)/inputs/public-mixed.jsonl"
+            ),
+            (
+                "SFT_CLOUD_PUBLIC_METADATA := "
+                "$(SFT_CLOUD_RUN_ROOT)/inputs/public-mixed.metadata.json"
+            ),
+            (
+                "SFT_CLOUD_PREFLIGHT_STATE := "
+                "$(SFT_CLOUD_RUN_ROOT)/preflight-state.txt"
+            ),
+            (
                 "SFT_CLOUD_PLAYFUL_SOURCE_WEIGHTS := "
                 "curated_core=1,style_playful_direct=7,default=1"
             ),
@@ -55,6 +67,30 @@ class MakefileTests(unittest.TestCase):
             'SFT_AUDIT_REPORT="$(SFT_CLOUD_AUDIT_REPORT)"',
             recipe,
         )
+        self.assertIn('--public-data "$(SFT_CLOUD_PUBLIC_DATA)"', recipe)
+        self.assertIn(
+            '--public-metadata "$(SFT_CLOUD_PUBLIC_METADATA)"',
+            recipe,
+        )
+        self.assertIn('--state-file "$(SFT_CLOUD_PREFLIGHT_STATE)"', recipe)
+        self.assertIn(
+            'if [ "$$preflight_state" = "prepare" ]; then',
+            recipe,
+        )
+        self.assertIn("--record-public", recipe)
+        self.assertIn(
+            "Immutable public import already sealed; skipping download",
+            recipe,
+        )
+        self.assertLess(
+            recipe.index('if [ "$$preflight_state" = "prepare" ]; then'),
+            recipe.index("$(MAKE) sft-import-public"),
+        )
+        self.assertLess(
+            recipe.index("$(MAKE) sft-import-public"),
+            recipe.index("--record-public"),
+        )
+        self.assertEqual(recipe.count("$(MAKE) sft-import-public"), 1)
         self.assertNotIn("$(MAKE) sft-train", recipe)
 
     def test_runpod_sft_300m_orders_training_evaluation_and_manifest(self) -> None:
@@ -70,7 +106,6 @@ class MakefileTests(unittest.TestCase):
             'SFT_EVAL_CHECKPOINT="$(SFT_CLOUD_PLAYFUL_RUN_DIR)/best.pt"',
             'SFT_RUN_DIR="$(SFT_CLOUD_CALM_RUN_DIR)"',
             'SFT_EVAL_CHECKPOINT="$(SFT_CLOUD_CALM_RUN_DIR)/best.pt"',
-            "--verify-only",
             "scripts/write_sft_manifest.py",
         ]
         positions = [recipe.index(value) for value in expected_order]
@@ -135,6 +170,43 @@ class MakefileTests(unittest.TestCase):
             '--calm-run-dir "$(SFT_CLOUD_CALM_RUN_DIR)"',
             recipe,
         )
+        self.assertEqual(recipe.count("--verify-only"), 4)
+        self.assertEqual(
+            recipe.count('--public-data "$(SFT_CLOUD_PUBLIC_DATA)"'),
+            4,
+        )
+        self.assertEqual(
+            recipe.count(
+                '--public-metadata "$(SFT_CLOUD_PUBLIC_METADATA)"'
+            ),
+            4,
+        )
+        self.assertIn(
+            '--base-sha-record "$(SFT_CLOUD_BASE_SHA_RECORD)"',
+            recipe,
+        )
+        manifest_inputs = [
+            '--public-import-data "$(SFT_CLOUD_PUBLIC_DATA)"',
+            '--public-import-metadata "$(SFT_CLOUD_PUBLIC_METADATA)"',
+            '--curated-core-data "data/sft/curated/core.jsonl"',
+            '--curated-core-metadata "data/sft/curated/core.metadata.json"',
+            '--curated-core-audit "data/sft/curated/core.audit.json"',
+            '--playful-style-data "data/sft/styles/playful-direct.jsonl"',
+            (
+                '--playful-style-audit '
+                '"data/sft/styles/playful-direct.audit.json"'
+            ),
+            '--calm-style-data "data/sft/styles/calm-precise.jsonl"',
+            (
+                '--calm-style-audit '
+                '"data/sft/styles/calm-precise.audit.json"'
+            ),
+            '--style-metadata "data/sft/styles/styles.metadata.json"',
+            '--eval-prompts "$(SFT_EVAL_PROMPTS)"',
+            '--audit-report "$(SFT_CLOUD_AUDIT_REPORT)"',
+        ]
+        for manifest_input in manifest_inputs:
+            self.assertIn(manifest_input, recipe)
 
     def test_train_export_run_target_trains_times_exports_and_runs(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
