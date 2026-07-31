@@ -364,7 +364,50 @@ SFT_LOCAL_SMOKE_ANCHOR_STEPS := 120
 SFT_LOCAL_SMOKE_PUBLIC_STEPS := 160
 SFT_LOCAL_SMOKE_BATCH := 1
 
-.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 ingest-stream-sources train sft-audit sft-import-public sft-evaluate sft-evaluate-styles sft-train sft-overfit-50 sft-anchor sft-broad sft-style-playful sft-style-calm sft-staged sft-prepare-local sft-anchor-local sft-public-local sft-style-local sft-core-local sft-local sft-local-smoke params train-export-run train-4090 train-200m train-h100 train-300m runpod-train-300m std-train export-model generate run-model chat smoke-train clean-generated
+SFT_CLOUD_BASE_CHECKPOINT := data/checkpoints/best.pt
+SFT_CLOUD_RUN_ROOT := data/sft/runs/300m
+SFT_CLOUD_BASE_SHA_RECORD := $(SFT_CLOUD_RUN_ROOT)/base-checkpoint.json
+SFT_CLOUD_RUN_CONFIG := $(SFT_CLOUD_RUN_ROOT)/run-config.json
+SFT_CLOUD_AUDIT_REPORT := $(SFT_CLOUD_RUN_ROOT)/audit.json
+SFT_CLOUD_MANIFEST := $(SFT_CLOUD_RUN_ROOT)/manifest.json
+SFT_CLOUD_PUBLIC_DATA := data/sft/imported/public-mixed.jsonl
+SFT_CLOUD_PUBLIC_METADATA := data/sft/imported/public-mixed.metadata.json
+SFT_CLOUD_CORE_DATA := data/sft/curated/core.jsonl,$(SFT_CLOUD_PUBLIC_DATA)
+SFT_CLOUD_CORE_SOURCE_WEIGHTS := curated_core=4,no_robots=1.5,openassistant=1.25,dolly=1,ultrachat=0.8,wildchat=0,default=1
+SFT_CLOUD_CORE_RUN_DIR := $(SFT_CLOUD_RUN_ROOT)/core
+SFT_CLOUD_PLAYFUL_DATA := data/sft/curated/core.jsonl,data/sft/styles/playful-direct.jsonl
+SFT_CLOUD_PLAYFUL_SOURCE_WEIGHTS := curated_core=1,style_playful_direct=7,default=1
+SFT_CLOUD_PLAYFUL_RUN_DIR := $(SFT_CLOUD_RUN_ROOT)/playful
+SFT_CLOUD_CALM_DATA := data/sft/curated/core.jsonl,data/sft/styles/calm-precise.jsonl
+SFT_CLOUD_CALM_SOURCE_WEIGHTS := curated_core=1,style_calm_precise=7,default=1
+SFT_CLOUD_CALM_RUN_DIR := $(SFT_CLOUD_RUN_ROOT)/calm
+SFT_CLOUD_DEVICE := cuda
+SFT_CLOUD_SEED := 1337
+SFT_CLOUD_GRAD_ACCUM_STEPS := 8
+SFT_CLOUD_MIXED_PRECISION := float16
+SFT_CLOUD_FUSED_ADAMW := auto
+SFT_CLOUD_ACTIVATION_CHECKPOINTING := 1
+SFT_CLOUD_CHECKPOINT_KEEP := 3
+SFT_CLOUD_VALIDATION_FRACTION := 0.05
+SFT_CLOUD_VALIDATION_BATCHES := 10
+SFT_CLOUD_CORE_STEPS := 3000
+SFT_CLOUD_CORE_BATCH := 2
+SFT_CLOUD_CORE_LR := 6e-6
+SFT_CLOUD_CORE_LR_MIN := 1e-6
+SFT_CLOUD_CORE_LR_WARMUP_STEPS := 150
+SFT_CLOUD_CORE_WEIGHT_DECAY := 0.01
+SFT_CLOUD_CORE_CHECKPOINT_INTERVAL := 250
+SFT_CLOUD_CORE_LOG_INTERVAL := 250
+SFT_CLOUD_STYLE_STEPS := 500
+SFT_CLOUD_STYLE_BATCH := 2
+SFT_CLOUD_STYLE_LR := 1.5e-6
+SFT_CLOUD_STYLE_LR_MIN := 5e-7
+SFT_CLOUD_STYLE_LR_WARMUP_STEPS := 50
+SFT_CLOUD_STYLE_WEIGHT_DECAY := 0.01
+SFT_CLOUD_STYLE_CHECKPOINT_INTERVAL := 100
+SFT_CLOUD_STYLE_LOG_INTERVAL := 50
+
+.PHONY: help setup data-dirs test wiki c4 ingest ingest-stream-c4 ingest-stream-sources train sft-audit sft-import-public sft-evaluate sft-evaluate-styles sft-train sft-overfit-50 sft-anchor sft-broad sft-style-playful sft-style-calm sft-staged sft-prepare-local sft-anchor-local sft-public-local sft-style-local sft-core-local sft-local sft-local-smoke runpod-sft-300m-preflight runpod-sft-300m params train-export-run train-4090 train-200m train-h100 train-300m runpod-train-300m std-train export-model generate run-model chat smoke-train clean-generated
 
 help:
 	@echo "SuperAGI pipeline targets"
@@ -395,6 +438,7 @@ help:
 	@echo "  make sft-evaluate-styles  Evaluate both staged personality checkpoints"
 	@echo "  make sft-local-smoke SFT_LOCAL_BASE_CHECKPOINT=./best-300m-current.pt"
 	@echo "  make sft-local SFT_LOCAL_BASE_CHECKPOINT=./best-300m-current.pt"
+	@echo "  make runpod-sft-300m SFT_CLOUD_BASE_CHECKPOINT=data/checkpoints/best.pt"
 	@echo "  make sft-overfit-50 SFT_OVERFIT_BASE_CHECKPOINT=./best-current-cloud.pt"
 	@echo "  make sft-style-playful SFT_STYLE_PLAYFUL_BASE_CHECKPOINT=data/sft/runs/chat-broad.pt"
 	@echo "  make sft-style-calm SFT_STYLE_CALM_BASE_CHECKPOINT=data/sft/runs/chat-broad.pt"
@@ -1060,6 +1104,227 @@ sft-local-smoke:
 		SFT_LOCAL_PUBLIC_MAX_EXAMPLES="$(SFT_LOCAL_SMOKE_MAX_EXAMPLES)"
 	@printf 'Final local SFT smoke checkpoint: data/sft/runs/chat-public-local-smoke.pt\n'
 	@printf '==> [sft-local-smoke] Finished small local SFT smoke pipeline\n'
+
+runpod-sft-300m-preflight:
+	@printf '==> [runpod-sft-300m-preflight] Starting non-training production checks\n'
+	$(MAKE) setup
+	$(PYTHON) scripts/preflight_sft_300m.py \
+		--repository-root "." \
+		--base-checkpoint "$(SFT_CLOUD_BASE_CHECKPOINT)" \
+		--sha-record "$(SFT_CLOUD_BASE_SHA_RECORD)" \
+		--run-config "$(SFT_CLOUD_RUN_CONFIG)" \
+		--require-path "data/sft/curated/core.jsonl" \
+		--require-path "data/sft/curated/core.audit.json" \
+		--require-path "data/sft/curated/core.metadata.json" \
+		--require-path "data/sft/styles/playful-direct.jsonl" \
+		--require-path "data/sft/styles/playful-direct.audit.json" \
+		--require-path "data/sft/styles/calm-precise.jsonl" \
+		--require-path "data/sft/styles/calm-precise.audit.json" \
+		--require-path "data/sft/styles/styles.metadata.json" \
+		--require-path "$(SFT_EVAL_PROMPTS)" \
+		--config "pipeline.seed=$(SFT_CLOUD_SEED)" \
+		--config "pipeline.device=$(SFT_CLOUD_DEVICE)" \
+		--config "import.sources=$(SFT_IMPORT_SOURCES)" \
+		--config "import.max_rows_per_source=$(SFT_IMPORT_MAX_ROWS_PER_SOURCE)" \
+		--config "import.max_examples_per_source=$(SFT_IMPORT_MAX_EXAMPLES_PER_SOURCE)" \
+		--config "import.max_context_tokens=$(SFT_IMPORT_MAX_CONTEXT_TOKENS)" \
+		--config "import.max_messages=$(SFT_IMPORT_MAX_MESSAGES)" \
+		--config "import.max_agi_chars=$(SFT_IMPORT_MAX_AGI_CHARS)" \
+		--config "import.min_agi_chars=$(SFT_IMPORT_MIN_AGI_CHARS)" \
+		--config "core.data=$(SFT_CLOUD_CORE_DATA)" \
+		--config "core.source_weights=$(SFT_CLOUD_CORE_SOURCE_WEIGHTS)" \
+		--config "core.steps=$(SFT_CLOUD_CORE_STEPS)" \
+		--config "core.batch=$(SFT_CLOUD_CORE_BATCH)" \
+		--config "core.grad_accum_steps=$(SFT_CLOUD_GRAD_ACCUM_STEPS)" \
+		--config "core.lr=$(SFT_CLOUD_CORE_LR)" \
+		--config "core.lr_min=$(SFT_CLOUD_CORE_LR_MIN)" \
+		--config "core.lr_warmup_steps=$(SFT_CLOUD_CORE_LR_WARMUP_STEPS)" \
+		--config "core.weight_decay=$(SFT_CLOUD_CORE_WEIGHT_DECAY)" \
+		--config "core.checkpoint_interval=$(SFT_CLOUD_CORE_CHECKPOINT_INTERVAL)" \
+		--config "core.checkpoint_keep=$(SFT_CLOUD_CHECKPOINT_KEEP)" \
+		--config "core.validation_interval=$(SFT_CLOUD_CORE_LOG_INTERVAL)" \
+		--config "style.playful_data=$(SFT_CLOUD_PLAYFUL_DATA)" \
+		--config "style.calm_data=$(SFT_CLOUD_CALM_DATA)" \
+		--config "style.steps=$(SFT_CLOUD_STYLE_STEPS)" \
+		--config "style.batch=$(SFT_CLOUD_STYLE_BATCH)" \
+		--config "style.grad_accum_steps=$(SFT_CLOUD_GRAD_ACCUM_STEPS)" \
+		--config "style.lr=$(SFT_CLOUD_STYLE_LR)" \
+		--config "style.lr_min=$(SFT_CLOUD_STYLE_LR_MIN)" \
+		--config "style.lr_warmup_steps=$(SFT_CLOUD_STYLE_LR_WARMUP_STEPS)" \
+		--config "style.weight_decay=$(SFT_CLOUD_STYLE_WEIGHT_DECAY)" \
+		--config "style.checkpoint_interval=$(SFT_CLOUD_STYLE_CHECKPOINT_INTERVAL)" \
+		--config "style.checkpoint_keep=$(SFT_CLOUD_CHECKPOINT_KEEP)" \
+		--config "style.validation_interval=$(SFT_CLOUD_STYLE_LOG_INTERVAL)" \
+		--config "style.playful_source_weights=$(SFT_CLOUD_PLAYFUL_SOURCE_WEIGHTS)" \
+		--config "style.calm_source_weights=$(SFT_CLOUD_CALM_SOURCE_WEIGHTS)" \
+		--config "validation.fraction=$(SFT_CLOUD_VALIDATION_FRACTION)" \
+		--config "validation.batches=$(SFT_CLOUD_VALIDATION_BATCHES)" \
+		--config "optimizer.mixed_precision=$(SFT_CLOUD_MIXED_PRECISION)" \
+		--config "optimizer.fused_adamw=$(SFT_CLOUD_FUSED_ADAMW)" \
+		--config "optimizer.activation_checkpointing=$(SFT_CLOUD_ACTIVATION_CHECKPOINTING)" \
+		--config "evaluation.prompts=$(SFT_EVAL_PROMPTS)" \
+		--config "evaluation.device=$(SFT_CLOUD_DEVICE)" \
+		--config "evaluation.seed=$(SFT_CLOUD_SEED)" \
+		--config "evaluation.temperature=$(SFT_EVAL_TEMPERATURE)" \
+		--config "evaluation.top_k=$(SFT_EVAL_TOP_K)" \
+		--config "evaluation.repetition_penalty=$(SFT_EVAL_REPETITION_PENALTY)" \
+		--config "evaluation.repetition_window=$(SFT_EVAL_REPETITION_WINDOW)" \
+		--config "evaluation.min_eos_termination_rate=$(SFT_EVAL_MIN_EOS_TERMINATION_RATE)" \
+		--config "evaluation.min_nonempty_response_rate=$(SFT_EVAL_MIN_NONEMPTY_RESPONSE_RATE)" \
+		--config "evaluation.max_repetition_failure_rate=$(SFT_EVAL_MAX_REPETITION_FAILURE_RATE)" \
+		--config "evaluation.min_topic_reset_pass_rate=$(SFT_EVAL_MIN_TOPIC_RESET_PASS_RATE)"
+	$(MAKE) sft-import-public \
+		SFT_IMPORT_CHECKPOINT="$(SFT_CLOUD_BASE_CHECKPOINT)" \
+		SFT_IMPORT_OUT="$(SFT_CLOUD_PUBLIC_DATA)" \
+		SFT_IMPORT_METADATA="$(SFT_CLOUD_PUBLIC_METADATA)" \
+		SFT_IMPORT_SEED="$(SFT_CLOUD_SEED)"
+	$(PYTHON) scripts/preflight_sft_300m.py \
+		--repository-root "." \
+		--base-checkpoint "$(SFT_CLOUD_BASE_CHECKPOINT)" \
+		--sha-record "$(SFT_CLOUD_BASE_SHA_RECORD)" \
+		--require-path "$(SFT_CLOUD_PUBLIC_DATA)" \
+		--require-path "$(SFT_CLOUD_PUBLIC_METADATA)" \
+		--verify-only
+	$(MAKE) sft-audit \
+		SFT_AUDIT_DATA="$(SFT_CLOUD_CORE_DATA)" \
+		SFT_AUDIT_CHECKPOINT="$(SFT_CLOUD_BASE_CHECKPOINT)" \
+		SFT_AUDIT_SOURCE_WEIGHTS="$(SFT_CLOUD_CORE_SOURCE_WEIGHTS)" \
+		SFT_AUDIT_MODE="mixed" \
+		SFT_AUDIT_REPORT="$(SFT_CLOUD_AUDIT_REPORT)"
+	@printf '==> [runpod-sft-300m-preflight] All non-training checks passed\n'
+
+runpod-sft-300m:
+	@printf '==> [runpod-sft-300m] Starting one-command 300M production SFT workflow\n'
+	$(MAKE) runpod-sft-300m-preflight \
+		SFT_CLOUD_BASE_CHECKPOINT="$(SFT_CLOUD_BASE_CHECKPOINT)"
+	@set -e; \
+	run_dir="$(SFT_CLOUD_CORE_RUN_DIR)"; \
+	if [ -f "$$run_dir/final.pt" ]; then \
+		printf '==> [runpod-sft-300m] Core phase already complete; skipping training\n'; \
+	else \
+		resume=0; \
+		if [ -f "$$run_dir/recovery-current.json" ]; then resume=1; fi; \
+		$(MAKE) sft-train \
+			SFT_BASE_CHECKPOINT="$(SFT_CLOUD_BASE_CHECKPOINT)" \
+			SFT_DATA="$(SFT_CLOUD_CORE_DATA)" \
+			SFT_RUN_DIR="$(SFT_CLOUD_CORE_RUN_DIR)" \
+			SFT_RESUME="$$resume" \
+			SFT_STEPS="$(SFT_CLOUD_CORE_STEPS)" \
+			SFT_BATCH="$(SFT_CLOUD_CORE_BATCH)" \
+			SFT_GRAD_ACCUM_STEPS="$(SFT_CLOUD_GRAD_ACCUM_STEPS)" \
+			SFT_LR="$(SFT_CLOUD_CORE_LR)" \
+			SFT_LR_MIN="$(SFT_CLOUD_CORE_LR_MIN)" \
+			SFT_LR_WARMUP_STEPS="$(SFT_CLOUD_CORE_LR_WARMUP_STEPS)" \
+			SFT_WEIGHT_DECAY="$(SFT_CLOUD_CORE_WEIGHT_DECAY)" \
+			SFT_CHECKPOINT_INTERVAL="$(SFT_CLOUD_CORE_CHECKPOINT_INTERVAL)" \
+			SFT_CHECKPOINT_KEEP="$(SFT_CLOUD_CHECKPOINT_KEEP)" \
+			SFT_LOG_INTERVAL="$(SFT_CLOUD_CORE_LOG_INTERVAL)" \
+			SFT_MIXED_PRECISION="$(SFT_CLOUD_MIXED_PRECISION)" \
+			SFT_FUSED_ADAMW="$(SFT_CLOUD_FUSED_ADAMW)" \
+			SFT_ACTIVATION_CHECKPOINTING="$(SFT_CLOUD_ACTIVATION_CHECKPOINTING)" \
+			SFT_VALIDATION_FRACTION="$(SFT_CLOUD_VALIDATION_FRACTION)" \
+			SFT_VALIDATION_BATCHES="$(SFT_CLOUD_VALIDATION_BATCHES)" \
+			SFT_SOURCE_WEIGHTS="$(SFT_CLOUD_CORE_SOURCE_WEIGHTS)" \
+			SFT_DEVICE="$(SFT_CLOUD_DEVICE)" \
+			SFT_SEED="$(SFT_CLOUD_SEED)"; \
+	fi
+	$(MAKE) sft-evaluate \
+		SFT_EVAL_CHECKPOINT="$(SFT_CLOUD_CORE_RUN_DIR)/best.pt" \
+		SFT_EVAL_RESULTS="$(SFT_CLOUD_CORE_RUN_DIR)/evaluation.jsonl" \
+		SFT_EVAL_SUMMARY="$(SFT_CLOUD_CORE_RUN_DIR)/evaluation.summary.json" \
+		SFT_EVAL_DEVICE="$(SFT_CLOUD_DEVICE)" \
+		SFT_EVAL_SEED="$(SFT_CLOUD_SEED)"
+	@set -e; \
+	run_dir="$(SFT_CLOUD_PLAYFUL_RUN_DIR)"; \
+	if [ -f "$$run_dir/final.pt" ]; then \
+		printf '==> [runpod-sft-300m] Playful phase already complete; skipping training\n'; \
+	else \
+		resume=0; \
+		if [ -f "$$run_dir/recovery-current.json" ]; then resume=1; fi; \
+		$(MAKE) sft-train \
+			SFT_BASE_CHECKPOINT="$(SFT_CLOUD_CORE_RUN_DIR)/best.pt" \
+			SFT_DATA="$(SFT_CLOUD_PLAYFUL_DATA)" \
+			SFT_RUN_DIR="$(SFT_CLOUD_PLAYFUL_RUN_DIR)" \
+			SFT_RESUME="$$resume" \
+			SFT_STEPS="$(SFT_CLOUD_STYLE_STEPS)" \
+			SFT_BATCH="$(SFT_CLOUD_STYLE_BATCH)" \
+			SFT_GRAD_ACCUM_STEPS="$(SFT_CLOUD_GRAD_ACCUM_STEPS)" \
+			SFT_LR="$(SFT_CLOUD_STYLE_LR)" \
+			SFT_LR_MIN="$(SFT_CLOUD_STYLE_LR_MIN)" \
+			SFT_LR_WARMUP_STEPS="$(SFT_CLOUD_STYLE_LR_WARMUP_STEPS)" \
+			SFT_WEIGHT_DECAY="$(SFT_CLOUD_STYLE_WEIGHT_DECAY)" \
+			SFT_CHECKPOINT_INTERVAL="$(SFT_CLOUD_STYLE_CHECKPOINT_INTERVAL)" \
+			SFT_CHECKPOINT_KEEP="$(SFT_CLOUD_CHECKPOINT_KEEP)" \
+			SFT_LOG_INTERVAL="$(SFT_CLOUD_STYLE_LOG_INTERVAL)" \
+			SFT_MIXED_PRECISION="$(SFT_CLOUD_MIXED_PRECISION)" \
+			SFT_FUSED_ADAMW="$(SFT_CLOUD_FUSED_ADAMW)" \
+			SFT_ACTIVATION_CHECKPOINTING="$(SFT_CLOUD_ACTIVATION_CHECKPOINTING)" \
+			SFT_VALIDATION_FRACTION="$(SFT_CLOUD_VALIDATION_FRACTION)" \
+			SFT_VALIDATION_BATCHES="$(SFT_CLOUD_VALIDATION_BATCHES)" \
+			SFT_SOURCE_WEIGHTS="$(SFT_CLOUD_PLAYFUL_SOURCE_WEIGHTS)" \
+			SFT_DEVICE="$(SFT_CLOUD_DEVICE)" \
+			SFT_SEED="$(SFT_CLOUD_SEED)"; \
+	fi
+	$(MAKE) sft-evaluate \
+		SFT_EVAL_CHECKPOINT="$(SFT_CLOUD_PLAYFUL_RUN_DIR)/best.pt" \
+		SFT_EVAL_RESULTS="$(SFT_CLOUD_PLAYFUL_RUN_DIR)/evaluation.jsonl" \
+		SFT_EVAL_SUMMARY="$(SFT_CLOUD_PLAYFUL_RUN_DIR)/evaluation.summary.json" \
+		SFT_EVAL_DEVICE="$(SFT_CLOUD_DEVICE)" \
+		SFT_EVAL_SEED="$(SFT_CLOUD_SEED)"
+	@set -e; \
+	run_dir="$(SFT_CLOUD_CALM_RUN_DIR)"; \
+	if [ -f "$$run_dir/final.pt" ]; then \
+		printf '==> [runpod-sft-300m] Calm phase already complete; skipping training\n'; \
+	else \
+		resume=0; \
+		if [ -f "$$run_dir/recovery-current.json" ]; then resume=1; fi; \
+		$(MAKE) sft-train \
+			SFT_BASE_CHECKPOINT="$(SFT_CLOUD_CORE_RUN_DIR)/best.pt" \
+			SFT_DATA="$(SFT_CLOUD_CALM_DATA)" \
+			SFT_RUN_DIR="$(SFT_CLOUD_CALM_RUN_DIR)" \
+			SFT_RESUME="$$resume" \
+			SFT_STEPS="$(SFT_CLOUD_STYLE_STEPS)" \
+			SFT_BATCH="$(SFT_CLOUD_STYLE_BATCH)" \
+			SFT_GRAD_ACCUM_STEPS="$(SFT_CLOUD_GRAD_ACCUM_STEPS)" \
+			SFT_LR="$(SFT_CLOUD_STYLE_LR)" \
+			SFT_LR_MIN="$(SFT_CLOUD_STYLE_LR_MIN)" \
+			SFT_LR_WARMUP_STEPS="$(SFT_CLOUD_STYLE_LR_WARMUP_STEPS)" \
+			SFT_WEIGHT_DECAY="$(SFT_CLOUD_STYLE_WEIGHT_DECAY)" \
+			SFT_CHECKPOINT_INTERVAL="$(SFT_CLOUD_STYLE_CHECKPOINT_INTERVAL)" \
+			SFT_CHECKPOINT_KEEP="$(SFT_CLOUD_CHECKPOINT_KEEP)" \
+			SFT_LOG_INTERVAL="$(SFT_CLOUD_STYLE_LOG_INTERVAL)" \
+			SFT_MIXED_PRECISION="$(SFT_CLOUD_MIXED_PRECISION)" \
+			SFT_FUSED_ADAMW="$(SFT_CLOUD_FUSED_ADAMW)" \
+			SFT_ACTIVATION_CHECKPOINTING="$(SFT_CLOUD_ACTIVATION_CHECKPOINTING)" \
+			SFT_VALIDATION_FRACTION="$(SFT_CLOUD_VALIDATION_FRACTION)" \
+			SFT_VALIDATION_BATCHES="$(SFT_CLOUD_VALIDATION_BATCHES)" \
+			SFT_SOURCE_WEIGHTS="$(SFT_CLOUD_CALM_SOURCE_WEIGHTS)" \
+			SFT_DEVICE="$(SFT_CLOUD_DEVICE)" \
+			SFT_SEED="$(SFT_CLOUD_SEED)"; \
+	fi
+	$(MAKE) sft-evaluate \
+		SFT_EVAL_CHECKPOINT="$(SFT_CLOUD_CALM_RUN_DIR)/best.pt" \
+		SFT_EVAL_RESULTS="$(SFT_CLOUD_CALM_RUN_DIR)/evaluation.jsonl" \
+		SFT_EVAL_SUMMARY="$(SFT_CLOUD_CALM_RUN_DIR)/evaluation.summary.json" \
+		SFT_EVAL_DEVICE="$(SFT_CLOUD_DEVICE)" \
+		SFT_EVAL_SEED="$(SFT_CLOUD_SEED)"
+	$(PYTHON) scripts/preflight_sft_300m.py \
+		--repository-root "." \
+		--base-checkpoint "$(SFT_CLOUD_BASE_CHECKPOINT)" \
+		--sha-record "$(SFT_CLOUD_BASE_SHA_RECORD)" \
+		--verify-only
+	$(PYTHON) scripts/write_sft_manifest.py \
+		--repository-root "." \
+		--output "$(SFT_CLOUD_MANIFEST)" \
+		--base-checkpoint "$(SFT_CLOUD_BASE_CHECKPOINT)" \
+		--core-run-dir "$(SFT_CLOUD_CORE_RUN_DIR)" \
+		--playful-run-dir "$(SFT_CLOUD_PLAYFUL_RUN_DIR)" \
+		--calm-run-dir "$(SFT_CLOUD_CALM_RUN_DIR)" \
+		--public-import-metadata "$(SFT_CLOUD_PUBLIC_METADATA)" \
+		--audit-report "$(SFT_CLOUD_AUDIT_REPORT)" \
+		--run-config "$(SFT_CLOUD_RUN_CONFIG)"
+	@printf 'SFT production manifest: $(SFT_CLOUD_MANIFEST)\n'
+	@printf '==> [runpod-sft-300m] Finished one-command 300M production SFT workflow\n'
 
 train-export-run:
 	@set -e; \

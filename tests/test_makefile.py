@@ -3,6 +3,139 @@ from pathlib import Path
 
 
 class MakefileTests(unittest.TestCase):
+    def test_runpod_sft_300m_defines_production_4090_defaults(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+
+        expected_defaults = [
+            "SFT_CLOUD_CORE_STEPS := 3000",
+            "SFT_CLOUD_CORE_BATCH := 2",
+            "SFT_CLOUD_GRAD_ACCUM_STEPS := 8",
+            "SFT_CLOUD_MIXED_PRECISION := float16",
+            "SFT_CLOUD_FUSED_ADAMW := auto",
+            "SFT_CLOUD_ACTIVATION_CHECKPOINTING := 1",
+            "SFT_CLOUD_CORE_LR := 6e-6",
+            "SFT_CLOUD_CORE_LR_MIN := 1e-6",
+            "SFT_CLOUD_CORE_LR_WARMUP_STEPS := 150",
+            "SFT_CLOUD_CORE_CHECKPOINT_INTERVAL := 250",
+            "SFT_CLOUD_CORE_LOG_INTERVAL := 250",
+            "SFT_CLOUD_CHECKPOINT_KEEP := 3",
+            "SFT_CLOUD_STYLE_STEPS := 500",
+            "SFT_CLOUD_STYLE_BATCH := 2",
+            "SFT_CLOUD_STYLE_LR := 1.5e-6",
+            "SFT_CLOUD_STYLE_LR_MIN := 5e-7",
+            "SFT_CLOUD_STYLE_LR_WARMUP_STEPS := 50",
+            (
+                "SFT_CLOUD_PLAYFUL_SOURCE_WEIGHTS := "
+                "curated_core=1,style_playful_direct=7,default=1"
+            ),
+            (
+                "SFT_CLOUD_CALM_SOURCE_WEIGHTS := "
+                "curated_core=1,style_calm_precise=7,default=1"
+            ),
+        ]
+        for expected in expected_defaults:
+            self.assertIn(expected, contents)
+
+    def test_runpod_sft_300m_preflight_orders_non_training_gates(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+        recipe = _target_recipe(contents, "runpod-sft-300m-preflight")
+
+        expected_order = [
+            "$(MAKE) setup",
+            "scripts/preflight_sft_300m.py",
+            "$(MAKE) sft-import-public",
+            "$(MAKE) sft-audit",
+        ]
+        positions = [recipe.index(value) for value in expected_order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn('SFT_AUDIT_MODE="mixed"', recipe)
+        self.assertIn(
+            'SFT_AUDIT_REPORT="$(SFT_CLOUD_AUDIT_REPORT)"',
+            recipe,
+        )
+        self.assertNotIn("$(MAKE) sft-train", recipe)
+
+    def test_runpod_sft_300m_orders_training_evaluation_and_manifest(self) -> None:
+        makefile = Path(__file__).resolve().parents[1] / "Makefile"
+        contents = makefile.read_text(encoding="utf-8")
+        recipe = _target_recipe(contents, "runpod-sft-300m")
+
+        expected_order = [
+            "$(MAKE) runpod-sft-300m-preflight",
+            'SFT_RUN_DIR="$(SFT_CLOUD_CORE_RUN_DIR)"',
+            'SFT_EVAL_CHECKPOINT="$(SFT_CLOUD_CORE_RUN_DIR)/best.pt"',
+            'SFT_RUN_DIR="$(SFT_CLOUD_PLAYFUL_RUN_DIR)"',
+            'SFT_EVAL_CHECKPOINT="$(SFT_CLOUD_PLAYFUL_RUN_DIR)/best.pt"',
+            'SFT_RUN_DIR="$(SFT_CLOUD_CALM_RUN_DIR)"',
+            'SFT_EVAL_CHECKPOINT="$(SFT_CLOUD_CALM_RUN_DIR)/best.pt"',
+            "--verify-only",
+            "scripts/write_sft_manifest.py",
+        ]
+        positions = [recipe.index(value) for value in expected_order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn(
+            'SFT_BASE_CHECKPOINT="$(SFT_CLOUD_CORE_RUN_DIR)/best.pt"',
+            recipe,
+        )
+        self.assertEqual(
+            recipe.count(
+                'SFT_BASE_CHECKPOINT="$(SFT_CLOUD_CORE_RUN_DIR)/best.pt"'
+            ),
+            2,
+        )
+        self.assertIn(
+            'SFT_SOURCE_WEIGHTS="$(SFT_CLOUD_PLAYFUL_SOURCE_WEIGHTS)"',
+            recipe,
+        )
+        self.assertIn(
+            'SFT_SOURCE_WEIGHTS="$(SFT_CLOUD_CALM_SOURCE_WEIGHTS)"',
+            recipe,
+        )
+        expected_evaluation_paths = [
+            'SFT_EVAL_RESULTS="$(SFT_CLOUD_CORE_RUN_DIR)/evaluation.jsonl"',
+            (
+                'SFT_EVAL_SUMMARY="$(SFT_CLOUD_CORE_RUN_DIR)'
+                '/evaluation.summary.json"'
+            ),
+            (
+                'SFT_EVAL_RESULTS="$(SFT_CLOUD_PLAYFUL_RUN_DIR)'
+                '/evaluation.jsonl"'
+            ),
+            (
+                'SFT_EVAL_SUMMARY="$(SFT_CLOUD_PLAYFUL_RUN_DIR)'
+                '/evaluation.summary.json"'
+            ),
+            'SFT_EVAL_RESULTS="$(SFT_CLOUD_CALM_RUN_DIR)/evaluation.jsonl"',
+            (
+                'SFT_EVAL_SUMMARY="$(SFT_CLOUD_CALM_RUN_DIR)'
+                '/evaluation.summary.json"'
+            ),
+        ]
+        for path in expected_evaluation_paths:
+            self.assertIn(path, recipe)
+        self.assertEqual(recipe.count('recovery-current.json'), 3)
+        self.assertEqual(recipe.count('SFT_RESUME="$$resume"'), 3)
+        self.assertEqual(recipe.count('final.pt"'), 3)
+        self.assertIn(
+            '--base-checkpoint "$(SFT_CLOUD_BASE_CHECKPOINT)"',
+            recipe,
+        )
+        self.assertIn('--run-config "$(SFT_CLOUD_RUN_CONFIG)"', recipe)
+        self.assertIn(
+            '--core-run-dir "$(SFT_CLOUD_CORE_RUN_DIR)"',
+            recipe,
+        )
+        self.assertIn(
+            '--playful-run-dir "$(SFT_CLOUD_PLAYFUL_RUN_DIR)"',
+            recipe,
+        )
+        self.assertIn(
+            '--calm-run-dir "$(SFT_CLOUD_CALM_RUN_DIR)"',
+            recipe,
+        )
+
     def test_train_export_run_target_trains_times_exports_and_runs(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
         contents = makefile.read_text(encoding="utf-8")
@@ -721,9 +854,6 @@ class MakefileTests(unittest.TestCase):
             self.assertIn(marker, contents)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 def _target_recipe(contents: str, target: str) -> str:
     marker = f"\n{target}:"
     start = contents.index(marker) + 1
@@ -751,3 +881,7 @@ def _jsonl_count(path: Path) -> int:
     return sum(
         1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
     )
+
+
+if __name__ == "__main__":
+    unittest.main()
