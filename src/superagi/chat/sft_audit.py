@@ -44,6 +44,10 @@ _IDENTITY_OR_LIMITATION_RE = re.compile(
 )
 _IDENTITY_DOMAIN_RE = re.compile(r"(?:^|[_-])identity(?:$|[_-])", re.IGNORECASE)
 _TOPICAL_WORD_RE = re.compile(r"[a-z][a-z0-9']+")
+_CONTEXTUAL_FOLLOW_UP_RE = re.compile(
+    r"^(?:i|we)\s+(?:also|generally|mostly|normally|often|typically|usually)\b",
+    re.IGNORECASE,
+)
 _TOPICAL_STOPWORDS = frozenset(
     {
         "a",
@@ -134,9 +138,9 @@ _TOPIC_GROUPS: Mapping[str, frozenset[str]] = {
             "bread",
             "breakfast",
             "cook",
-            "dinner",
             "drink",
             "food",
+            "groceries",
             "ingredient",
             "meal",
             "oven",
@@ -179,6 +183,8 @@ _TOPIC_GROUPS: Mapping[str, frozenset[str]] = {
             "exercise",
             "fever",
             "health",
+            "constipated",
+            "constipation",
             "laxative",
             "medicine",
             "pain",
@@ -186,14 +192,18 @@ _TOPIC_GROUPS: Mapping[str, frozenset[str]] = {
             "sickness",
             "sleep",
             "strength",
+            "swelling",
+            "swollen",
             "symptom",
-            "training",
             "treatment",
         }
     ),
     "technology": frozenset(
         {
             "app",
+            "battery",
+            "charger",
+            "charging",
             "code",
             "compiler",
             "computer",
@@ -240,15 +250,19 @@ _TOPIC_GROUPS: Mapping[str, frozenset[str]] = {
             "airport",
             "bus",
             "car",
-            "drive",
+            "departure",
             "driver",
+            "driv",  # "driving" stem; avoids treating a storage drive as travel.
             "flight",
             "fuel",
             "hotel",
             "insurance",
             "mileage",
+            "operator",
             "passport",
+            "route",
             "train",
+            "transit",
             "travel",
         }
     ),
@@ -1228,6 +1242,8 @@ def classify_topical_relevance(prompt: str, answer: str) -> TopicalRelevance:
     if prompt_topics & answer_topics:
         return "supported"
     if prompt_topics and answer_topics and prompt_topics.isdisjoint(answer_topics):
+        if _CONTEXTUAL_FOLLOW_UP_RE.search(canonical_text(prompt)):
+            return "unscored"
         return "mismatch"
     return "unscored"
 
@@ -1235,30 +1251,39 @@ def classify_topical_relevance(prompt: str, answer: str) -> TopicalRelevance:
 def _conversation_topical_relevance(
     record: SftConversation,
 ) -> TopicalRelevance:
-    pair = _final_user_agi_pair(record)
-    if pair is None:
-        return "unscored"
-    _, answer = pair
-    prompt_context = " ".join(
-        message.content for message in record.messages if message.role == "user"
-    )
-    return classify_topical_relevance(prompt_context, answer)
+    pair_statuses = [
+        classify_topical_relevance(prompt, answer)
+        for prompt, answer in _user_agi_pairs(record)
+    ]
+    if "mismatch" in pair_statuses:
+        return "mismatch"
+    if pair_statuses and all(status == "supported" for status in pair_statuses):
+        return "supported"
+    return "unscored"
 
 
-def _final_user_agi_pair(record: SftConversation) -> tuple[str, str] | None:
-    for index in range(len(record.messages) - 1, 0, -1):
-        answer = record.messages[index]
+def _user_agi_pairs(record: SftConversation) -> tuple[tuple[str, str], ...]:
+    pairs: list[tuple[str, str]] = []
+    for index in range(1, len(record.messages)):
         prompt = record.messages[index - 1]
+        answer = record.messages[index]
         if answer.role == "agi" and prompt.role == "user":
-            return prompt.content, answer.content
-    return None
+            pairs.append((prompt.content, answer.content))
+    return tuple(pairs)
 
 
 def _topical_relevance_example(record: SftConversation) -> str:
-    pair = _final_user_agi_pair(record)
-    if pair is None:
+    pairs = _user_agi_pairs(record)
+    if not pairs:
         return record.source
-    prompt, answer = pair
+    prompt, answer = next(
+        (
+            pair
+            for pair in pairs
+            if classify_topical_relevance(*pair) == "mismatch"
+        ),
+        pairs[-1],
+    )
     return f"{record.source}: user={prompt[:80]!r} agi={answer[:100]!r}"
 
 

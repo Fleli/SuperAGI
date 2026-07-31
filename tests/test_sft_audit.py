@@ -355,6 +355,246 @@ class SftAuditTests(unittest.TestCase):
             0,
         )
 
+    def test_topical_relevance_flags_stale_answer_after_topic_reset(self) -> None:
+        report = self._audit(
+            [
+                {
+                    "source": "curated_core:repair",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "How do I boil pasta for dinner?",
+                        },
+                        {
+                            "role": "agi",
+                            "content": "Boil the pasta in salted water, then drain it.",
+                        },
+                        {
+                            "role": "user",
+                            "content": "Switch topics: how does a mortgage work?",
+                        },
+                        {
+                            "role": "agi",
+                            "content": "Boil the pasta until tender and add sauce.",
+                        },
+                    ],
+                }
+            ],
+            mode="curated",
+            config=AuditConfig(
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
+            ),
+        )
+
+        self.assertTrue(report.has_error("topical_mismatch"))
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_mismatch"],
+            1,
+        )
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_supported"],
+            0,
+        )
+
+    def test_topical_relevance_supports_valid_reference_follow_up(self) -> None:
+        report = self._audit(
+            [
+                {
+                    "source": "curated_core:everyday",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "How do I boil pasta for dinner?",
+                        },
+                        {
+                            "role": "agi",
+                            "content": "Boil the pasta in salted water, then drain it.",
+                        },
+                        {
+                            "role": "user",
+                            "content": "Can I freeze it after dinner?",
+                        },
+                        {
+                            "role": "agi",
+                            "content": "Yes. Freeze the cooked pasta in a sealed container.",
+                        },
+                    ],
+                }
+            ],
+            mode="curated",
+            config=AuditConfig(
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
+            ),
+        )
+
+        self.assertFalse(report.has_error("topical_mismatch"))
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_supported"],
+            1,
+        )
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_unscored"],
+            0,
+        )
+
+    def test_topical_relevance_avoids_false_mismatches_for_valid_context(
+        self,
+    ) -> None:
+        rows = [
+            _conversation(
+                "I want to save money on groceries.",
+                "Plan repeatable meals, compare unit prices, and shop your pantry first.",
+                source="curated_core:everyday",
+            ),
+            _conversation(
+                "What do I do if I miss my bus?",
+                "Check the next departure in the transit app or an alternate route.",
+                source="curated_core:everyday",
+            ),
+            _conversation(
+                "How do I make a long car ride less tiring?",
+                "Take breaks, share driving, drink water, and avoid heavy meals.",
+                source="curated_core:everyday",
+            ),
+            {
+                "source": "curated_core:health_safety",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "I have a cough and other respiratory symptoms.",
+                    },
+                    {
+                        "role": "agi",
+                        "content": "Rest and monitor the cough and respiratory symptoms.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "Can I go to my friend's dinner tonight?",
+                    },
+                    {
+                        "role": "agi",
+                        "content": "Skip close social plans while you may be contagious.",
+                    },
+                ],
+            },
+            {
+                "source": "curated_core:technology",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "My USB drive is unreadable.",
+                    },
+                    {
+                        "role": "agi",
+                        "content": "Do not format the USB drive if its files matter.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "It contains my only tax documents.",
+                    },
+                    {
+                        "role": "agi",
+                        "content": "Stop writing to the drive and consider professional recovery.",
+                    },
+                ],
+            },
+            {
+                "source": "curated_core:technology",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "Should I pay extra for a 4K laptop display?",
+                    },
+                    {
+                        "role": "agi",
+                        "content": "A sharper display helps dense text and image work.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "I mostly write and travel.",
+                    },
+                    {
+                        "role": "agi",
+                        "content": "A comfortable display with strong battery life is practical.",
+                    },
+                ],
+            },
+            _conversation(
+                "Can I leave my computer plugged in overnight?",
+                "Battery charging is managed by the computer, but use a quality charger.",
+                source="curated_core:technology",
+            ),
+        ]
+
+        report = self._audit(
+            rows,
+            mode="curated",
+            config=AuditConfig(
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
+            ),
+        )
+
+        self.assertFalse(report.has_error("topical_mismatch"))
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_supported"],
+            4,
+        )
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_mismatch"],
+            0,
+        )
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_unscored"],
+            3,
+        )
+
+    def test_topical_relevance_does_not_inherit_support_for_ambiguous_follow_up(
+        self,
+    ) -> None:
+        report = self._audit(
+            [
+                {
+                    "source": "curated_core:everyday",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "How do I boil pasta for dinner?",
+                        },
+                        {
+                            "role": "agi",
+                            "content": "Boil the pasta in salted water, then drain it.",
+                        },
+                        {
+                            "role": "user",
+                            "content": "Can you explain that more?",
+                        },
+                        {
+                            "role": "agi",
+                            "content": "Keep the water at a rolling boil until the pasta is tender.",
+                        },
+                    ],
+                }
+            ],
+            mode="curated",
+            config=AuditConfig(
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
+            ),
+        )
+
+        self.assertFalse(report.has_error("topical_mismatch"))
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_supported"],
+            0,
+        )
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_unscored"],
+            1,
+        )
+
     def test_topical_mismatch_is_advisory_outside_curated_core(self) -> None:
         report = self._audit(
             [

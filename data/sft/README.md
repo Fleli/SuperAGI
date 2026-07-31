@@ -33,11 +33,13 @@ Guidelines:
 - Use `runs/` for tokenized SFT artifacts, checkpoints, and experiment outputs; it is ignored by Git.
 - Do not commit private website logs or personally identifying user content.
 
-The strict audit includes a conservative topical-relevance proxy. It reports a
-conversation as supported only when the user context and final AGI answer share
-informative lexical stems or a small declared topic vocabulary; clear
-cross-topic pairs are mismatches, and ambiguous pairs are explicitly unscored.
-This proxy catches obvious answer swaps but does not establish factual correctness,
+The strict audit includes a conservative topical-relevance proxy. It scores
+every adjacent user-to-AGI pair against the immediately preceding user request,
+without concatenating older user turns. Any clear pair mismatch makes the
+conversation a mismatch; every pair must be supported for the conversation to
+be supported, and all other cases are explicitly unscored. Informative lexical
+stems and a small declared topic vocabulary provide the signal. This proxy
+catches obvious answer swaps but does not establish factual correctness,
 completeness, usefulness, or full instruction following. Human review and
 behavioral evaluation remain required.
 

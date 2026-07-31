@@ -49,8 +49,8 @@
     "multi_turn": 750,
     "single_turn": 750,
     "topical_relevance_mismatch": 0,
-    "topical_relevance_supported": 1210,
-    "topical_relevance_unscored": 290,
+    "topical_relevance_supported": 959,
+    "topical_relevance_unscored": 541,
     "uncertainty_safety": 120
   },
   "curated_sampling_mass": null,
