@@ -196,8 +196,17 @@ class TrainSftScriptTests(unittest.TestCase):
             active_before = train_sft._load_committed_recovery_bundle(run_dir)
             self.assertEqual(active_before.trainer_state["completed_step"], 1)
 
+            generations_dir = run_dir / "recovery" / "generations"
+            failed_generation_names: list[str] = []
             for boundary in ("generation_manifest", "pointer", "pointer"):
                 with self.subTest(boundary=boundary):
+                    failed_before = {
+                        path.name
+                        for path in generations_dir.glob(
+                            "generation-000000002-*"
+                        )
+                    }
+
                     def fail_at_boundary(name: str) -> None:
                         if name == boundary:
                             raise RuntimeError(f"injected failure: {boundary}")
@@ -221,16 +230,35 @@ class TrainSftScriptTests(unittest.TestCase):
                     ):
                         train_sft.main()
 
-            generation_dirs = list(
-                (run_dir / "recovery" / "generations").glob("generation-*")
+                    failed_after = {
+                        path.name
+                        for path in generations_dir.glob(
+                            "generation-000000002-*"
+                        )
+                    }
+                    created_names = failed_after - failed_before
+                    self.assertEqual(len(created_names), 1)
+                    failed_generation_names.extend(created_names)
+
+                    active_during_failure = (
+                        train_sft._load_committed_recovery_bundle(run_dir)
+                    )
+                    self.assertEqual(
+                        active_during_failure.generation_name,
+                        active_before.generation_name,
+                    )
+                    self.assertTrue(active_during_failure.generation_dir.is_dir())
+
+            self.assertEqual(len(failed_generation_names), 3)
+            self.assertEqual(len(set(failed_generation_names)), 3)
+            self.assertEqual(
+                len(
+                    list(
+                        generations_dir.glob("generation-000000002-*")
+                    )
+                ),
+                1,
             )
-            failed_step_names = [
-                path.name
-                for path in generation_dirs
-                if path.name.startswith("generation-000000002-")
-            ]
-            self.assertEqual(len(failed_step_names), 3)
-            self.assertEqual(len(set(failed_step_names)), 3)
 
             train_sft.prune_recovery_generations(run_dir, keep=2)
 
@@ -243,14 +271,12 @@ class TrainSftScriptTests(unittest.TestCase):
             self.assertEqual(
                 [
                     path.name
-                    for path in (
-                        run_dir / "recovery" / "generations"
-                    ).glob("generation-*")
+                    for path in generations_dir.glob("generation-*")
                 ],
                 [active_before.generation_name],
             )
 
-    def test_resume_republishes_snapshot_after_post_pointer_failure(self) -> None:
+    def test_final_step_resume_prunes_orphan_and_republishes_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             base_path, data_path = _write_tiny_training_fixture(root)
@@ -288,9 +314,42 @@ class TrainSftScriptTests(unittest.TestCase):
                 (run_dir / "snapshots" / "checkpoint-step-000000001.pt").exists()
             )
 
+            orphan_name = f"generation-000000001-{'a' * 32}"
+            orphan_dir = (
+                run_dir / "recovery" / "generations" / orphan_name
+            )
+            shutil.copytree(committed.generation_dir, orphan_dir)
+            orphan_manifest_path = orphan_dir / "manifest.json"
+            orphan_manifest = json.loads(
+                orphan_manifest_path.read_text(encoding="utf-8")
+            )
+            orphan_manifest["generation"] = orphan_name
+            orphan_manifest["previous_generation"] = committed.generation_name
+            active_prefix = f"generations/{committed.generation_name}/"
+            orphan_prefix = f"generations/{orphan_name}/"
+            for record in orphan_manifest["files"].values():
+                if record["path"].startswith(active_prefix):
+                    record["path"] = record["path"].replace(
+                        active_prefix,
+                        orphan_prefix,
+                        1,
+                    )
+            orphan_manifest_path.write_text(
+                json.dumps(orphan_manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(orphan_dir.is_dir())
+
             with patch.object(sys, "argv", argv + ["--resume"]):
                 self.assertEqual(train_sft.main(), 0)
 
+            active_after = train_sft._load_committed_recovery_bundle(run_dir)
+            self.assertEqual(
+                active_after.generation_name,
+                committed.generation_name,
+            )
+            self.assertTrue(active_after.generation_dir.is_dir())
+            self.assertFalse(orphan_dir.exists())
             retained_snapshot = (
                 run_dir / "snapshots" / "checkpoint-step-000000001.pt"
             )

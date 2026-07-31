@@ -377,6 +377,10 @@ def main() -> int:
         first_step = _required_int(resume_state, "completed_step") + 1
         if current_bundle is None:
             raise RuntimeError("validated resume is missing its recovery bundle")
+        prune_recovery_generations(
+            run_dir,
+            keep=args.checkpoint_keep,
+        )
         publish_recovery_aliases(
             current_bundle,
             latest_path=latest_path,
