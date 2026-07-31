@@ -22,8 +22,12 @@ Guidelines:
 - Use the production curated core with filtered public data during broad
   instruction training, then sample by source weights so reviewed behavior is
   not drowned by high-volume public chat data.
-- Use `stages/style-playful-direct.jsonl` last and lightly. It nudges tone
-  without replacing the anchor and broad behavior.
+- `styles/playful-direct.jsonl` and `styles/calm-precise.jsonl` are the reviewed
+  production personality corpora. Each contains 500 conversations with an
+  exact 250 single-turn and 250 multi-turn split.
+- Train either style from the same broad checkpoint. Each style phase mixes
+  `curated/core.jsonl` with its personality corpus so tone does not replace
+  the core instruction-following behavior.
 - Use `diagnostics/overfit-50.jsonl` only as a pipeline sanity check. It is a
   tiny identity dataset designed to overfit hard, not a balanced chat dataset.
 - Keep AGI answers concise and honest about model limitations.
@@ -126,6 +130,18 @@ This writes separate checkpoints for each phase:
 - `data/sft/runs/chat-anchor.pt`
 - `data/sft/runs/chat-broad.pt`
 - `data/sft/runs/chat-playful-direct.pt`
+- `data/sft/runs/chat-calm-precise.pt`
+
+The final two checkpoints are sibling variants trained from
+`data/sft/runs/chat-broad.pt`. Run either personality phase independently with:
+
+```bash
+make sft-style-playful \
+  SFT_STYLE_PLAYFUL_BASE_CHECKPOINT=data/sft/runs/chat-broad.pt
+
+make sft-style-calm \
+  SFT_STYLE_CALM_BASE_CHECKPOINT=data/sft/runs/chat-broad.pt
+```
 
 For local testing of a downloaded 300M checkpoint, copy the cloud checkpoint to
 `./best-300m-current.pt`, then run a small smoke pass:
@@ -150,7 +166,7 @@ The local targets import public SFT data into
 
 - anchor behavior into `data/sft/runs/chat-anchor-local.pt`
 - public instruction/chat behavior into `data/sft/runs/chat-public-local.pt`
-- light style into `data/sft/runs/chat-style-local.pt`
+- a light reviewed playful style into `data/sft/runs/chat-style-local.pt`
 
 The local public phase intentionally avoids `stages/broad-mixed.jsonl` by
 default because that synthetic broad file can dominate small local runs. It

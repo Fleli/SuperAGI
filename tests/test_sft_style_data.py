@@ -8,6 +8,7 @@ from collections import Counter
 from pathlib import Path
 
 from superagi.chat.sft import load_sft_records
+from superagi.chat.sft_audit import audit_sft_corpus
 from superagi.chat.sft_quality import canonical_text, conversation_fingerprint
 
 
@@ -62,6 +63,61 @@ NUMBERED_TEMPLATE_RE = re.compile(
     r"\b(?:style|example|variant|response|prompt)\s*(?:number|no\.?)?\s*\d+\b",
     re.IGNORECASE,
 )
+FALSE_PERSONAL_CLAIM_RE = re.compile(
+    r"\b(?:"
+    r"i\s+(?:am|['\u2019]m)\s+(?:an?\s+|the\s+)?"
+    r"(?:citizen|doctor|lawyer|teacher|engineer|student|parent|"
+    r"employee|manager|professional)|"
+    r"i\s+(?:live|work|grew\s+up|was\s+born|have\s+(?:worked|lived))\b|"
+    r"my\s+(?:salary|employer|job|children|wife|husband|home)\b"
+    r")",
+    re.IGNORECASE,
+)
+WORD_RE = re.compile(r"[a-z0-9]+(?:'[a-z0-9]+)?")
+SENTENCE_END_RE = re.compile(r"(?<=[.!?])(?:[\"'\u201d\u2019)]*)\s+")
+CONTEXT_FAILURE_PATTERNS = (
+    "as mentioned above",
+    "same as above",
+    "try it online",
+    "please provide more information",
+    "i do not understand the question",
+    "i don't understand the question",
+    "what do you mean",
+)
+
+
+def _agi_turns(records: list[object]) -> list[str]:
+    return [
+        message.content
+        for record in records
+        for message in record.messages
+        if message.role == "agi"
+    ]
+
+
+def _word_trigrams(text: str) -> frozenset[tuple[str, str, str]]:
+    words = WORD_RE.findall(canonical_text(text))
+    return frozenset(zip(words, words[1:], words[2:]))
+
+
+def _trigram_jaccard(left: str, right: str) -> float:
+    left_ngrams = _word_trigrams(left)
+    right_ngrams = _word_trigrams(right)
+    if not left_ngrams or not right_ngrams:
+        return 0.0
+    return len(left_ngrams & right_ngrams) / len(left_ngrams | right_ngrams)
+
+
+def _user_transcript(record: object) -> tuple[str, ...]:
+    return tuple(
+        canonical_text(message.content)
+        for message in record.messages
+        if message.role == "user"
+    )
+
+
+def _first_sentence(text: str) -> str:
+    return canonical_text(SENTENCE_END_RE.split(text.strip(), maxsplit=1)[0])
 
 
 def _read_raw_records(path: Path) -> list[dict[str, object]]:
@@ -155,6 +211,79 @@ class StyleSftDataTests(unittest.TestCase):
         }
         self.assertFalse(calm_answers.intersection(playful_answers))
 
+    def test_every_agi_turn_is_distinct_across_styles(self) -> None:
+        calm_turns = _agi_turns(self.records["calm-precise"])
+        playful_turns = _agi_turns(self.records["playful-direct"])
+        exact_duplicates = sorted(set(calm_turns).intersection(playful_turns))
+        self.assertEqual(exact_duplicates, [])
+
+    def test_cross_style_near_duplicate_turns_stay_below_explicit_limits(self) -> None:
+        calm_turns = _agi_turns(self.records["calm-precise"])
+        playful_turns = _agi_turns(self.records["playful-direct"])
+        near_pairs: list[tuple[float, str, str]] = []
+        for calm_turn in calm_turns:
+            for playful_turn in playful_turns:
+                similarity = _trigram_jaccard(calm_turn, playful_turn)
+                if similarity >= 0.65:
+                    near_pairs.append((similarity, calm_turn, playful_turn))
+
+        at_least_065 = [pair for pair in near_pairs if pair[0] >= 0.65]
+        at_least_080 = [pair for pair in near_pairs if pair[0] >= 0.80]
+        self.assertLessEqual(
+            len(at_least_065),
+            20,
+            sorted(at_least_065, reverse=True)[:10],
+        )
+        self.assertLessEqual(
+            len(at_least_080),
+            5,
+            sorted(at_least_080, reverse=True)[:10],
+        )
+
+    def test_playful_turns_do_not_extend_calm_turns_with_suffixes(self) -> None:
+        calm_turns = [
+            canonical_text(turn) for turn in _agi_turns(self.records["calm-precise"])
+        ]
+        playful_turns = [
+            canonical_text(turn)
+            for turn in _agi_turns(self.records["playful-direct"])
+        ]
+        prefix_extensions = [
+            (calm_turn, playful_turn)
+            for calm_turn in calm_turns
+            for playful_turn in playful_turns
+            if calm_turn and playful_turn.startswith(calm_turn)
+        ]
+        self.assertEqual(prefix_extensions, [])
+
+    def test_shared_prompts_receive_contrasting_first_sentences(self) -> None:
+        calm_by_prompt = {
+            _user_transcript(record): record.messages[-1].content
+            for record in self.records["calm-precise"]
+        }
+        playful_by_prompt = {
+            _user_transcript(record): record.messages[-1].content
+            for record in self.records["playful-direct"]
+        }
+        shared_prompts = sorted(set(calm_by_prompt).intersection(playful_by_prompt))
+        self.assertTrue(shared_prompts)
+
+        same_first_sentences = [
+            prompt
+            for prompt in shared_prompts
+            if _first_sentence(calm_by_prompt[prompt])
+            == _first_sentence(playful_by_prompt[prompt])
+        ]
+        contrast_share = 1.0 - len(same_first_sentences) / len(shared_prompts)
+        self.assertGreaterEqual(
+            contrast_share,
+            0.90,
+            (
+                f"{len(same_first_sentences)} of {len(shared_prompts)} shared "
+                f"prompts have the same final-answer first sentence"
+            ),
+        )
+
     def test_contains_no_identity_training_or_generated_artifacts(self) -> None:
         for name, records in self.records.items():
             with self.subTest(style=name):
@@ -163,12 +292,36 @@ class StyleSftDataTests(unittest.TestCase):
                         content = message.content
                         canonical = canonical_text(content)
                         self.assertIsNone(IDENTITY_TRAINING_RE.search(content), content)
+                        if message.role == "agi":
+                            self.assertIsNone(
+                                FALSE_PERSONAL_CLAIM_RE.search(content),
+                                content,
+                            )
                         self.assertIsNone(SYNTHETIC_TAG_RE.search(content), content)
                         self.assertIsNone(NUMBERED_TEMPLATE_RE.search(content), content)
                         for token in SPECIAL_TOKENS:
                             self.assertNotIn(token, content.lower())
                         for artifact in FORBIDDEN_ARTIFACTS:
                             self.assertNotIn(artifact, canonical)
+
+    def test_multi_turn_examples_answer_the_contextual_follow_up(self) -> None:
+        for name, records in self.records.items():
+            with self.subTest(style=name):
+                for record in records:
+                    if len(record.messages) != 4:
+                        continue
+                    first_answer = canonical_text(record.messages[1].content)
+                    final_answer = canonical_text(record.messages[3].content)
+                    self.assertNotEqual(first_answer, final_answer)
+                    self.assertFalse(final_answer.startswith(first_answer))
+
+                    self.assertGreaterEqual(
+                        len(WORD_RE.findall(final_answer)),
+                        8,
+                        record.messages,
+                    )
+                    for pattern in CONTEXT_FAILURE_PATTERNS:
+                        self.assertNotIn(pattern, final_answer, record.messages)
 
     def test_has_no_repeated_framing_labels_or_dominant_opening(self) -> None:
         for name, records in self.records.items():
@@ -189,6 +342,34 @@ class StyleSftDataTests(unittest.TestCase):
                     0.05,
                     f"{name}: opening {top_opening!r} occurs {top_count} times",
                 )
+
+    def test_answers_do_not_repeat_mechanical_sentence_templates(self) -> None:
+        for name, records in self.records.items():
+            with self.subTest(style=name):
+                for answer in _agi_turns(records):
+                    sentence_parts = [
+                        sentence.strip()
+                        for sentence in SENTENCE_END_RE.split(answer)
+                        if sentence.strip()
+                    ]
+                    openings = [
+                        tuple(WORD_RE.findall(canonical_text(sentence))[:4])
+                        for sentence in sentence_parts
+                    ]
+                    repeated_openings = [
+                        opening
+                        for opening, count in Counter(openings).items()
+                        if len(opening) == 4 and count > 1
+                    ]
+                    self.assertEqual(repeated_openings, [], answer)
+
+                    for index, left in enumerate(sentence_parts):
+                        for right in sentence_parts[index + 1 :]:
+                            self.assertLess(
+                                _trigram_jaccard(left, right),
+                                0.60,
+                                answer,
+                            )
 
     def test_records_are_sorted_by_source_and_conversation_fingerprint(self) -> None:
         for name, records in self.records.items():
@@ -223,11 +404,16 @@ class StyleSftDataTests(unittest.TestCase):
             any("time" in key.lower() for key in json.dumps(metadata).split('"'))
         )
 
-    def test_committed_strict_style_audits_pass(self) -> None:
+    def test_committed_strict_style_audits_match_fresh_passing_audits(self) -> None:
         for name, spec in STYLE_SPECS.items():
             with self.subTest(style=name):
-                report = json.loads(spec["audit_path"].read_text(encoding="utf-8"))
-                self.assertTrue(report["ok"])
+                committed_report = json.loads(
+                    spec["audit_path"].read_text(encoding="utf-8")
+                )
+                fresh_report = audit_sft_corpus((spec["path"],), mode="style")
+                self.assertTrue(fresh_report.ok, fresh_report.findings)
+                report = json.loads(fresh_report.to_json())
+                self.assertEqual(committed_report, report)
                 self.assertEqual(report["mode"], "style")
                 self.assertEqual(report["conversation_count"], 500)
                 self.assertEqual(report["coverage_categories"]["single_turn"], 250)

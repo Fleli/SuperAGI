@@ -216,7 +216,8 @@ class MakefileTests(unittest.TestCase):
 
         self.assertIn("sft-anchor", contents)
         self.assertIn("sft-broad", contents)
-        self.assertIn("sft-style", contents)
+        self.assertIn("sft-style-playful", contents)
+        self.assertIn("sft-style-calm", contents)
         self.assertIn("sft-staged", contents)
         self.assertIn("SFT_ANCHOR_DATA := data/sft/stages/anchor.jsonl", contents)
         self.assertIn(
@@ -232,18 +233,55 @@ class MakefileTests(unittest.TestCase):
             contents,
         )
         self.assertNotIn("broad-mixed=2", contents)
-        self.assertIn("SFT_STYLE_DATA := data/sft/stages/style-playful-direct.jsonl", contents)
+        self.assertIn(
+            "SFT_STYLE_PLAYFUL_DATA := data/sft/curated/core.jsonl,data/sft/styles/playful-direct.jsonl",
+            contents,
+        )
+        self.assertIn(
+            "SFT_STYLE_CALM_DATA := data/sft/curated/core.jsonl,data/sft/styles/calm-precise.jsonl",
+            contents,
+        )
+        self.assertIn(
+            "SFT_STYLE_PLAYFUL_SOURCE_WEIGHTS := curated_core=1,style_playful_direct=2,default=1",
+            contents,
+        )
+        self.assertIn(
+            "SFT_STYLE_CALM_SOURCE_WEIGHTS := curated_core=1,style_calm_precise=2,default=1",
+            contents,
+        )
+        self.assertNotIn("data/sft/stages/style-playful-direct.jsonl", contents)
         self.assertIn("SFT_ANCHOR_OUT := data/sft/runs/chat-anchor.pt", contents)
         self.assertIn("SFT_BROAD_BASE_CHECKPOINT := $(SFT_ANCHOR_OUT)", contents)
-        self.assertIn("SFT_STYLE_BASE_CHECKPOINT := $(SFT_BROAD_OUT)", contents)
-        self.assertIn("SFT_STAGED_OUT := $(SFT_STYLE_OUT)", contents)
+        self.assertIn(
+            "SFT_STYLE_PLAYFUL_BASE_CHECKPOINT := $(SFT_BROAD_OUT)",
+            contents,
+        )
+        self.assertIn(
+            "SFT_STYLE_CALM_BASE_CHECKPOINT := $(SFT_BROAD_OUT)",
+            contents,
+        )
+        self.assertIn(
+            "SFT_STAGED_PLAYFUL_OUT := $(SFT_STYLE_PLAYFUL_OUT)",
+            contents,
+        )
+        self.assertIn("SFT_STAGED_CALM_OUT := $(SFT_STYLE_CALM_OUT)", contents)
         self.assertIn('SFT_DATA="$(SFT_ANCHOR_DATA)"', contents)
         self.assertIn('SFT_DATA="$(SFT_BROAD_DATA)"', contents)
         self.assertIn('SFT_SOURCE_WEIGHTS="$(SFT_BROAD_SOURCE_WEIGHTS)"', contents)
-        self.assertIn('SFT_DATA="$(SFT_STYLE_DATA)"', contents)
+        self.assertIn('SFT_DATA="$(SFT_STYLE_PLAYFUL_DATA)"', contents)
+        self.assertIn('SFT_DATA="$(SFT_STYLE_CALM_DATA)"', contents)
+        self.assertIn(
+            'SFT_SOURCE_WEIGHTS="$(SFT_STYLE_PLAYFUL_SOURCE_WEIGHTS)"',
+            contents,
+        )
+        self.assertIn(
+            'SFT_SOURCE_WEIGHTS="$(SFT_STYLE_CALM_SOURCE_WEIGHTS)"',
+            contents,
+        )
         self.assertIn('$(MAKE) sft-anchor', contents)
         self.assertIn('$(MAKE) sft-broad', contents)
-        self.assertIn('$(MAKE) sft-style', contents)
+        self.assertIn('$(MAKE) sft-style-playful', contents)
+        self.assertIn('$(MAKE) sft-style-calm', contents)
         self.assertIn("==> [sft-staged] Finished staged supervised chat training", contents)
 
     def test_local_sft_targets_run_staged_behavior_then_public_then_style(self) -> None:
@@ -259,6 +297,10 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("SFT_LOCAL_IMPORT_OUT := data/sft/imported/local-public-mixed.jsonl", contents)
         self.assertIn("SFT_LOCAL_ANCHOR_DATA := data/sft/stages/anchor.jsonl", contents)
         self.assertIn("SFT_LOCAL_PUBLIC_DATA := data/sft/stages/anchor.jsonl,$(SFT_LOCAL_IMPORT_OUT)", contents)
+        self.assertIn(
+            "SFT_LOCAL_STYLE_DATA := data/sft/curated/core.jsonl,data/sft/styles/playful-direct.jsonl",
+            contents,
+        )
         self.assertIn("SFT_LOCAL_PUBLIC_SOURCE_WEIGHTS := anchor=4,no_robots=1.5,openassistant=1.25,dolly=1,ultrachat=0.8,wildchat=0.25,default=1", contents)
         self.assertIn("SFT_LOCAL_PUBLIC_MAX_EXAMPLES := 4000", contents)
         self.assertIn("SFT_LOCAL_SMOKE_MAX_EXAMPLES_PER_SOURCE := 100", contents)
