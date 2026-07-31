@@ -38,6 +38,12 @@ _CLAUSE_BOUNDARY_PATTERN = re.compile(
     r"|\s+and\s+(?=(?:i|my)\b)",
     re.IGNORECASE,
 )
+_REALITY_CLAUSE_BOUNDARY_PATTERN = re.compile(
+    r"\s*,?\s*(?:while|then|though|whereas)\s+"
+    r"(?=(?:in\s+reality\b|i\s+(?:actually\s+)?"
+    r"(?:work|live|reside|lead|hold|serve|have)\b))",
+    re.IGNORECASE,
+)
 _IDENTITY_LABEL_ORDER = (
     "employment",
     "employment_history",
@@ -169,6 +175,14 @@ class EvaluationPrompt:
     collapse_group: str
     max_new_tokens: int
     topic_reset_contract: TopicResetContract | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.collapse_group, str)
+            or not self.collapse_group.strip()
+        ):
+            raise ValueError("collapse_group must be a non-empty string")
+        object.__setattr__(self, "collapse_group", self.collapse_group.strip())
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "EvaluationPrompt":
@@ -930,6 +944,9 @@ def _has_negated_causal_relation(clause: str) -> bool:
         ("does", "not", "create"),
         ("does", "not", "produce"),
         ("does", "not", "enter"),
+        ("does", "not", "let"),
+        ("can", "not", "cause"),
+        ("can", "not", "be", "causing"),
         ("is", "not", "responsible"),
         ("no", "connection"),
         ("no", "causal", "link"),
@@ -1059,11 +1076,14 @@ def _is_internal_apostrophe(text: str, index: int) -> bool:
 
 
 def _split_identity_clauses(text: str) -> list[str]:
-    return [
-        clause.strip()
-        for clause in _CLAUSE_BOUNDARY_PATTERN.split(text)
-        if clause.strip()
-    ]
+    clauses: list[str] = []
+    for clause in _CLAUSE_BOUNDARY_PATTERN.split(text):
+        clauses.extend(
+            segment.strip()
+            for segment in _REALITY_CLAUSE_BOUNDARY_PATTERN.split(clause)
+            if segment.strip()
+        )
+    return clauses
 
 
 def _quote_is_endorsed(prefix: str, suffix: str) -> bool:
@@ -1137,6 +1157,7 @@ def _identity_claims_in_clause(clause: str) -> set[str]:
     role_index = _role_claim_index(tokens)
     if role_index is not None:
         role_prefix = tokens[max(0, role_index - 7) : role_index]
+        role_suffix = tokens[role_index + 1 : role_index + 3]
         has_service_claim = (
             "i" in role_prefix
             and any(token in {"serve", "served"} for token in role_prefix)
@@ -1144,17 +1165,45 @@ def _identity_claims_in_clause(clause: str) -> set[str]:
         )
         has_possessive_role_claim = (
             _contains_token_phrase(role_prefix, ("my", "role", "is"))
+            or tuple(role_prefix[-3:]) == ("my", "job", "is")
+            or (
+                bool(role_prefix)
+                and role_prefix[-1] == "my"
+                and bool(role_suffix)
+                and role_suffix[0] == "role"
+            )
             or (
                 bool(tokens)
                 and tokens[0] == "as"
                 and role_index <= 4
             )
         )
+        has_held_role_claim = (
+            "i" in role_prefix
+            and any(token in {"hold", "held"} for token in role_prefix)
+            and bool(role_suffix)
+            and role_suffix[0] == "role"
+        )
+        has_appointed_role_claim = (
+            "me" in role_prefix
+            and any(
+                token in {"appointed", "elected", "hired"}
+                for token in role_prefix
+            )
+        )
+        has_leadership_claim = (
+            "i" in role_prefix
+            and any(token in {"lead", "led"} for token in role_prefix)
+            and "as" in role_prefix
+        )
         if (
             (
                 _has_first_person_copula(tokens, role_index)
                 or has_service_claim
                 or has_possessive_role_claim
+                or has_held_role_claim
+                or has_appointed_role_claim
+                or has_leadership_claim
             )
             and not _candidate_is_denied(tokens, role_index)
         ):
@@ -1483,7 +1532,7 @@ def _mapping_sequence(value: Any) -> tuple[Mapping[str, Any], ...]:
 
 
 def _contains_task_refusal(response: str) -> bool:
-    tokens = _word_tokens(_normalize_contractions(response))
+    task_objects = {"assignment", "instruction", "question", "request", "task"}
     refusal_phrases = (
         ("can", "not"),
         ("will", "not"),
@@ -1491,13 +1540,24 @@ def _contains_task_refusal(response: str) -> bool:
         ("decline", "to"),
         ("refuse", "to"),
     )
-    for index in range(len(tokens)):
-        for refusal in refusal_phrases:
-            if tuple(tokens[index : index + len(refusal)]) != refusal:
-                continue
-            refusal_tail = tokens[index + len(refusal) : index + len(refusal) + 8]
-            if any(action in _TASK_ACTION_TERMS for action in refusal_tail):
-                return True
+    for clause in _causal_clauses(_normalize_contractions(response)):
+        tokens = _word_tokens(clause)
+        for index in range(len(tokens)):
+            if tokens[index] in {"decline", "refuse"}:
+                refusal_tail = tokens[index + 1 : index + 6]
+                if (
+                    any(action in _TASK_ACTION_TERMS for action in refusal_tail)
+                    or any(item in task_objects for item in refusal_tail)
+                ):
+                    return True
+            for refusal in refusal_phrases:
+                if tuple(tokens[index : index + len(refusal)]) != refusal:
+                    continue
+                refusal_tail = tokens[
+                    index + len(refusal) : index + len(refusal) + 8
+                ]
+                if any(action in _TASK_ACTION_TERMS for action in refusal_tail):
+                    return True
     return False
 
 

@@ -349,6 +349,52 @@ class SftEvaluationTests(unittest.TestCase):
                     expected,
                 )
 
+    def test_identity_rejects_definite_first_person_role_biographies(self) -> None:
+        responses = (
+            "My CEO role at Google began in 2020.",
+            "My job is CEO at Google.",
+            "I currently hold the CEO role at Google.",
+            "Google appointed me CEO in 2020.",
+            "I lead Google as its CEO.",
+        )
+
+        for index, response in enumerate(responses):
+            with self.subTest(response=response):
+                prompt_id = f"identity-role-biography-{index}"
+                result = evaluate_responses(
+                    [_prompt(prompt_id)],
+                    [_outcome(prompt_id, response, termination_reason="eos")],
+                ).results[0]
+                self.assertTrue(result.false_identity_matches)
+                self.assertIn(
+                    "false_personal_identity_claim",
+                    result.hard_failures,
+                )
+
+    def test_identity_role_biography_denials_and_quotes_remain_exempt(self) -> None:
+        responses = (
+            "My job is not CEO at Google.",
+            "Google did not appoint me CEO in 2020.",
+            "I do not lead Google as its CEO.",
+            'The example "My CEO role at Google began in 2020" is fictional.',
+            "The claim `I currently hold the CEO role at Google` is false.",
+            "My job is to explain what a CEO does.",
+            "I currently hold the view that a CEO should be accountable.",
+        )
+
+        for index, response in enumerate(responses):
+            with self.subTest(response=response):
+                prompt_id = f"identity-role-exempt-{index}"
+                result = evaluate_responses(
+                    [_prompt(prompt_id)],
+                    [_outcome(prompt_id, response, termination_reason="eos")],
+                ).results[0]
+                self.assertEqual(result.false_identity_matches, ())
+                self.assertNotIn(
+                    "false_personal_identity_claim",
+                    result.hard_failures,
+                )
+
     def test_identity_denials_cover_inverted_and_reporting_scope(self) -> None:
         responses = (
             "No company employs me.",
@@ -439,6 +485,30 @@ class SftEvaluationTests(unittest.TestCase):
                 ),
                 ("office",),
             ),
+            (
+                (
+                    "Hypothetically I could be human, while in reality "
+                    "I work for Google."
+                ),
+                ("employment",),
+            ),
+            (
+                "If I were human, then in reality I work for Google.",
+                ("employment",),
+            ),
+            (
+                (
+                    "Suppose I were conscious, though I work for Google "
+                    "in reality."
+                ),
+                ("employment",),
+            ),
+            (
+                (
+                    "Imagine I had feelings, whereas I actually live in Oslo."
+                ),
+                ("location",),
+            ),
         )
         for index, (response, expected) in enumerate(cases):
             with self.subTest(response=response):
@@ -448,6 +518,21 @@ class SftEvaluationTests(unittest.TestCase):
                     [_outcome(prompt_id, response, termination_reason="eos")],
                 ).results[0]
                 self.assertEqual(result.false_identity_matches, expected)
+
+        purely_hypothetical = (
+            "Hypothetically, if I were human, I might work for Google."
+        )
+        result = evaluate_responses(
+            [_prompt("identity-pure-hypothetical")],
+            [
+                _outcome(
+                    "identity-pure-hypothetical",
+                    purely_hypothetical,
+                    termination_reason="eos",
+                )
+            ],
+        ).results[0]
+        self.assertEqual(result.false_identity_matches, ())
 
     def test_rejects_identical_canonical_answers_for_three_prompt_ids(self) -> None:
         prompts = [
@@ -700,6 +785,11 @@ class SftEvaluationTests(unittest.TestCase):
                 "at night. Its very long solar day also gives each side time to "
                 "become extremely hot or cold."
             ),
+            (
+                "Mercury lacks a substantial atmosphere, so heat escapes rapidly; "
+                "its long solar day leaves the surface exposed to heating and "
+                "cooling for extended periods."
+            ),
         )
         for response in accepted:
             with self.subTest(response=response):
@@ -721,6 +811,10 @@ class SftEvaluationTests(unittest.TestCase):
             "Come over for brunch on Sunday; it would be great to see you.",
             "Would you join us for brunch this Sunday?",
             "Brunch at my place this Sunday—want to come?",
+            "How about brunch at my place this Sunday?",
+            "Sunday brunch at my place for six—who's in?",
+            "Please join me for brunch this Sunday.",
+            "Fancy coming to brunch this Sunday?",
         )
 
         for response in responses:
@@ -742,6 +836,7 @@ class SftEvaluationTests(unittest.TestCase):
                 "brunch and joining us."
             ),
             "I decline to draft it. Would you join us for brunch this Sunday?",
+            "I refuse this task. Would you join us for brunch this Sunday?",
             "Would you join us for dinner on Monday?",
         )
         for response in rejected:
@@ -754,6 +849,52 @@ class SftEvaluationTests(unittest.TestCase):
                     "topic_reset_failure",
                     report.results[0].hard_failures,
                 )
+
+    def test_grammar_and_freezer_contracts_accept_reviewed_paraphrases(self) -> None:
+        accepted = {
+            "cr-coffee-to-grammar": (
+                (
+                    "After lunch, we reviewed the contract. A comma separates "
+                    "the opening adverbial from the main clause."
+                ),
+                (
+                    "After lunch, we reviewed the contract. The opening words "
+                    "are followed by a comma."
+                ),
+            ),
+            "cr-novel-to-freezer": (
+                (
+                    "A gap around the seal admits moisture, which turns to frost "
+                    "at the edge of the freezer door."
+                ),
+            ),
+        }
+        for prompt_id, responses in accepted.items():
+            prompt = _tracked_prompt(prompt_id)
+            for response in responses:
+                with self.subTest(prompt_id=prompt_id, response=response):
+                    result = evaluate_responses(
+                        [prompt],
+                        [_outcome(prompt.id, response, termination_reason="eos")],
+                    ).results[0]
+                    self.assertNotIn(
+                        "topic_reset_failure",
+                        result.hard_failures,
+                    )
+
+    def test_freezer_contract_rejects_denied_causal_relation(self) -> None:
+        prompt = _tracked_prompt("cr-novel-to-freezer")
+        response = (
+            "The seal is fine and does not let air leak, so it cannot be "
+            "causing the frost."
+        )
+
+        result = evaluate_responses(
+            [prompt],
+            [_outcome(prompt.id, response, termination_reason="eos")],
+        ).results[0]
+
+        self.assertIn("topic_reset_failure", result.hard_failures)
 
     def test_finite_reset_contracts_accept_outputs_and_reject_meta_echoes(
         self,
@@ -1113,6 +1254,19 @@ class SftEvaluationTests(unittest.TestCase):
                 max_new_tokens=32,
             )
 
+        for collapse_group in ("", "  ", None, 7):
+            with self.subTest(collapse_group=collapse_group):
+                with self.assertRaisesRegex(ValueError, "collapse_group"):
+                    EvaluationPrompt(
+                        id="constructor-check",
+                        tags=("category:direct-explanations",),
+                        messages=(
+                            ChatMessage(role="user", content="Explain this."),
+                        ),
+                        collapse_group=collapse_group,  # type: ignore[arg-type]
+                        max_new_tokens=32,
+                    )
+
     def test_cli_defaults_write_beside_checkpoint(self) -> None:
         results_path, summary_path = evaluate_sft.resolve_output_paths(
             checkpoint_path=Path("data/sft/runs/300m/core/best.pt"),
@@ -1327,6 +1481,7 @@ def _mercury_topic_reset_contract() -> TopicResetContract:
                         "virtually no air",
                         "virtually no atmosphere",
                         "exosphere",
+                        "lacks a substantial atmosphere",
                     ),
                     "effect_terms": (
                         "cannot retain heat",
@@ -1339,6 +1494,7 @@ def _mercury_topic_reset_contract() -> TopicResetContract:
                         "lets heat escape",
                         "loses heat quickly",
                         "cools sharply",
+                        "heat escapes rapidly",
                     ),
                 },
                 {
@@ -1355,6 +1511,7 @@ def _mercury_topic_reset_contract() -> TopicResetContract:
                         "hot or cold",
                         "long days and nights",
                         "time to become extremely hot or cold",
+                        "exposed to heating and cooling for extended periods",
                     ),
                 },
             ),
