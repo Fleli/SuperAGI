@@ -48,6 +48,11 @@ _CONTEXTUAL_FOLLOW_UP_RE = re.compile(
     r"^(?:i|we)\s+(?:also|generally|mostly|normally|often|typically|usually)\b",
     re.IGNORECASE,
 )
+_EXPLICIT_QUESTION_RE = re.compile(
+    r"\?|(?:^|[.!;,]\s+)(?:are|can|could|did|do|does|how|is|should|what|when|"
+    r"where|which|who|why|will|would)\b",
+    re.IGNORECASE,
+)
 _TOPICAL_STOPWORDS = frozenset(
     {
         "a",
@@ -1242,7 +1247,9 @@ def classify_topical_relevance(prompt: str, answer: str) -> TopicalRelevance:
     if prompt_topics & answer_topics:
         return "supported"
     if prompt_topics and answer_topics and prompt_topics.isdisjoint(answer_topics):
-        if _CONTEXTUAL_FOLLOW_UP_RE.search(canonical_text(prompt)):
+        if _CONTEXTUAL_FOLLOW_UP_RE.search(
+            canonical_text(prompt)
+        ) and not _EXPLICIT_QUESTION_RE.search(prompt):
             return "unscored"
         return "mismatch"
     return "unscored"

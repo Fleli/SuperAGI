@@ -595,6 +595,32 @@ class SftAuditTests(unittest.TestCase):
             1,
         )
 
+    def test_topical_relevance_does_not_exempt_an_explicit_question(self) -> None:
+        report = self._audit(
+            [
+                _conversation(
+                    "I usually invest in index funds. How should I diversify?",
+                    "Boil the pasta in salted water, then drain it.",
+                    source="curated_core:finance",
+                )
+            ],
+            mode="curated",
+            config=AuditConfig(
+                required_curated_domains=(),
+                require_curated_turn_coverage=False,
+            ),
+        )
+
+        self.assertTrue(report.has_error("topical_mismatch"))
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_mismatch"],
+            1,
+        )
+        self.assertEqual(
+            report.coverage_categories["topical_relevance_unscored"],
+            0,
+        )
+
     def test_topical_mismatch_is_advisory_outside_curated_core(self) -> None:
         report = self._audit(
             [
