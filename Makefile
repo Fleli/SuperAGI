@@ -218,6 +218,9 @@ SFT_AUDIT_CHECKPOINT :=
 SFT_AUDIT_SOURCE_WEIGHTS := $(SFT_SOURCE_WEIGHTS)
 SFT_AUDIT_MODE := curated
 SFT_AUDIT_REPORT := data/sft/audit.json
+SFT_AUDIT_CURATED_SAMPLING_MASS_MIN := 0.15
+SFT_AUDIT_CURATED_SAMPLING_MASS_MAX := 0.25
+SFT_AUDIT_CURATED_SOURCE_FAMILIES := curated_core,curated
 SFT_IMPORT_CHECKPOINT := $(SFT_BASE_CHECKPOINT)
 SFT_IMPORT_OUT := data/sft/imported/public-mixed.jsonl
 SFT_IMPORT_METADATA := data/sft/imported/public-mixed.metadata.json
@@ -226,14 +229,14 @@ SFT_IMPORT_SEED := 1337
 SFT_IMPORT_MAX_ROWS_PER_SOURCE := 50000
 SFT_IMPORT_MAX_EXAMPLES_PER_SOURCE := 5000
 SFT_IMPORT_MAX_CONTEXT_TOKENS := 900
-SFT_IMPORT_MAX_MESSAGES := 8
-SFT_IMPORT_MAX_AGI_CHARS := 1200
-SFT_IMPORT_MAX_AGI_TOKENS := 512
+SFT_IMPORT_MAX_MESSAGES := 6
+SFT_IMPORT_MAX_AGI_CHARS := 700
+SFT_IMPORT_MAX_AGI_TOKENS := 192
 SFT_IMPORT_MIN_AGI_CHARS := 20
 SFT_IMPORT_CROSS_EXAMPLE_NGRAM_SIZE := 5
 SFT_IMPORT_MAX_CROSS_EXAMPLE_NGRAM_COUNT := 3
 SFT_IMPORT_NGRAM_REFERENCE_DATA :=
-SFT_EVAL_CHECKPOINT := data/sft/runs/300m/core/best.pt
+SFT_EVAL_CHECKPOINT := data/sft/runs/300m-v2/core/best.pt
 SFT_EVAL_PROMPTS := data/sft/eval_prompts.jsonl
 SFT_EVAL_RESULTS :=
 SFT_EVAL_SUMMARY :=
@@ -369,7 +372,7 @@ SFT_LOCAL_SMOKE_PUBLIC_STEPS := 160
 SFT_LOCAL_SMOKE_BATCH := 1
 
 SFT_CLOUD_BASE_CHECKPOINT := data/checkpoints/best.pt
-SFT_CLOUD_RUN_ROOT := data/sft/runs/300m
+SFT_CLOUD_RUN_ROOT := data/sft/runs/300m-v2
 SFT_CLOUD_BASE_SHA_RECORD := $(SFT_CLOUD_RUN_ROOT)/base-checkpoint.json
 SFT_CLOUD_RUN_CONFIG := $(SFT_CLOUD_RUN_ROOT)/run-config.json
 SFT_CLOUD_PREFLIGHT_STATE := $(SFT_CLOUD_RUN_ROOT)/preflight-state.txt
@@ -377,15 +380,34 @@ SFT_CLOUD_AUDIT_REPORT := $(SFT_CLOUD_RUN_ROOT)/audit.json
 SFT_CLOUD_MANIFEST := $(SFT_CLOUD_RUN_ROOT)/manifest.json
 SFT_CLOUD_PUBLIC_DATA := $(SFT_CLOUD_RUN_ROOT)/inputs/public-mixed.jsonl
 SFT_CLOUD_PUBLIC_METADATA := $(SFT_CLOUD_RUN_ROOT)/inputs/public-mixed.metadata.json
-SFT_CLOUD_CORE_DATA := data/sft/curated/core.jsonl,$(SFT_CLOUD_PUBLIC_DATA)
-SFT_CLOUD_CORE_SOURCE_WEIGHTS := curated_core=4,no_robots=1.5,openassistant=1.25,dolly=1,ultrachat=0.8,wildchat=0,default=1
+SFT_CLOUD_CURATED_CORE_DATA := data/sft/curated/core.jsonl
+SFT_CLOUD_BEHAVIOR_IDENTITY_DATA := data/sft/curated/behavior-identity-reset.jsonl
+SFT_CLOUD_BEHAVIOR_DIRECT_DATA := data/sft/curated/behavior-direct-current.jsonl
+SFT_CLOUD_PLAYFUL_STYLE_DATA := data/sft/styles/playful-direct.jsonl
+SFT_CLOUD_CALM_STYLE_DATA := data/sft/styles/calm-precise.jsonl
+SFT_CLOUD_EXPECTED_BEHAVIOR_DATA := $(SFT_CLOUD_BEHAVIOR_IDENTITY_DATA),$(SFT_CLOUD_BEHAVIOR_DIRECT_DATA)
+SFT_CLOUD_BEHAVIOR_DATA := $(SFT_CLOUD_EXPECTED_BEHAVIOR_DATA)
+SFT_CLOUD_EXPECTED_CURATED_DATA := $(SFT_CLOUD_CURATED_CORE_DATA),$(SFT_CLOUD_BEHAVIOR_DATA)
+SFT_CLOUD_CURATED_DATA := $(SFT_CLOUD_EXPECTED_CURATED_DATA)
+SFT_CLOUD_EXPECTED_CORE_DATA := $(SFT_CLOUD_CURATED_DATA),$(SFT_CLOUD_PUBLIC_DATA)
+SFT_CLOUD_CORE_DATA := $(SFT_CLOUD_CURATED_DATA),$(SFT_CLOUD_PUBLIC_DATA)
+SFT_CLOUD_CORE_SOURCE_WEIGHTS := curated_core=8,curated_behavior=8,no_robots=0.5,openassistant=0.75,dolly=0.75,ultrachat=0.6,wildchat=0,default=1
 SFT_CLOUD_CORE_RUN_DIR := $(SFT_CLOUD_RUN_ROOT)/core
-SFT_CLOUD_PLAYFUL_DATA := data/sft/curated/core.jsonl,data/sft/styles/playful-direct.jsonl
+SFT_CLOUD_EXPECTED_PLAYFUL_DATA := $(SFT_CLOUD_CURATED_CORE_DATA),$(SFT_CLOUD_PLAYFUL_STYLE_DATA)
+SFT_CLOUD_PLAYFUL_DATA := $(SFT_CLOUD_EXPECTED_PLAYFUL_DATA)
 SFT_CLOUD_PLAYFUL_SOURCE_WEIGHTS := curated_core=1,style_playful_direct=7,default=1
 SFT_CLOUD_PLAYFUL_RUN_DIR := $(SFT_CLOUD_RUN_ROOT)/playful
-SFT_CLOUD_CALM_DATA := data/sft/curated/core.jsonl,data/sft/styles/calm-precise.jsonl
+SFT_CLOUD_EXPECTED_CALM_DATA := $(SFT_CLOUD_CURATED_CORE_DATA),$(SFT_CLOUD_CALM_STYLE_DATA)
+SFT_CLOUD_CALM_DATA := $(SFT_CLOUD_EXPECTED_CALM_DATA)
 SFT_CLOUD_CALM_SOURCE_WEIGHTS := curated_core=1,style_calm_precise=7,default=1
 SFT_CLOUD_CALM_RUN_DIR := $(SFT_CLOUD_RUN_ROOT)/calm
+SFT_CLOUD_SEALED_INPUT_ARGS = \
+	--sealed-input "curated_core_jsonl=$(SFT_CLOUD_CURATED_CORE_DATA)" \
+	--sealed-input "behavior_identity_reset_jsonl=$(SFT_CLOUD_BEHAVIOR_IDENTITY_DATA)" \
+	--sealed-input "behavior_direct_current_jsonl=$(SFT_CLOUD_BEHAVIOR_DIRECT_DATA)" \
+	--sealed-input "playful_style_jsonl=$(SFT_CLOUD_PLAYFUL_STYLE_DATA)" \
+	--sealed-input "calm_style_jsonl=$(SFT_CLOUD_CALM_STYLE_DATA)" \
+	--sealed-input "evaluation_prompts=$(SFT_EVAL_PROMPTS)"
 SFT_CLOUD_DEVICE := cuda
 SFT_CLOUD_SEED := 1337
 SFT_CLOUD_GRAD_ACCUM_STEPS := 8
@@ -424,7 +446,7 @@ SFT_CLOUD_CONFIG_ARGS = \
 	--config "import.min_agi_chars=$(SFT_IMPORT_MIN_AGI_CHARS)" \
 	--config "import.cross_example_ngram_size=$(SFT_IMPORT_CROSS_EXAMPLE_NGRAM_SIZE)" \
 	--config "import.max_cross_example_ngram_count=$(SFT_IMPORT_MAX_CROSS_EXAMPLE_NGRAM_COUNT)" \
-	--config "import.ngram_reference_data=data/sft/curated/core.jsonl" \
+	--config "import.ngram_reference_data=$(SFT_CLOUD_CURATED_DATA)" \
 	--config "core.data=$(SFT_CLOUD_CORE_DATA)" \
 	--config "core.source_weights=$(SFT_CLOUD_CORE_SOURCE_WEIGHTS)" \
 	--config "core.steps=$(SFT_CLOUD_CORE_STEPS)" \
@@ -495,7 +517,7 @@ help:
 	@echo "  make train-export-run RESUME=data/checkpoints/latest.pt STEPS=1000 PROMPT=\"Attention is\""
 	@echo "  make sft-import-public SFT_IMPORT_CHECKPOINT=./best-200m-current.pt"
 	@echo "  make sft-train SFT_BASE_CHECKPOINT=data/checkpoints/best.pt SFT_STEPS=200 SFT_SOURCE_WEIGHTS=anchor=4,wildchat=0.35"
-	@echo "  make sft-evaluate SFT_EVAL_CHECKPOINT=data/sft/runs/300m/core/best.pt"
+	@echo "  make sft-evaluate SFT_EVAL_CHECKPOINT=data/sft/runs/300m-v2/core/best.pt"
 	@echo "  make sft-evaluate-styles  Evaluate both staged personality checkpoints"
 	@echo "  make sft-local-smoke SFT_LOCAL_BASE_CHECKPOINT=./best-300m-current.pt"
 	@echo "  make sft-local SFT_LOCAL_BASE_CHECKPOINT=./best-300m-current.pt"
@@ -903,6 +925,9 @@ sft-audit: setup
 		--checkpoint "$(SFT_AUDIT_CHECKPOINT)" \
 		--source-weights "$(SFT_AUDIT_SOURCE_WEIGHTS)" \
 		--mode "$(SFT_AUDIT_MODE)" \
+		--curated-sampling-mass-min "$(SFT_AUDIT_CURATED_SAMPLING_MASS_MIN)" \
+		--curated-sampling-mass-max "$(SFT_AUDIT_CURATED_SAMPLING_MASS_MAX)" \
+		--curated-source-families "$(SFT_AUDIT_CURATED_SOURCE_FAMILIES)" \
 		--report "$(SFT_AUDIT_REPORT)"
 
 sft-evaluate: setup
@@ -1172,6 +1197,14 @@ sft-local-smoke:
 
 runpod-sft-300m-preflight:
 	@printf '==> [runpod-sft-300m-preflight] Starting non-training production checks\n'
+	@if [ "$(SFT_CLOUD_BEHAVIOR_DATA)" != "$(SFT_CLOUD_EXPECTED_BEHAVIOR_DATA)" ] || \
+		[ "$(SFT_CLOUD_CURATED_DATA)" != "$(SFT_CLOUD_EXPECTED_CURATED_DATA)" ] || \
+		[ "$(SFT_CLOUD_CORE_DATA)" != "$(SFT_CLOUD_EXPECTED_CORE_DATA)" ] || \
+		[ "$(SFT_CLOUD_PLAYFUL_DATA)" != "$(SFT_CLOUD_EXPECTED_PLAYFUL_DATA)" ] || \
+		[ "$(SFT_CLOUD_CALM_DATA)" != "$(SFT_CLOUD_EXPECTED_CALM_DATA)" ]; then \
+		printf 'Aggregate SFT data overrides are not allowed; override individual source path variables instead.\n' >&2; \
+		exit 1; \
+	fi
 	$(MAKE) setup
 	$(PYTHON) scripts/preflight_sft_300m.py \
 		--repository-root "." \
@@ -1181,15 +1214,18 @@ runpod-sft-300m-preflight:
 		--public-data "$(SFT_CLOUD_PUBLIC_DATA)" \
 		--public-metadata "$(SFT_CLOUD_PUBLIC_METADATA)" \
 		--state-file "$(SFT_CLOUD_PREFLIGHT_STATE)" \
-		--require-path "data/sft/curated/core.jsonl" \
+		--require-path "$(SFT_CLOUD_CURATED_CORE_DATA)" \
 		--require-path "data/sft/curated/core.audit.json" \
 		--require-path "data/sft/curated/core.metadata.json" \
-		--require-path "data/sft/styles/playful-direct.jsonl" \
+		--require-path "$(SFT_CLOUD_BEHAVIOR_IDENTITY_DATA)" \
+		--require-path "$(SFT_CLOUD_BEHAVIOR_DIRECT_DATA)" \
+		--require-path "$(SFT_CLOUD_PLAYFUL_STYLE_DATA)" \
 		--require-path "data/sft/styles/playful-direct.audit.json" \
-		--require-path "data/sft/styles/calm-precise.jsonl" \
+		--require-path "$(SFT_CLOUD_CALM_STYLE_DATA)" \
 		--require-path "data/sft/styles/calm-precise.audit.json" \
 		--require-path "data/sft/styles/styles.metadata.json" \
 		--require-path "$(SFT_EVAL_PROMPTS)" \
+		$(SFT_CLOUD_SEALED_INPUT_ARGS) \
 		$(SFT_CLOUD_CONFIG_ARGS)
 	@set -e; \
 	preflight_state=$$(cat "$(SFT_CLOUD_PREFLIGHT_STATE)"); \
@@ -1198,7 +1234,7 @@ runpod-sft-300m-preflight:
 			SFT_IMPORT_CHECKPOINT="$(SFT_CLOUD_BASE_CHECKPOINT)" \
 			SFT_IMPORT_OUT="$(SFT_CLOUD_PUBLIC_DATA)" \
 			SFT_IMPORT_METADATA="$(SFT_CLOUD_PUBLIC_METADATA)" \
-			SFT_IMPORT_NGRAM_REFERENCE_DATA="data/sft/curated/core.jsonl" \
+			SFT_IMPORT_NGRAM_REFERENCE_DATA="$(SFT_CLOUD_CURATED_DATA)" \
 			SFT_IMPORT_SEED="$(SFT_CLOUD_SEED)"; \
 		$(PYTHON) scripts/preflight_sft_300m.py \
 			--repository-root "." \
@@ -1207,6 +1243,7 @@ runpod-sft-300m-preflight:
 			--run-config "$(SFT_CLOUD_RUN_CONFIG)" \
 			--public-data "$(SFT_CLOUD_PUBLIC_DATA)" \
 			--public-metadata "$(SFT_CLOUD_PUBLIC_METADATA)" \
+			$(SFT_CLOUD_SEALED_INPUT_ARGS) \
 			$(SFT_CLOUD_CONFIG_ARGS) \
 			--record-public; \
 	elif [ "$$preflight_state" = "resume" ]; then \
@@ -1222,6 +1259,7 @@ runpod-sft-300m-preflight:
 		--run-config "$(SFT_CLOUD_RUN_CONFIG)" \
 		--public-data "$(SFT_CLOUD_PUBLIC_DATA)" \
 		--public-metadata "$(SFT_CLOUD_PUBLIC_METADATA)" \
+		$(SFT_CLOUD_SEALED_INPUT_ARGS) \
 		$(SFT_CLOUD_CONFIG_ARGS) \
 		--verify-only
 	$(MAKE) sft-audit \
@@ -1229,6 +1267,9 @@ runpod-sft-300m-preflight:
 		SFT_AUDIT_CHECKPOINT="$(SFT_CLOUD_BASE_CHECKPOINT)" \
 		SFT_AUDIT_SOURCE_WEIGHTS="$(SFT_CLOUD_CORE_SOURCE_WEIGHTS)" \
 		SFT_AUDIT_MODE="mixed" \
+		SFT_AUDIT_CURATED_SAMPLING_MASS_MIN="0.45" \
+		SFT_AUDIT_CURATED_SAMPLING_MASS_MAX="0.65" \
+		SFT_AUDIT_CURATED_SOURCE_FAMILIES="curated_core,curated_behavior,curated" \
 		SFT_AUDIT_REPORT="$(SFT_CLOUD_AUDIT_REPORT)"
 	@printf '==> [runpod-sft-300m-preflight] All non-training checks passed\n'
 
@@ -1243,6 +1284,7 @@ runpod-sft-300m:
 		--run-config "$(SFT_CLOUD_RUN_CONFIG)" \
 		--public-data "$(SFT_CLOUD_PUBLIC_DATA)" \
 		--public-metadata "$(SFT_CLOUD_PUBLIC_METADATA)" \
+		$(SFT_CLOUD_SEALED_INPUT_ARGS) \
 		$(SFT_CLOUD_CONFIG_ARGS) \
 		--verify-only
 	@set -e; \
@@ -1289,6 +1331,7 @@ runpod-sft-300m:
 		--run-config "$(SFT_CLOUD_RUN_CONFIG)" \
 		--public-data "$(SFT_CLOUD_PUBLIC_DATA)" \
 		--public-metadata "$(SFT_CLOUD_PUBLIC_METADATA)" \
+		$(SFT_CLOUD_SEALED_INPUT_ARGS) \
 		$(SFT_CLOUD_CONFIG_ARGS) \
 		--verify-only
 	@set -e; \
@@ -1335,6 +1378,7 @@ runpod-sft-300m:
 		--run-config "$(SFT_CLOUD_RUN_CONFIG)" \
 		--public-data "$(SFT_CLOUD_PUBLIC_DATA)" \
 		--public-metadata "$(SFT_CLOUD_PUBLIC_METADATA)" \
+		$(SFT_CLOUD_SEALED_INPUT_ARGS) \
 		$(SFT_CLOUD_CONFIG_ARGS) \
 		--verify-only
 	@set -e; \
@@ -1381,6 +1425,7 @@ runpod-sft-300m:
 		--run-config "$(SFT_CLOUD_RUN_CONFIG)" \
 		--public-data "$(SFT_CLOUD_PUBLIC_DATA)" \
 		--public-metadata "$(SFT_CLOUD_PUBLIC_METADATA)" \
+		$(SFT_CLOUD_SEALED_INPUT_ARGS) \
 		$(SFT_CLOUD_CONFIG_ARGS) \
 		--verify-only
 	$(PYTHON) scripts/write_sft_manifest.py \
@@ -1393,12 +1438,14 @@ runpod-sft-300m:
 		--calm-run-dir "$(SFT_CLOUD_CALM_RUN_DIR)" \
 		--public-import-data "$(SFT_CLOUD_PUBLIC_DATA)" \
 		--public-import-metadata "$(SFT_CLOUD_PUBLIC_METADATA)" \
-		--curated-core-data "data/sft/curated/core.jsonl" \
+		--curated-core-data "$(SFT_CLOUD_CURATED_CORE_DATA)" \
 		--curated-core-metadata "data/sft/curated/core.metadata.json" \
 		--curated-core-audit "data/sft/curated/core.audit.json" \
-		--playful-style-data "data/sft/styles/playful-direct.jsonl" \
+		--behavior-identity-reset-data "$(SFT_CLOUD_BEHAVIOR_IDENTITY_DATA)" \
+		--behavior-direct-current-data "$(SFT_CLOUD_BEHAVIOR_DIRECT_DATA)" \
+		--playful-style-data "$(SFT_CLOUD_PLAYFUL_STYLE_DATA)" \
 		--playful-style-audit "data/sft/styles/playful-direct.audit.json" \
-		--calm-style-data "data/sft/styles/calm-precise.jsonl" \
+		--calm-style-data "$(SFT_CLOUD_CALM_STYLE_DATA)" \
 		--calm-style-audit "data/sft/styles/calm-precise.audit.json" \
 		--style-metadata "data/sft/styles/styles.metadata.json" \
 		--eval-prompts "$(SFT_EVAL_PROMPTS)" \

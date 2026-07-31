@@ -18,6 +18,41 @@ SCRIPT_PATH = REPOSITORY_ROOT / "scripts" / "preflight_sft_300m.py"
 
 
 class Sft300mPreflightTests(unittest.TestCase):
+    def test_seals_static_inputs_and_rejects_mutation_on_resume(self) -> None:
+        module = _load_preflight_module(self)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            checkpoint_path = _write_bpe_checkpoint(
+                root / "base.pt",
+                context_length=1024,
+            )
+            sealed_path = root / "data" / "sft" / "curated" / "core.jsonl"
+            sealed_path.parent.mkdir(parents=True)
+            sealed_path.write_text('{"source":"curated_core"}\n', encoding="utf-8")
+            arguments = [
+                "--repository-root",
+                str(root),
+                "--base-checkpoint",
+                str(checkpoint_path),
+                "--sha-record",
+                str(root / "base-checkpoint.json"),
+                "--run-config",
+                str(root / "run-config.json"),
+                "--sealed-input",
+                f"curated_core_jsonl={sealed_path}",
+            ]
+
+            self.assertEqual(module.main(arguments), 0)
+            payload = json.loads((root / "run-config.json").read_text())
+            self.assertEqual(
+                payload["sealed_inputs"]["curated_core_jsonl"]["sha256"],
+                hashlib.sha256(sealed_path.read_bytes()).hexdigest(),
+            )
+
+            sealed_path.write_text('{"source":"changed"}\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "sealed input .* changed"):
+                module.main(arguments)
+
     def test_records_checkpoint_identity_and_nested_run_config(self) -> None:
         module = _load_preflight_module(self)
         with tempfile.TemporaryDirectory() as tmp_dir:

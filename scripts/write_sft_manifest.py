@@ -30,29 +30,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repository-root", default=".")
     parser.add_argument(
         "--output",
-        default="data/sft/runs/300m/manifest.json",
+        default="data/sft/runs/300m-v2/manifest.json",
     )
     parser.add_argument("--base-checkpoint", required=True)
     parser.add_argument("--base-sha-record", required=True)
     parser.add_argument(
         "--core-run-dir",
-        default="data/sft/runs/300m/core",
+        default="data/sft/runs/300m-v2/core",
     )
     parser.add_argument(
         "--playful-run-dir",
-        default="data/sft/runs/300m/playful",
+        default="data/sft/runs/300m-v2/playful",
     )
     parser.add_argument(
         "--calm-run-dir",
-        default="data/sft/runs/300m/calm",
+        default="data/sft/runs/300m-v2/calm",
     )
     parser.add_argument(
         "--public-import-data",
-        default="data/sft/imported/public-mixed.jsonl",
+        default="data/sft/runs/300m-v2/inputs/public-mixed.jsonl",
     )
     parser.add_argument(
         "--public-import-metadata",
-        default="data/sft/imported/public-mixed.metadata.json",
+        default="data/sft/runs/300m-v2/inputs/public-mixed.metadata.json",
     )
     parser.add_argument(
         "--curated-core-data",
@@ -65,6 +65,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--curated-core-audit",
         default="data/sft/curated/core.audit.json",
+    )
+    parser.add_argument(
+        "--behavior-identity-reset-data",
+        default="data/sft/curated/behavior-identity-reset.jsonl",
+    )
+    parser.add_argument(
+        "--behavior-direct-current-data",
+        default="data/sft/curated/behavior-direct-current.jsonl",
     )
     parser.add_argument(
         "--playful-style-data",
@@ -92,11 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--audit-report",
-        default="data/sft/runs/300m/audit.json",
+        default="data/sft/runs/300m-v2/audit.json",
     )
     parser.add_argument(
         "--run-config",
-        default="data/sft/runs/300m/run-config.json",
+        default="data/sft/runs/300m-v2/run-config.json",
     )
     parser.add_argument(
         "--config",
@@ -136,6 +144,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "curated_core_audit": _resolve_path(
             args.curated_core_audit,
+            repository_root,
+        ),
+        "behavior_identity_reset_jsonl": _resolve_path(
+            args.behavior_identity_reset_data,
+            repository_root,
+        ),
+        "behavior_direct_current_jsonl": _resolve_path(
+            args.behavior_direct_current_data,
             repository_root,
         ),
         "playful_style_jsonl": _resolve_path(
@@ -274,6 +290,8 @@ def _source_artifacts(
         "curated_core_jsonl",
         "curated_core_metadata",
         "curated_core_audit",
+        "behavior_identity_reset_jsonl",
+        "behavior_direct_current_jsonl",
         "playful_style_jsonl",
         "playful_style_audit",
         "calm_style_jsonl",
@@ -386,6 +404,33 @@ def _validate_run_config(
         if inputs.get(name) != expected:
             raise ValueError(
                 f"run config {name} identity does not match the actual artifact"
+            )
+
+    sealed_source_names = {
+        "curated_core_jsonl",
+        "behavior_identity_reset_jsonl",
+        "behavior_direct_current_jsonl",
+        "playful_style_jsonl",
+        "calm_style_jsonl",
+        "evaluation_prompts",
+    }
+    sealed_inputs = payload.get("sealed_inputs")
+    if (
+        not isinstance(sealed_inputs, dict)
+        or set(sealed_inputs) != sealed_source_names
+    ):
+        raise ValueError(
+            "run config sealed_inputs must contain every static training and "
+            "evaluation input"
+        )
+    for name in sorted(sealed_source_names):
+        expected = {
+            key: source_artifacts[name][key]
+            for key in ("path", "sha256", "size_bytes")
+        }
+        if sealed_inputs.get(name) != expected:
+            raise ValueError(
+                f"run config sealed input {name} does not match the actual artifact"
             )
 
     settings = payload.get("settings")

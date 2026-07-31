@@ -348,7 +348,10 @@ class AuditConfig:
     max_context_tokens: int | None = None
     max_response_chars: int | None = 1200
     max_response_tokens: int | None = 512
-    curated_source_families: tuple[str, ...] = ("curated_core", "curated")
+    curated_source_families: tuple[str, ...] = (
+        "curated_core",
+        "curated",
+    )
     curated_source_family: str = "curated_core"
     required_curated_domains: tuple[str, ...] = _CURATED_DOMAINS
     require_curated_turn_coverage: bool = True

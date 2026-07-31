@@ -49,6 +49,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--minimum-context-length", type=int, default=1024)
     parser.add_argument("--require-path", action="append", default=[])
     parser.add_argument(
+        "--sealed-input",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help="Static SFT input to hash into the immutable run config; may be repeated.",
+    )
+    parser.add_argument(
         "--config",
         action="append",
         default=[],
@@ -85,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         _resolve_inside_root(value, root, label="required input")
         for value in args.require_path
     )
+    sealed_input_paths = _parse_named_paths(args.sealed_input, root)
     run_config_path = (
         _resolve_inside_root(args.run_config, root, label="run config")
         if args.run_config.strip()
@@ -123,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
         else None
     )
     _require_input_paths(required_paths)
+    _require_input_paths(tuple(sealed_input_paths.values()))
     _validate_or_write_sha_record(
         sha_record_path,
         checkpoint_identity,
@@ -137,6 +146,11 @@ def main(argv: list[str] | None = None) -> int:
                 checkpoint_identity=checkpoint_identity,
             )
             _verify_expected_settings(run_config, expected_settings)
+            _verify_sealed_inputs(
+                run_config,
+                expected_paths=sealed_input_paths,
+                repository_root=root,
+            )
             if public_paths:
                 _verify_public_inputs(
                     run_config,
@@ -152,6 +166,11 @@ def main(argv: list[str] | None = None) -> int:
             checkpoint_identity=checkpoint_identity,
         )
         _verify_expected_settings(run_config, expected_settings)
+        _verify_sealed_inputs(
+            run_config,
+            expected_paths=sealed_input_paths,
+            repository_root=root,
+        )
         if not public_paths:
             raise ValueError(
                 "--record-public requires --public-data and --public-metadata"
@@ -185,12 +204,21 @@ def main(argv: list[str] | None = None) -> int:
                     "run configuration changed after preflight; "
                     "use a new SFT run directory for different settings"
                 )
+            _verify_sealed_inputs(
+                run_config,
+                expected_paths=sealed_input_paths,
+                repository_root=root,
+            )
         else:
             run_config = {
                 "schema_version": SCHEMA_VERSION,
                 "base_checkpoint": checkpoint_identity,
                 "settings": settings,
                 "inputs": {},
+                "sealed_inputs": {
+                    name: _artifact_identity(path, root)
+                    for name, path in sorted(sealed_input_paths.items())
+                },
             }
             _write_json_atomic(run_config_path, run_config)
         if public_paths:
@@ -298,6 +326,36 @@ def parse_config_entries(entries: Sequence[str]) -> dict[str, Any]:
     return result
 
 
+def _parse_named_paths(
+    entries: Sequence[str],
+    repository_root: Path,
+) -> dict[str, Path]:
+    paths: dict[str, Path] = {}
+    for entry in entries:
+        name, separator, raw_path = entry.partition("=")
+        name = name.strip()
+        raw_path = raw_path.strip()
+        if (
+            not separator
+            or not name
+            or not raw_path
+            or any(
+                character
+                not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+                for character in name
+            )
+        ):
+            raise ValueError(f"invalid --sealed-input entry: {entry!r}")
+        if name in paths:
+            raise ValueError(f"duplicate --sealed-input name: {name!r}")
+        paths[name] = _resolve_inside_root(
+            raw_path,
+            repository_root,
+            label=f"sealed input {name}",
+        )
+    return paths
+
+
 def _validate_or_write_sha_record(
     path: Path,
     checkpoint_identity: Mapping[str, Any],
@@ -347,7 +405,44 @@ def _load_and_validate_run_config(
         )
     for name, artifact in inputs.items():
         _validate_artifact_record(artifact, label=f"run config {name}")
+    sealed_inputs = payload.get("sealed_inputs", {})
+    if not isinstance(sealed_inputs, dict):
+        raise ValueError("run config sealed_inputs must be a JSON object")
+    for name, artifact in sealed_inputs.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError("run config sealed input names must be nonempty strings")
+        _validate_artifact_record(
+            artifact,
+            label=f"run config sealed input {name}",
+        )
     return payload
+
+
+def _verify_sealed_inputs(
+    run_config: Mapping[str, Any],
+    *,
+    expected_paths: Mapping[str, Path],
+    repository_root: Path,
+) -> None:
+    sealed_inputs = run_config.get("sealed_inputs", {})
+    if expected_paths and set(expected_paths) != set(sealed_inputs):
+        raise ValueError(
+            "sealed input names changed after preflight; use a new SFT run directory"
+        )
+    for name, expected in sealed_inputs.items():
+        path = expected_paths.get(name)
+        if path is None:
+            path = _resolve_inside_root(
+                expected["path"],
+                repository_root,
+                label=f"sealed input {name}",
+            )
+        _require_nonempty_file(path, f"sealed input {name}")
+        if _artifact_identity(path, repository_root) != expected:
+            raise ValueError(
+                f"sealed input {name} changed after preflight; restore the exact "
+                "file or use a new SFT run directory"
+            )
 
 
 def _verify_public_inputs(

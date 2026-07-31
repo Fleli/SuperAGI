@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts import import_public_sft
 from superagi.chat.formatting import ChatMessage
 from superagi.chat.sft_public_import import (
     ImportFilterConfig,
@@ -647,6 +648,137 @@ class PublicSftImportTests(unittest.TestCase):
         self.assertEqual(imported.stats.rejected_by_reason["false_capability_or_identity"], 4)
         self.assertEqual(imported.stats.rejected_by_reason["generic_refusal"], 1)
         self.assertEqual(imported.stats.rejected_by_reason["artifact"], 3)
+
+    def test_importer_rejects_forum_code_and_persona_artifacts(self) -> None:
+        tokenizer = BpeTokenizer.from_text(
+            "<bos><user> Ask\n<agi> A sufficiently detailed ordinary answer.<eos>\n",
+            vocab_size=300,
+            min_frequency=1,
+        )
+        importer = PublicSftImporter(
+            tokenizer=tokenizer,
+            filter_config=ImportFilterConfig(min_agi_chars=5),
+        )
+        rows = [
+            (
+                "forum:1",
+                [
+                    {"role": "user", "content": "How are you?"},
+                    {
+                        "role": "agi",
+                        "content": (
+                            "I am confused about the question. "
+                            "- Jonathan Software Jun 10 '17 at 21:29"
+                        ),
+                    },
+                ],
+            ),
+            (
+                "code-fence:1",
+                [
+                    {"role": "user", "content": "Tell me about yourself."},
+                    {
+                        "role": "agi",
+                        "content": "```I am a short prose response in a code fence.",
+                    },
+                ],
+            ),
+            (
+                "boilerplate:1",
+                [
+                    {"role": "user", "content": "What should I cook?"},
+                    {
+                        "role": "agi",
+                        "content": (
+                            "As an AI language model, I can provide a few general ideas."
+                        ),
+                    },
+                ],
+            ),
+            (
+                "persona:1",
+                [
+                    {"role": "user", "content": "Who are you?"},
+                    {
+                        "role": "agi",
+                        "content": "I am a citizen and have been elected to Congress.",
+                    },
+                ],
+            ),
+            (
+                "persona:2",
+                [
+                    {"role": "user", "content": "How much do you earn?"},
+                    {
+                        "role": "agi",
+                        "content": "My salary is less than two hundred dollars per month.",
+                    },
+                ],
+            ),
+        ]
+
+        imported = importer.import_conversations(rows)
+
+        self.assertEqual(imported.examples, ())
+        self.assertEqual(imported.stats.rejected_by_reason["forum_attribution"], 1)
+        self.assertEqual(imported.stats.rejected_by_reason["code_fence"], 1)
+        self.assertEqual(imported.stats.rejected_by_reason["ai_boilerplate"], 1)
+        self.assertEqual(
+            imported.stats.rejected_by_reason["false_capability_or_identity"],
+            2,
+        )
+
+    def test_importer_rejects_common_boilerplate_signature_and_persona_variants(self) -> None:
+        tokenizer = BpeTokenizer.from_text(
+            "<bos><user> Ask\n<agi> A sufficiently detailed ordinary answer.<eos>\n",
+            vocab_size=300,
+            min_frequency=1,
+        )
+        cases = {
+            "ai_identity": "I am an AI language model trained to answer questions.",
+            "language_model": "As a language model, I can suggest a few options.",
+            "large_language_model": "As a large language model, I can help.",
+            "named_model_identity": "I am ChatGPT and can answer that question.",
+            "biography": "I grew up in Boston and work as a nurse.",
+            "posted_by": "A plausible answer to the question. Posted by john_doe",
+            "edited_by": "A plausible answer to the question. Last edited by admin",
+            "mobile_signature": "Here is the answer you requested. Sent from my iPhone",
+            "letter_signature": "Here is the answer you requested. Best regards, John",
+            "tilde_fence": "~~~python\nprint('hello')\n~~~",
+        }
+
+        for label, answer in cases.items():
+            with self.subTest(label=label):
+                importer = PublicSftImporter(
+                    tokenizer=tokenizer,
+                    filter_config=ImportFilterConfig(min_agi_chars=5),
+                )
+                imported = importer.import_conversations(
+                    [
+                        (
+                            f"variant:{label}",
+                            [
+                                {"role": "user", "content": "Please answer directly."},
+                                {"role": "agi", "content": answer},
+                            ],
+                        )
+                    ]
+                )
+
+                self.assertEqual(imported.examples, ())
+
+    def test_short_response_defaults_match_library_and_cli(self) -> None:
+        config = ImportFilterConfig()
+        args = import_public_sft.build_parser().parse_args(
+            ["--checkpoint", "checkpoint.pt"]
+        )
+
+        self.assertEqual(config.max_messages, 6)
+        self.assertEqual(config.max_agi_chars, 700)
+        self.assertEqual(config.max_agi_tokens, 192)
+        self.assertEqual(args.max_messages, config.max_messages)
+        self.assertEqual(args.max_agi_chars, config.max_agi_chars)
+        self.assertEqual(args.max_agi_tokens, config.max_agi_tokens)
 
     def test_seeded_source_sample_is_stable_and_not_first_n(self) -> None:
         examples = tuple(

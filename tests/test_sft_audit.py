@@ -1051,11 +1051,72 @@ class SftAuditTests(unittest.TestCase):
             rows,
             mode="mixed",
             source_weights={"curated_core": 1.0, "dolly": 1.0},
+            config=AuditConfig(
+                curated_sampling_mass_min=0.45,
+                curated_sampling_mass_max=0.65,
+            ),
         )
 
         self.assertFalse(report.ok)
-        self.assertLess(report.curated_sampling_mass, 0.15)
+        self.assertLess(report.curated_sampling_mass, 0.45)
         self.assertTrue(report.has_error("curated_sampling_mass"))
+
+    def test_mixed_audit_counts_behavior_recovery_as_curated_mass(self) -> None:
+        rows = [
+            _conversation(
+                f"Curated behavior question {index}?",
+                f"A distinct concise behavior answer number {index}.",
+                source="curated_behavior:topic_reset",
+            )
+            for index in range(5)
+        ]
+        rows.extend(
+            _conversation(
+                f"Public question {index}?",
+                f"A distinct public answer number {index}.",
+                source="dolly:unit",
+            )
+            for index in range(5)
+        )
+
+        report = self._audit(
+            rows,
+            mode="mixed",
+            source_weights={"curated_behavior": 1.0, "dolly": 1.0},
+            config=AuditConfig(
+                curated_sampling_mass_min=0.45,
+                curated_sampling_mass_max=0.65,
+                curated_source_families=(
+                    "curated_core",
+                    "curated_behavior",
+                    "curated",
+                ),
+            ),
+        )
+
+        self.assertFalse(report.has_error("curated_sampling_mass"))
+        self.assertEqual(report.curated_sampling_mass, 0.5)
+
+    def test_cli_accepts_production_curated_sampling_bounds(self) -> None:
+        args = audit_sft.build_parser().parse_args(
+            [
+                "--data",
+                "examples.jsonl",
+                "--curated-sampling-mass-min",
+                "0.45",
+                "--curated-sampling-mass-max",
+                "0.65",
+                "--curated-source-families",
+                "curated_core,curated_behavior,curated",
+            ]
+        )
+
+        self.assertEqual(args.curated_sampling_mass_min, 0.45)
+        self.assertEqual(args.curated_sampling_mass_max, 0.65)
+        self.assertEqual(
+            args.curated_source_families,
+            "curated_core,curated_behavior,curated",
+        )
 
     def test_emits_deterministic_quantiles_and_json_payload(self) -> None:
         rows = [

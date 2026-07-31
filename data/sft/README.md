@@ -16,7 +16,7 @@ git checkout scale-300m
 tmux new -s superagi-sft
 make runpod-sft-300m \
   SFT_CLOUD_BASE_CHECKPOINT=data/checkpoints/best.pt \
-  2>&1 | tee -a sft-300m.log
+  2>&1 | tee -a sft-300m-v2.log
 ```
 
 The target performs these phases in order:
@@ -64,21 +64,21 @@ From another terminal:
 
 ```bash
 cd /workspace/SuperAGI
-tail -f sft-300m.log
+tail -f sft-300m-v2.log
 ```
 
 Once a phase has started, inspect its metrics with:
 
 ```bash
-tail -f data/sft/runs/300m/core/metrics.jsonl
-tail -f data/sft/runs/300m/playful/metrics.jsonl
-tail -f data/sft/runs/300m/calm/metrics.jsonl
+tail -f data/sft/runs/300m-v2/core/metrics.jsonl
+tail -f data/sft/runs/300m-v2/playful/metrics.jsonl
+tail -f data/sft/runs/300m-v2/calm/metrics.jsonl
 ```
 
 List current recovery and checkpoint artifacts with:
 
 ```bash
-find data/sft/runs/300m -maxdepth 3 \
+find data/sft/runs/300m-v2 -maxdepth 3 \
   \( -name 'recovery-current.json' -o -name 'latest.pt' \
      -o -name 'best.pt' -o -name 'final.pt' \) -print
 ```
@@ -111,28 +111,28 @@ run root rather than reusing incompatible recovery state:
 ```bash
 make runpod-sft-300m \
   SFT_CLOUD_BASE_CHECKPOINT=data/checkpoints/new-best.pt \
-  SFT_CLOUD_RUN_ROOT=data/sft/runs/300m-v2
+  SFT_CLOUD_RUN_ROOT=data/sft/runs/300m-v3
 ```
 
 ## Production Artifacts
 
 The default workflow writes:
 
-- `data/sft/runs/300m/base-checkpoint.json`: immutable base identity and hash;
-- `data/sft/runs/300m/run-config.json`: recorded production configuration;
-- `data/sft/runs/300m/audit.json`: mixed-corpus audit report;
-- `data/sft/runs/300m/core/{latest,best,final}.pt`;
-- `data/sft/runs/300m/playful/{latest,best,final}.pt`;
-- `data/sft/runs/300m/calm/{latest,best,final}.pt`;
+- `data/sft/runs/300m-v2/base-checkpoint.json`: immutable base identity and hash;
+- `data/sft/runs/300m-v2/run-config.json`: recorded production configuration;
+- `data/sft/runs/300m-v2/audit.json`: mixed-corpus audit report;
+- `data/sft/runs/300m-v2/core/{latest,best,final}.pt`;
+- `data/sft/runs/300m-v2/playful/{latest,best,final}.pt`;
+- `data/sft/runs/300m-v2/calm/{latest,best,final}.pt`;
 - `metrics.jsonl`, `evaluation.jsonl`, and `evaluation.summary.json` in each
   phase directory; and
-- `data/sft/runs/300m/manifest.json`: hashes and summaries for all durable
+- `data/sft/runs/300m-v2/manifest.json`: hashes and summaries for all durable
   production artifacts.
 
 The public import is generated inside the run root at:
 
-- `data/sft/runs/300m/inputs/public-mixed.jsonl`;
-- `data/sft/runs/300m/inputs/public-mixed.metadata.json`.
+- `data/sft/runs/300m-v2/inputs/public-mixed.jsonl`;
+- `data/sft/runs/300m-v2/inputs/public-mixed.metadata.json`.
 
 `runs/` is intentionally ignored by Git. Copy the run-owned imported corpus,
 checkpoints, run configuration, evaluation files, and manifest to durable
@@ -149,6 +149,10 @@ Each JSONL line contains one conversation:
 Production tracked inputs are:
 
 - `curated/core.jsonl`: 1,500 reviewed core conversations;
+- `curated/behavior-identity-reset.jsonl`: 100 concise identity, correction,
+  and topic-reset conversations;
+- `curated/behavior-direct-current.jsonl`: 100 concise direct-answer,
+  live-information, and everyday conversations;
 - `styles/playful-direct.jsonl`: 500 reviewed playful/direct conversations;
 - `styles/calm-precise.jsonl`: 500 reviewed calm/precise conversations; and
 - `eval_prompts.jsonl`: fixed behavioral evaluation prompts.
@@ -165,8 +169,11 @@ audit does not establish factual correctness.
 
 Public SFT data defaults to `no_robots`, `dolly`, `openassistant`, and
 `ultrachat`. WildChat is excluded from the default import and assigned zero
-production sampling weight. The importer rejects empty, over-context, duplicate,
-artifact-heavy, and repetitive responses.
+production sampling weight. The core phase targets 45-65% curated effective
+sampling mass. Imported conversations are limited to six messages, and each
+AGI response is limited to 700 characters and 192 tokens. The importer rejects
+empty, over-context, duplicate, repetitive, forum-attributed, fenced-code,
+AI-boilerplate, and false-persona responses.
 
 The trainer formats examples with `<bos>`, `<user>`, `<agi>`, and `<eos>`.
 Loss is applied only to AGI answer tokens, so prompts provide context without
@@ -187,9 +194,9 @@ make sft-audit \
   SFT_AUDIT_MODE=curated
 
 make sft-evaluate \
-  SFT_EVAL_CHECKPOINT=data/sft/runs/300m/core/best.pt \
-  SFT_EVAL_RESULTS=data/sft/runs/300m/core/evaluation.jsonl \
-  SFT_EVAL_SUMMARY=data/sft/runs/300m/core/evaluation.summary.json \
+  SFT_EVAL_CHECKPOINT=data/sft/runs/300m-v2/core/best.pt \
+  SFT_EVAL_RESULTS=data/sft/runs/300m-v2/core/evaluation.jsonl \
+  SFT_EVAL_SUMMARY=data/sft/runs/300m-v2/core/evaluation.summary.json \
   SFT_EVAL_DEVICE=cuda
 ```
 

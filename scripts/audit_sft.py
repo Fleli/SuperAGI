@@ -8,7 +8,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
-from superagi.chat.sft_audit import AuditReport, audit_sft_corpus  # noqa: E402
+from superagi.chat.sft_audit import (  # noqa: E402
+    AuditConfig,
+    AuditReport,
+    audit_sft_corpus,
+)
 from superagi.chat.sft_training import parse_sft_source_weights  # noqa: E402
 from superagi.model.checkpoint import load_checkpoint  # noqa: E402
 
@@ -20,6 +24,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-weights", default="", help="Comma-separated source=weight entries")
     parser.add_argument("--mode", choices=("curated", "mixed", "style"), default="curated")
     parser.add_argument("--report", default="", help="Optional JSON report path")
+    parser.add_argument("--curated-sampling-mass-min", type=float, default=0.15)
+    parser.add_argument("--curated-sampling-mass-max", type=float, default=0.25)
+    parser.add_argument(
+        "--curated-source-families",
+        default="curated_core,curated",
+        help="Comma-separated source families counted as curated sampling mass",
+    )
     return parser
 
 
@@ -36,6 +47,17 @@ def run_audit(args: argparse.Namespace) -> int:
         source_weights = parse_sft_source_weights(args.source_weights)
     except ValueError as error:
         raise SystemExit(str(error)) from error
+    curated_source_families = tuple(
+        value.strip()
+        for value in getattr(
+            args,
+            "curated_source_families",
+            "curated_core,curated",
+        ).split(",")
+        if value.strip()
+    )
+    if not curated_source_families:
+        raise SystemExit("--curated-source-families must contain at least one family")
 
     tokenizer = None
     context_length = None
@@ -50,6 +72,19 @@ def run_audit(args: argparse.Namespace) -> int:
         tokenizer=tokenizer,
         context_length=context_length,
         source_weights=source_weights,
+        config=AuditConfig(
+            curated_sampling_mass_min=getattr(
+                args,
+                "curated_sampling_mass_min",
+                0.15,
+            ),
+            curated_sampling_mass_max=getattr(
+                args,
+                "curated_sampling_mass_max",
+                0.25,
+            ),
+            curated_source_families=curated_source_families,
+        ),
     )
     _print_summary(report)
     if args.report.strip():

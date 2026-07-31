@@ -10,6 +10,11 @@ from typing import Any, Mapping
 from datasets import load_dataset
 
 from superagi.chat.sft_public_import import (
+    DEFAULT_MAX_AGI_CHARS,
+    DEFAULT_MAX_AGI_TOKENS,
+    DEFAULT_MAX_CONTEXT_TOKENS,
+    DEFAULT_MAX_MESSAGES,
+    DEFAULT_MIN_AGI_CHARS,
     ImportFilterConfig,
     ImportedSftExample,
     ImportResult,
@@ -62,10 +67,13 @@ def build_parser() -> argparse.ArgumentParser:
         description="Download public instruction/chat datasets and filter them into SuperAGI SFT JSONL.",
     )
     parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--out", default="data/sft/imported/public-mixed.jsonl")
+    parser.add_argument(
+        "--out",
+        default="data/sft/runs/300m-v2/inputs/public-mixed.jsonl",
+    )
     parser.add_argument(
         "--metadata",
-        default="data/sft/imported/public-mixed.metadata.json",
+        default="data/sft/runs/300m-v2/inputs/public-mixed.metadata.json",
     )
     parser.add_argument(
         "--sources",
@@ -74,11 +82,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-rows-per-source", type=int, default=50000)
     parser.add_argument("--max-examples-per-source", type=int, default=5000)
-    parser.add_argument("--max-context-tokens", type=int, default=900)
-    parser.add_argument("--max-messages", type=int, default=8)
-    parser.add_argument("--max-agi-chars", type=int, default=1200)
-    parser.add_argument("--max-agi-tokens", type=int, default=512)
-    parser.add_argument("--min-agi-chars", type=int, default=20)
+    parser.add_argument(
+        "--max-context-tokens", type=int, default=DEFAULT_MAX_CONTEXT_TOKENS
+    )
+    parser.add_argument("--max-messages", type=int, default=DEFAULT_MAX_MESSAGES)
+    parser.add_argument("--max-agi-chars", type=int, default=DEFAULT_MAX_AGI_CHARS)
+    parser.add_argument("--max-agi-tokens", type=int, default=DEFAULT_MAX_AGI_TOKENS)
+    parser.add_argument("--min-agi-chars", type=int, default=DEFAULT_MIN_AGI_CHARS)
     parser.add_argument("--cross-example-ngram-size", type=int, default=5)
     parser.add_argument(
         "--max-cross-example-ngram-count",

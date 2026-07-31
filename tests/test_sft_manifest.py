@@ -15,6 +15,26 @@ RUN_NAMES = ("core", "playful", "calm")
 
 
 class SftManifestWriterTests(unittest.TestCase):
+    def test_cli_defaults_target_v2_run_root(self) -> None:
+        args = write_sft_manifest.build_parser().parse_args(
+            ["--base-checkpoint", "base.pt", "--base-sha-record", "base.json"]
+        )
+
+        self.assertEqual(args.output, "data/sft/runs/300m-v2/manifest.json")
+        self.assertEqual(args.core_run_dir, "data/sft/runs/300m-v2/core")
+        self.assertEqual(args.playful_run_dir, "data/sft/runs/300m-v2/playful")
+        self.assertEqual(args.calm_run_dir, "data/sft/runs/300m-v2/calm")
+        self.assertEqual(args.audit_report, "data/sft/runs/300m-v2/audit.json")
+        self.assertEqual(args.run_config, "data/sft/runs/300m-v2/run-config.json")
+        self.assertEqual(
+            args.public_import_data,
+            "data/sft/runs/300m-v2/inputs/public-mixed.jsonl",
+        )
+        self.assertEqual(
+            args.public_import_metadata,
+            "data/sft/runs/300m-v2/inputs/public-mixed.metadata.json",
+        )
+
     def test_writes_relative_deterministically_ordered_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -84,6 +104,8 @@ class SftManifestWriterTests(unittest.TestCase):
                     "curated_core_audit",
                     "curated_core_jsonl",
                     "curated_core_metadata",
+                    "behavior_identity_reset_jsonl",
+                    "behavior_direct_current_jsonl",
                     "evaluation_prompts",
                     "mixed_audit",
                     "playful_style_audit",
@@ -132,6 +154,12 @@ class SftManifestWriterTests(unittest.TestCase):
             "curated core JSONL": "data/sft/curated/core.jsonl",
             "curated core metadata": "data/sft/curated/core.metadata.json",
             "curated core audit": "data/sft/curated/core.audit.json",
+            "identity/reset behavior JSONL": (
+                "data/sft/curated/behavior-identity-reset.jsonl"
+            ),
+            "direct/current behavior JSONL": (
+                "data/sft/curated/behavior-direct-current.jsonl"
+            ),
             "playful style JSONL": "data/sft/styles/playful-direct.jsonl",
             "playful style audit": (
                 "data/sft/styles/playful-direct.audit.json"
@@ -473,6 +501,10 @@ def _arguments(root: Path, paths: dict[str, Path]) -> list[str]:
         str(paths["curated_core_metadata"]),
         "--curated-core-audit",
         str(paths["curated_core_audit"]),
+        "--behavior-identity-reset-data",
+        str(paths["behavior_identity_reset_data"]),
+        "--behavior-direct-current-data",
+        str(paths["behavior_direct_current_data"]),
         "--playful-style-data",
         str(paths["playful_style_data"]),
         "--playful-style-audit",
@@ -553,6 +585,30 @@ def _write_complete_run(root: Path) -> dict[str, Path]:
     _write_json(curated_core_metadata, {"schema_version": 1, "count": 1})
     curated_core_audit = root / "data/sft/curated/core.audit.json"
     _write_json(curated_core_audit, _audit_report(mode="curated"))
+    behavior_identity_reset_data = (
+        root / "data/sft/curated/behavior-identity-reset.jsonl"
+    )
+    _write_jsonl(
+        behavior_identity_reset_data,
+        [
+            {
+                "source": "curated_behavior:identity",
+                "messages": [{"role": "agi", "content": "Identity answer"}],
+            }
+        ],
+    )
+    behavior_direct_current_data = (
+        root / "data/sft/curated/behavior-direct-current.jsonl"
+    )
+    _write_jsonl(
+        behavior_direct_current_data,
+        [
+            {
+                "source": "curated_behavior:direct",
+                "messages": [{"role": "agi", "content": "Direct answer"}],
+            }
+        ],
+    )
     playful_style_data = root / "data/sft/styles/playful-direct.jsonl"
     _write_jsonl(
         playful_style_data,
@@ -592,6 +648,18 @@ def _write_complete_run(root: Path) -> dict[str, Path]:
             "inputs": {
                 "public_jsonl": _artifact_identity(public_data, root),
                 "public_metadata": _artifact_identity(public_metadata, root),
+            },
+            "sealed_inputs": {
+                "curated_core_jsonl": _artifact_identity(curated_core_data, root),
+                "behavior_identity_reset_jsonl": _artifact_identity(
+                    behavior_identity_reset_data, root
+                ),
+                "behavior_direct_current_jsonl": _artifact_identity(
+                    behavior_direct_current_data, root
+                ),
+                "playful_style_jsonl": _artifact_identity(playful_style_data, root),
+                "calm_style_jsonl": _artifact_identity(calm_style_data, root),
+                "evaluation_prompts": _artifact_identity(eval_prompts, root),
             },
             "settings": settings,
         },
@@ -646,6 +714,8 @@ def _write_complete_run(root: Path) -> dict[str, Path]:
         "curated_core_data": curated_core_data,
         "curated_core_metadata": curated_core_metadata,
         "curated_core_audit": curated_core_audit,
+        "behavior_identity_reset_data": behavior_identity_reset_data,
+        "behavior_direct_current_data": behavior_direct_current_data,
         "playful_style_data": playful_style_data,
         "playful_style_audit": playful_style_audit,
         "calm_style_data": calm_style_data,

@@ -8,6 +8,7 @@ class MakefileTests(unittest.TestCase):
         contents = makefile.read_text(encoding="utf-8")
 
         expected_defaults = [
+            "SFT_CLOUD_RUN_ROOT := data/sft/runs/300m-v2",
             "SFT_CLOUD_CORE_STEPS := 3000",
             "SFT_CLOUD_CORE_BATCH := 2",
             "SFT_CLOUD_GRAD_ACCUM_STEPS := 8",
@@ -45,8 +46,37 @@ class MakefileTests(unittest.TestCase):
                 "SFT_CLOUD_CALM_SOURCE_WEIGHTS := "
                 "curated_core=1,style_calm_precise=7,default=1"
             ),
-            "SFT_IMPORT_MAX_AGI_TOKENS := 512",
+            "SFT_IMPORT_MAX_MESSAGES := 6",
+            "SFT_IMPORT_MAX_AGI_CHARS := 700",
+            "SFT_IMPORT_MAX_AGI_TOKENS := 192",
             "SFT_IMPORT_MAX_CROSS_EXAMPLE_NGRAM_COUNT := 3",
+            (
+                "SFT_CLOUD_CORE_SOURCE_WEIGHTS := "
+                "curated_core=8,curated_behavior=8,no_robots=0.5,"
+                "openassistant=0.75,dolly=0.75,ultrachat=0.6,"
+                "wildchat=0,default=1"
+            ),
+            (
+                "SFT_CLOUD_BEHAVIOR_IDENTITY_DATA := "
+                "data/sft/curated/behavior-identity-reset.jsonl"
+            ),
+            (
+                "SFT_CLOUD_BEHAVIOR_DIRECT_DATA := "
+                "data/sft/curated/behavior-direct-current.jsonl"
+            ),
+            (
+                "SFT_CLOUD_BEHAVIOR_DATA := "
+                "$(SFT_CLOUD_EXPECTED_BEHAVIOR_DATA)"
+            ),
+            (
+                '--sealed-input "behavior_identity_reset_jsonl='
+                '$(SFT_CLOUD_BEHAVIOR_IDENTITY_DATA)"'
+            ),
+            (
+                '--sealed-input "behavior_direct_current_jsonl='
+                '$(SFT_CLOUD_BEHAVIOR_DIRECT_DATA)"'
+            ),
+            '--sealed-input "evaluation_prompts=$(SFT_EVAL_PROMPTS)"',
         ]
         for expected in expected_defaults:
             self.assertIn(expected, contents)
@@ -70,7 +100,13 @@ class MakefileTests(unittest.TestCase):
             recipe,
         )
         self.assertIn(
-            'SFT_IMPORT_NGRAM_REFERENCE_DATA="data/sft/curated/core.jsonl"',
+            'SFT_IMPORT_NGRAM_REFERENCE_DATA="$(SFT_CLOUD_CURATED_DATA)"',
+            recipe,
+        )
+        self.assertIn('SFT_AUDIT_CURATED_SAMPLING_MASS_MIN="0.45"', recipe)
+        self.assertIn('SFT_AUDIT_CURATED_SAMPLING_MASS_MAX="0.65"', recipe)
+        self.assertIn(
+            'SFT_AUDIT_CURATED_SOURCE_FAMILIES="curated_core,curated_behavior,curated"',
             recipe,
         )
         self.assertIn('--public-data "$(SFT_CLOUD_PUBLIC_DATA)"', recipe)
@@ -79,6 +115,10 @@ class MakefileTests(unittest.TestCase):
             recipe,
         )
         self.assertIn('--state-file "$(SFT_CLOUD_PREFLIGHT_STATE)"', recipe)
+        self.assertIn(
+            "Aggregate SFT data overrides are not allowed",
+            recipe,
+        )
         self.assertIn(
             'if [ "$$preflight_state" = "prepare" ]; then',
             recipe,
@@ -98,6 +138,7 @@ class MakefileTests(unittest.TestCase):
         )
         self.assertEqual(recipe.count("$(MAKE) sft-import-public"), 1)
         self.assertEqual(recipe.count("$(SFT_CLOUD_CONFIG_ARGS)"), 3)
+        self.assertEqual(recipe.count("$(SFT_CLOUD_SEALED_INPUT_ARGS)"), 3)
         self.assertNotIn("$(MAKE) sft-train", recipe)
 
     def test_runpod_sft_300m_orders_training_evaluation_and_manifest(self) -> None:
@@ -158,6 +199,7 @@ class MakefileTests(unittest.TestCase):
         for path in expected_evaluation_paths:
             self.assertIn(path, recipe)
         self.assertEqual(recipe.count('recovery-current.json'), 3)
+        self.assertEqual(recipe.count("$(SFT_CLOUD_SEALED_INPUT_ARGS)"), 4)
         self.assertEqual(recipe.count('SFT_RESUME="$$resume"'), 3)
         self.assertEqual(recipe.count('final.pt"'), 3)
         self.assertIn(
@@ -196,15 +238,23 @@ class MakefileTests(unittest.TestCase):
         manifest_inputs = [
             '--public-import-data "$(SFT_CLOUD_PUBLIC_DATA)"',
             '--public-import-metadata "$(SFT_CLOUD_PUBLIC_METADATA)"',
-            '--curated-core-data "data/sft/curated/core.jsonl"',
+            '--curated-core-data "$(SFT_CLOUD_CURATED_CORE_DATA)"',
             '--curated-core-metadata "data/sft/curated/core.metadata.json"',
             '--curated-core-audit "data/sft/curated/core.audit.json"',
-            '--playful-style-data "data/sft/styles/playful-direct.jsonl"',
+            (
+                '--behavior-identity-reset-data '
+                '"$(SFT_CLOUD_BEHAVIOR_IDENTITY_DATA)"'
+            ),
+            (
+                '--behavior-direct-current-data '
+                '"$(SFT_CLOUD_BEHAVIOR_DIRECT_DATA)"'
+            ),
+            '--playful-style-data "$(SFT_CLOUD_PLAYFUL_STYLE_DATA)"',
             (
                 '--playful-style-audit '
                 '"data/sft/styles/playful-direct.audit.json"'
             ),
-            '--calm-style-data "data/sft/styles/calm-precise.jsonl"',
+            '--calm-style-data "$(SFT_CLOUD_CALM_STYLE_DATA)"',
             (
                 '--calm-style-audit '
                 '"data/sft/styles/calm-precise.audit.json"'
@@ -336,12 +386,30 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("SFT_AUDIT_SOURCE_WEIGHTS :=", contents)
         self.assertIn("SFT_AUDIT_MODE :=", contents)
         self.assertIn("SFT_AUDIT_REPORT :=", contents)
+        self.assertIn("SFT_AUDIT_CURATED_SAMPLING_MASS_MIN :=", contents)
+        self.assertIn("SFT_AUDIT_CURATED_SAMPLING_MASS_MAX :=", contents)
+        self.assertIn("SFT_AUDIT_CURATED_SOURCE_FAMILIES :=", contents)
         self.assertIn("scripts/audit_sft.py", contents)
         self.assertIn('--data "$(SFT_AUDIT_DATA)"', contents)
         self.assertIn('--checkpoint "$(SFT_AUDIT_CHECKPOINT)"', contents)
         self.assertIn('--source-weights "$(SFT_AUDIT_SOURCE_WEIGHTS)"', contents)
         self.assertIn('--mode "$(SFT_AUDIT_MODE)"', contents)
         self.assertIn('--report "$(SFT_AUDIT_REPORT)"', contents)
+        self.assertIn(
+            '--curated-sampling-mass-min '
+            '"$(SFT_AUDIT_CURATED_SAMPLING_MASS_MIN)"',
+            contents,
+        )
+        self.assertIn(
+            '--curated-sampling-mass-max '
+            '"$(SFT_AUDIT_CURATED_SAMPLING_MASS_MAX)"',
+            contents,
+        )
+        self.assertIn(
+            '--curated-source-families '
+            '"$(SFT_AUDIT_CURATED_SOURCE_FAMILIES)"',
+            contents,
+        )
 
     def test_sft_evaluate_target_wires_fixed_behavioral_gates(self) -> None:
         makefile = Path(__file__).resolve().parents[1] / "Makefile"
@@ -349,7 +417,7 @@ class MakefileTests(unittest.TestCase):
 
         self.assertIn("sft-evaluate", contents)
         self.assertIn(
-            "SFT_EVAL_CHECKPOINT := data/sft/runs/300m/core/best.pt",
+            "SFT_EVAL_CHECKPOINT := data/sft/runs/300m-v2/core/best.pt",
             contents,
         )
         self.assertIn(

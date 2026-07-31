@@ -25,6 +25,12 @@ ROLE_MAP = {
     "system": "system",
 }
 
+DEFAULT_MAX_CONTEXT_TOKENS = 900
+DEFAULT_MIN_AGI_CHARS = 20
+DEFAULT_MAX_AGI_CHARS = 700
+DEFAULT_MAX_AGI_TOKENS = 192
+DEFAULT_MAX_MESSAGES = 6
+
 DISALLOWED_PATTERNS = (
     re.compile(r"\[[a-z_]+-\d+", re.IGNORECASE),
     re.compile(r"\bSTRIPTIONS\b", re.IGNORECASE),
@@ -35,17 +41,55 @@ _LEAKED_CONTROL_TOKEN_RE = re.compile(
     "|".join(re.escape(token) for token in SPECIAL_TOKENS),
     re.IGNORECASE,
 )
+_FORUM_ATTRIBUTION_RE = re.compile(
+    r"(?:"
+    r"(?:^|\s)[-\u2013\u2014]\s*[A-Z][A-Za-z0-9_. -]{1,48}\s+"
+    r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+"
+    r"(?:'\d{2}|\d{4})\s+at\s+\d{1,2}:\d{2}\b"
+    r"|\b(?:posted|last\s+edited)\s+by\s+[A-Za-z0-9_.-]{2,64}\b"
+    r")",
+    re.IGNORECASE,
+)
+_CODE_FENCE_RE = re.compile(r"(?:```|~~~)")
+_AI_BOILERPLATE_RE = re.compile(
+    r"\b(?:as\s+|i\s+(?:am|['\u2019]m)\s+)"
+    r"(?:an?\s+)?(?:"
+    r"(?:(?:ai|large)\s+)?language\s+model"
+    r"|ai|chatgpt|claude|gemini|bard|copilot"
+    r")\b",
+    re.IGNORECASE,
+)
+_SIGNATURE_RE = re.compile(
+    r"\b(?:"
+    r"sent\s+from\s+my\s+(?:iphone|ipad|android)"
+    r"|(?:best|kind)\s+regards|sincerely"
+    r")(?:\s*,?\s*[A-Z][A-Za-z .'-]{0,48})?\s*$",
+    re.IGNORECASE,
+)
 _FALSE_CAPABILITY_OR_IDENTITY_PATTERNS = (
     re.compile(
         r"\bi\s+(?:am|['\u2019]m)\s+(?:a\s+|an\s+)?(?:licensed|certified|registered|qualified)\b",
         re.IGNORECASE,
     ),
     re.compile(r"\bi\s+live\s+in\b", re.IGNORECASE),
+    re.compile(r"\bi\s+(?:grew\s+up|was\s+born)\s+in\b", re.IGNORECASE),
+    re.compile(
+        r"\bi\s+(?:work|worked)\s+as\s+(?:a|an)\s+[A-Za-z][A-Za-z -]{1,48}\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\bi\s+(?:have\s+)?browsed\s+(?:the\s+)?web\b", re.IGNORECASE),
     re.compile(
         r"\bi\s+have\s+worked\s+(?:here|there|at\s+\S+)\s+for\s+\d+\s+years?\b",
         re.IGNORECASE,
     ),
+    re.compile(
+        r"\bi\s+(?:am|['\u2019]m)\s+(?:a\s+|an\s+)?"
+        r"(?:kid|child|citizen|resident|professional|teacher|doctor|lawyer|"
+        r"engineer|student|parent|mother|father|employee|manager|worker|human|person)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bi\s+have\s+been\s+elected\b", re.IGNORECASE),
+    re.compile(r"\bmy\s+(?:salary|employer|job)\b", re.IGNORECASE),
 )
 _GENERIC_REFUSAL_RE = re.compile(
     r"\bas\s+an\s+ai(?:\s+language\s+model)?\b.*\b(?:cannot|can['\u2019]t|unable|not\s+able)\b",
@@ -60,12 +104,12 @@ _JACCARD_ROUNDING_TOLERANCE = 1e-12
 
 @dataclass(frozen=True)
 class ImportFilterConfig:
-    max_context_tokens: int = 900
-    min_agi_chars: int = 20
-    max_agi_chars: int = 1200
-    max_agi_tokens: int = 512
+    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
+    min_agi_chars: int = DEFAULT_MIN_AGI_CHARS
+    max_agi_chars: int = DEFAULT_MAX_AGI_CHARS
+    max_agi_tokens: int = DEFAULT_MAX_AGI_TOKENS
     max_user_chars: int = 4000
-    max_messages: int = 8
+    max_messages: int = DEFAULT_MAX_MESSAGES
     max_repeated_five_grams: int = 3
     cross_example_ngram_size: int = 5
     max_cross_example_ngram_count: int = 3
@@ -418,13 +462,21 @@ class PublicSftImporter:
             return "answer_too_short"
         if any(len(answer) > config.max_agi_chars for answer in agi_answers):
             return "answer_too_long"
+        if any(_FORUM_ATTRIBUTION_RE.search(answer) for answer in agi_answers):
+            return "forum_attribution"
+        if any(_CODE_FENCE_RE.search(answer) for answer in agi_answers):
+            return "code_fence"
+        if any(_SIGNATURE_RE.search(answer) for answer in agi_answers):
+            return "signature"
+        if _is_generic_refusal_for_harmless_prompt(messages):
+            return "generic_refusal"
+        if any(_AI_BOILERPLATE_RE.search(answer) for answer in agi_answers):
+            return "ai_boilerplate"
         joined_text = "\n".join(message.content for message in messages)
         if _contains_artifact(joined_text):
             return "artifact"
         if any(_claims_false_capability_or_identity(answer) for answer in agi_answers):
             return "false_capability_or_identity"
-        if _is_generic_refusal_for_harmless_prompt(messages):
-            return "generic_refusal"
         if any(_has_repeated_five_grams(answer, config) for answer in agi_answers):
             return "repeated_phrase"
         return None

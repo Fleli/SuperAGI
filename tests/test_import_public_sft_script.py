@@ -32,8 +32,18 @@ class ImportPublicSftScriptTests(unittest.TestCase):
         args = parser.parse_args(["--checkpoint", "checkpoint.pt", "--seed", "99"])
 
         self.assertEqual(args.seed, 99)
-        self.assertEqual(args.max_agi_tokens, 512)
+        self.assertEqual(args.max_messages, 6)
+        self.assertEqual(args.max_agi_chars, 700)
+        self.assertEqual(args.max_agi_tokens, 192)
         self.assertEqual(args.ngram_reference_data, "")
+        self.assertEqual(
+            args.out,
+            "data/sft/runs/300m-v2/inputs/public-mixed.jsonl",
+        )
+        self.assertEqual(
+            args.metadata,
+            "data/sft/runs/300m-v2/inputs/public-mixed.metadata.json",
+        )
 
     def test_all_public_sources_pin_immutable_dataset_revisions(self) -> None:
         for source, spec in import_public_sft.SOURCE_DATASETS.items():
