@@ -12,6 +12,15 @@ from typing import Any, Mapping, Sequence
 import torch
 
 from superagi.chat.sft import IGNORE_INDEX, load_sft_records, tokenize_sft_messages
+from superagi.chat.sft_recovery import (
+    RECOVERY_COMMIT_BOUNDARIES,
+    RecoveryBundle,
+    commit_recovery_bundle,
+    load_committed_recovery_bundle,
+    prune_recovery_generations,
+    publish_recovery_aliases,
+    recovery_pointer_path,
+)
 from superagi.chat.sft_training import (
     clear_sft_device_cache,
     evaluate_sft_loss,
@@ -37,7 +46,10 @@ from superagi.training.train import (
 )
 
 
-TRAINER_STATE_FORMAT = "superagi-sft-trainer-state-v1"
+TRAINER_STATE_FORMAT = "superagi-sft-trainer-state-v2"
+
+
+_load_committed_recovery_bundle = load_committed_recovery_bundle
 
 
 @dataclass(frozen=True)
@@ -64,7 +76,7 @@ def parse_args() -> argparse.Namespace:
         default="",
         help=(
             "Production directory for latest.pt, best.pt, final.pt, "
-            "trainer-state.pt, snapshots/, and metrics.jsonl."
+            "versioned recovery/, snapshots/, and metrics.jsonl."
         ),
     )
     parser.add_argument(
@@ -149,8 +161,8 @@ def main() -> int:
     latest_path = run_dir / "latest.pt"
     best_path = run_dir / "best.pt"
     final_path = run_dir / "final.pt"
-    trainer_state_path = run_dir / "trainer-state.pt"
     snapshots_path = run_dir / "snapshots"
+    pointer_path = recovery_pointer_path(run_dir)
 
     _validate_artifact_paths(
         base_path=base_path,
@@ -159,13 +171,14 @@ def main() -> int:
         final_path=final_path,
         metrics_path=metrics_path,
         snapshots_path=snapshots_path,
+        pointer_path=pointer_path,
         final_alias_path=final_alias_path,
     )
     _prepare_run_directory(
         run_dir,
         production_mode=production_mode,
         resume=args.resume,
-        trainer_state_path=trainer_state_path,
+        pointer_path=pointer_path,
         final_path=final_path,
     )
     if production_mode and args.validation_fraction <= 0:
@@ -181,24 +194,15 @@ def main() -> int:
     _seed_global_torch_rng(args.seed)
     base_checkpoint = load_checkpoint(base_path, map_location="cpu")
     base_checkpoint_sha256 = _sha256_file(base_path)
-    run_signature = _build_run_signature(
-        args=args,
-        base_path=base_path,
-        base_checkpoint_sha256=base_checkpoint_sha256,
-        data_paths=data_paths,
-        source_weights=source_weights,
-    )
 
     resume_state: dict[str, Any] | None = None
     model_checkpoint = base_checkpoint
+    current_bundle: RecoveryBundle | None = None
     if args.resume:
+        current_bundle = _load_committed_recovery_bundle(run_dir)
         resume_state, model_checkpoint = _load_validated_resume(
-            trainer_state_path=trainer_state_path,
-            latest_path=latest_path,
-            best_path=best_path,
+            bundle=current_bundle,
             final_path=final_path,
-            metrics_path=metrics_path,
-            expected_run_signature=run_signature,
             expected_base_sha256=base_checkpoint_sha256,
         )
 
@@ -291,13 +295,31 @@ def main() -> int:
     model = model_checkpoint.model.to(device)
     mixed_precision_dtype = _resolve_mixed_precision_dtype(args.mixed_precision, device)
     grad_scaler = _build_grad_scaler(mixed_precision_dtype, device)
-    optimizer = _build_adamw_optimizer(
+    optimizer, fused_adamw_selected = _build_adamw_optimizer(
         list(model.parameters()),
         learning_rate=args.lr,
         weight_decay=args.weight_decay,
         fused_mode=args.fused_adamw,
         device=device,
     )
+    backend_signature = _build_backend_signature(
+        device=device,
+        mixed_precision_dtype=mixed_precision_dtype,
+        fused_adamw_selected=fused_adamw_selected,
+    )
+    run_signature = _build_run_signature(
+        args=args,
+        base_path=base_path,
+        base_checkpoint_sha256=base_checkpoint_sha256,
+        data_paths=data_paths,
+        source_weights=source_weights,
+        backend_signature=backend_signature,
+    )
+    if resume_state is not None:
+        _validate_resume_run_signature(
+            resume_state,
+            expected_run_signature=run_signature,
+        )
     config = TrainConfig(
         batch_size=args.batch,
         learning_rate=args.lr,
@@ -353,9 +375,13 @@ def main() -> int:
         examples_seen = _required_int(resume_state, "examples_seen")
         elapsed_offset = float(resume_state.get("elapsed_seconds", 0.0))
         first_step = _required_int(resume_state, "completed_step") + 1
-        _trim_uncommitted_metrics(
-            metrics_path,
-            committed_metrics=model_checkpoint.metrics,
+        if current_bundle is None:
+            raise RuntimeError("validated resume is missing its recovery bundle")
+        publish_recovery_aliases(
+            current_bundle,
+            latest_path=latest_path,
+            best_path=best_path,
+            metrics_path=metrics_path,
         )
 
     start_time = time.perf_counter()
@@ -431,7 +457,13 @@ def main() -> int:
             ),
         )
         metrics.append(metric)
-        append_metrics_jsonl(metrics_path, [metric])
+        if production_mode:
+            _write_metrics_jsonl_atomic(
+                metrics_path,
+                [asdict(item) for item in metrics],
+            )
+        else:
+            append_metrics_jsonl(metrics_path, [metric])
 
         if should_checkpoint:
             metadata = _build_metadata(
@@ -448,14 +480,6 @@ def main() -> int:
                 supervised_tokens_seen=supervised_tokens_seen,
                 examples_seen=examples_seen,
             )
-            _save_checkpoint_atomic(
-                latest_path,
-                model=model,
-                vocab=base_checkpoint.vocab,
-                losses=losses,
-                metrics=[asdict(item) for item in metrics],
-                metadata=metadata,
-            )
             selection_loss = (
                 validation_loss
                 if production_mode
@@ -469,7 +493,12 @@ def main() -> int:
                 raise RuntimeError(
                     "production best checkpoint selection requires validation loss"
                 )
-            if best_selection_loss is None or selection_loss < best_selection_loss:
+            best_improved = (
+                best_selection_loss is None
+                or selection_loss < best_selection_loss
+            )
+            best_metadata: dict[str, object] | None = None
+            if best_improved:
                 best_selection_loss = selection_loss
                 best_validation_loss = validation_loss
                 best_validation_step = step_index
@@ -480,23 +509,9 @@ def main() -> int:
                         "best_validation_step": best_validation_step,
                     }
                 )
-                _save_checkpoint_atomic(
-                    best_path,
-                    model=model,
-                    vocab=base_checkpoint.vocab,
-                    losses=losses,
-                    metrics=[asdict(item) for item in metrics],
-                    metadata=best_metadata,
-                )
-            retain_checkpoint_snapshot(
-                latest_path,
-                snapshots_path,
-                step=step_index,
-                keep=args.checkpoint_keep,
-            )
+            serialized_metrics = [asdict(item) for item in metrics]
             if production_mode:
-                _save_trainer_state(
-                    trainer_state_path,
+                trainer_state = _build_trainer_state(
                     completed_step=step_index,
                     optimizer=optimizer,
                     grad_scaler=grad_scaler,
@@ -508,9 +523,60 @@ def main() -> int:
                     elapsed_seconds=elapsed_seconds,
                     run_signature=run_signature,
                     base_checkpoint_sha256=base_checkpoint_sha256,
+                    metrics_count=len(metrics),
+                )
+                current_bundle = commit_recovery_bundle(
+                    run_dir,
+                    step=step_index,
+                    model=model,
+                    vocab=base_checkpoint.vocab,
+                    losses=losses,
+                    metrics=serialized_metrics,
+                    latest_metadata=metadata,
+                    best_improved=best_improved,
+                    best_metadata=best_metadata,
+                    previous_bundle=current_bundle,
+                    trainer_state=trainer_state,
+                    boundary_hook=_recovery_commit_boundary,
+                )
+                publish_recovery_aliases(
+                    current_bundle,
                     latest_path=latest_path,
                     best_path=best_path,
-                    metrics_count=len(metrics),
+                    metrics_path=metrics_path,
+                )
+                snapshot_source = current_bundle.latest_path
+            else:
+                _save_checkpoint_atomic(
+                    latest_path,
+                    model=model,
+                    vocab=base_checkpoint.vocab,
+                    losses=losses,
+                    metrics=serialized_metrics,
+                    metadata=metadata,
+                )
+                if best_improved:
+                    if best_metadata is None:
+                        raise RuntimeError("best checkpoint metadata is missing")
+                    _save_checkpoint_atomic(
+                        best_path,
+                        model=model,
+                        vocab=base_checkpoint.vocab,
+                        losses=losses,
+                        metrics=serialized_metrics,
+                        metadata=best_metadata,
+                    )
+                snapshot_source = latest_path
+            retain_checkpoint_snapshot(
+                snapshot_source,
+                snapshots_path,
+                step=step_index,
+                keep=args.checkpoint_keep,
+            )
+            if production_mode:
+                prune_recovery_generations(
+                    run_dir,
+                    keep=args.checkpoint_keep,
                 )
             clear_sft_device_cache(device)
 
@@ -560,17 +626,18 @@ def _validate_artifact_paths(
     final_path: Path,
     metrics_path: Path,
     snapshots_path: Path,
+    pointer_path: Path,
     final_alias_path: Path | None,
 ) -> None:
     resolved_base = base_path.resolve(strict=False)
     resolved_snapshots = snapshots_path.resolve(strict=False)
-    trainer_state_path = latest_path.parent / "trainer-state.pt"
+    resolved_recovery = (latest_path.parent / "recovery").resolve(strict=False)
     artifact_paths = {
         "latest checkpoint": latest_path,
         "best checkpoint": best_path,
         "final checkpoint": final_path,
         "metrics": metrics_path,
-        "trainer state": trainer_state_path,
+        "recovery pointer": pointer_path,
     }
     if final_alias_path is not None:
         artifact_paths["legacy output"] = final_alias_path
@@ -581,6 +648,8 @@ def _validate_artifact_paths(
     if (
         resolved_base == resolved_snapshots
         or resolved_base.is_relative_to(resolved_snapshots)
+        or resolved_base == resolved_recovery
+        or resolved_base.is_relative_to(resolved_recovery)
         or resolved_base in resolved_artifacts.values()
     ):
         raise SystemExit(
@@ -604,7 +673,7 @@ def _prepare_run_directory(
     *,
     production_mode: bool,
     resume: bool,
-    trainer_state_path: Path,
+    pointer_path: Path,
     final_path: Path,
 ) -> None:
     if not production_mode:
@@ -612,9 +681,9 @@ def _prepare_run_directory(
     if resume:
         if not run_dir.is_dir() or not any(run_dir.iterdir()):
             raise SystemExit("cannot resume an empty or missing production run directory")
-        if not trainer_state_path.is_file():
+        if not pointer_path.is_file():
             raise SystemExit(
-                "production resume requires a valid trainer state artifact"
+                "production resume requires a committed recovery pointer"
             )
         if final_path.exists():
             raise SystemExit("production run is already complete; final.pt exists")
@@ -645,6 +714,11 @@ def _seed_global_torch_rng(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _recovery_commit_boundary(name: str) -> None:
+    if name not in RECOVERY_COMMIT_BOUNDARIES:
+        raise ValueError(f"unknown recovery commit boundary: {name}")
+
+
 def _restore_global_torch_rng(state: Mapping[str, Any]) -> None:
     torch.set_rng_state(_required_tensor(state, "torch_rng_state"))
     cuda_rng_state = state.get("cuda_rng_state_all")
@@ -667,36 +741,48 @@ def _build_adamw_optimizer(
     weight_decay: float,
     fused_mode: str,
     device: torch.device,
-) -> torch.optim.Optimizer:
+) -> tuple[torch.optim.Optimizer, bool]:
     parameter_list = list(parameters)
     if device.type != "cuda":
         if fused_mode == "on":
             raise ValueError("fused AdamW requires CUDA")
-        return torch.optim.AdamW(
-            parameter_list,
-            lr=learning_rate,
-            weight_decay=weight_decay,
+        return (
+            torch.optim.AdamW(
+                parameter_list,
+                lr=learning_rate,
+                weight_decay=weight_decay,
+            ),
+            False,
         )
     if fused_mode == "off":
-        return torch.optim.AdamW(
-            parameter_list,
-            lr=learning_rate,
-            weight_decay=weight_decay,
+        return (
+            torch.optim.AdamW(
+                parameter_list,
+                lr=learning_rate,
+                weight_decay=weight_decay,
+            ),
+            False,
         )
     try:
-        return torch.optim.AdamW(
-            parameter_list,
-            lr=learning_rate,
-            weight_decay=weight_decay,
-            fused=True,
+        return (
+            torch.optim.AdamW(
+                parameter_list,
+                lr=learning_rate,
+                weight_decay=weight_decay,
+                fused=True,
+            ),
+            True,
         )
     except (TypeError, RuntimeError, NotImplementedError):
         if fused_mode == "on":
             raise
-        return torch.optim.AdamW(
-            parameter_list,
-            lr=learning_rate,
-            weight_decay=weight_decay,
+        return (
+            torch.optim.AdamW(
+                parameter_list,
+                lr=learning_rate,
+                weight_decay=weight_decay,
+            ),
+            False,
         )
 
 
@@ -736,6 +822,7 @@ def _build_run_signature(
     base_checkpoint_sha256: str,
     data_paths: Sequence[Path],
     source_weights: Mapping[str, float],
+    backend_signature: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
         "base_checkpoint": str(base_path.resolve(strict=False)),
@@ -766,39 +853,66 @@ def _build_run_signature(
         "max_examples": args.max_examples,
         "source_weights": dict(sorted(source_weights.items())),
         "seed": args.seed,
+        "backend": dict(backend_signature),
+    }
+
+
+def _build_backend_signature(
+    *,
+    device: torch.device,
+    mixed_precision_dtype: torch.dtype | None,
+    fused_adamw_selected: bool,
+) -> dict[str, Any]:
+    device_index = device.index
+    if device.type == "cuda" and device_index is None:
+        device_index = torch.cuda.current_device()
+    warn_only_getter = getattr(
+        torch,
+        "is_deterministic_algorithms_warn_only_enabled",
+        None,
+    )
+    warn_only = bool(warn_only_getter()) if warn_only_getter is not None else False
+    autocast_dtype = (
+        "none"
+        if mixed_precision_dtype is None
+        else str(mixed_precision_dtype).removeprefix("torch.")
+    )
+    return {
+        "device": {
+            "type": device.type,
+            "index": device_index,
+        },
+        "autocast_dtype": autocast_dtype,
+        "fused_adamw": fused_adamw_selected,
+        "torch_version": str(torch.__version__),
+        "torch_cuda_version": torch.version.cuda,
+        "determinism": {
+            "algorithms": torch.are_deterministic_algorithms_enabled(),
+            "warn_only": warn_only,
+            "float32_matmul_precision": torch.get_float32_matmul_precision(),
+            "cudnn_benchmark": torch.backends.cudnn.benchmark,
+            "cudnn_deterministic": torch.backends.cudnn.deterministic,
+            "cudnn_allow_tf32": torch.backends.cudnn.allow_tf32,
+            "cuda_matmul_allow_tf32": torch.backends.cuda.matmul.allow_tf32,
+        },
     }
 
 
 def _load_validated_resume(
     *,
-    trainer_state_path: Path,
-    latest_path: Path,
-    best_path: Path,
+    bundle: RecoveryBundle,
     final_path: Path,
-    metrics_path: Path,
-    expected_run_signature: Mapping[str, Any],
     expected_base_sha256: str,
 ) -> tuple[dict[str, Any], LoadedCheckpoint]:
     if final_path.exists():
         raise SystemExit("production run is already complete; final.pt exists")
-    try:
-        state = torch.load(trainer_state_path, map_location="cpu")
-    except Exception as error:
-        raise SystemExit(f"failed to load trainer state: {error}") from error
+    state = bundle.trainer_state
     if not isinstance(state, dict) or state.get("format") != TRAINER_STATE_FORMAT:
         raise SystemExit("trainer state has an unsupported or corrupt format")
-    if state.get("run_signature") != dict(expected_run_signature):
-        raise SystemExit("trainer state does not match the requested SFT run schedule")
     if state.get("base_checkpoint_sha256") != expected_base_sha256:
         raise SystemExit("trainer state base checkpoint hash does not match")
-    if not latest_path.is_file() or not best_path.is_file():
-        raise SystemExit("trainer state requires both latest.pt and best.pt")
-    if state.get("latest_checkpoint_sha256") != _sha256_file(latest_path):
-        raise SystemExit("latest.pt does not match trainer state; refusing corrupt reuse")
-    if state.get("best_checkpoint_sha256") != _sha256_file(best_path):
-        raise SystemExit("best.pt does not match trainer state; refusing corrupt reuse")
     try:
-        latest = load_checkpoint(latest_path, map_location="cpu")
+        latest = load_checkpoint(bundle.latest_path, map_location="cpu")
     except Exception as error:
         raise SystemExit(f"failed to load latest checkpoint: {error}") from error
     completed_step = _required_int(state, "completed_step")
@@ -811,26 +925,31 @@ def _load_validated_resume(
     expected_metrics_count = _required_int(state, "metrics_count")
     if expected_metrics_count != len(latest.metrics):
         raise SystemExit("latest.pt metrics do not match trainer state")
-    persisted_metrics = _read_metrics_jsonl(metrics_path)
-    if len(persisted_metrics) < expected_metrics_count:
-        raise SystemExit("metrics.jsonl is incomplete for trainer state")
-    if persisted_metrics[:expected_metrics_count] != latest.metrics:
+    persisted_metrics = _read_metrics_jsonl(bundle.metrics_path)
+    if len(persisted_metrics) != expected_metrics_count:
+        raise SystemExit("recovery metrics count does not match trainer state")
+    if persisted_metrics != latest.metrics:
         raise SystemExit("metrics.jsonl does not match trainer state")
     return state, latest
 
 
-def _trim_uncommitted_metrics(
-    path: Path,
+def _validate_resume_run_signature(
+    state: Mapping[str, Any],
     *,
-    committed_metrics: Sequence[Mapping[str, Any]],
+    expected_run_signature: Mapping[str, Any],
 ) -> None:
-    persisted_metrics = _read_metrics_jsonl(path)
-    if len(persisted_metrics) > len(committed_metrics):
-        _write_metrics_jsonl_atomic(path, committed_metrics)
+    stored_signature = state.get("run_signature")
+    if not isinstance(stored_signature, Mapping):
+        raise SystemExit("trainer state is missing its SFT run signature")
+    if stored_signature.get("backend") != expected_run_signature.get("backend"):
+        raise SystemExit(
+            "trainer state resolved backend does not match the current runtime"
+        )
+    if dict(stored_signature) != dict(expected_run_signature):
+        raise SystemExit("trainer state does not match the requested SFT run schedule")
 
 
-def _save_trainer_state(
-    path: Path,
+def _build_trainer_state(
     *,
     completed_step: int,
     optimizer: torch.optim.Optimizer,
@@ -843,37 +962,30 @@ def _save_trainer_state(
     elapsed_seconds: float,
     run_signature: Mapping[str, Any],
     base_checkpoint_sha256: str,
-    latest_path: Path,
-    best_path: Path,
     metrics_count: int,
-) -> None:
+) -> dict[str, Any]:
     cuda_rng_state_all = (
         torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
     )
-    _atomic_torch_save(
-        {
-            "format": TRAINER_STATE_FORMAT,
-            "completed_step": completed_step,
-            "optimizer_state": optimizer.state_dict(),
-            "grad_scaler_state": (
-                grad_scaler.state_dict() if grad_scaler is not None else None
-            ),
-            "sampler_rng_state": generator.get_state(),
-            "torch_rng_state": torch.get_rng_state(),
-            "cuda_rng_state_all": cuda_rng_state_all,
-            "best_validation_loss": best_validation_loss,
-            "best_validation_step": best_validation_step,
-            "supervised_tokens_seen": supervised_tokens_seen,
-            "examples_seen": examples_seen,
-            "elapsed_seconds": elapsed_seconds,
-            "run_signature": dict(run_signature),
-            "base_checkpoint_sha256": base_checkpoint_sha256,
-            "latest_checkpoint_sha256": _sha256_file(latest_path),
-            "best_checkpoint_sha256": _sha256_file(best_path),
-            "metrics_count": metrics_count,
-        },
-        path,
-    )
+    return {
+        "format": TRAINER_STATE_FORMAT,
+        "completed_step": completed_step,
+        "optimizer_state": optimizer.state_dict(),
+        "grad_scaler_state": (
+            grad_scaler.state_dict() if grad_scaler is not None else None
+        ),
+        "sampler_rng_state": generator.get_state(),
+        "torch_rng_state": torch.get_rng_state(),
+        "cuda_rng_state_all": cuda_rng_state_all,
+        "best_validation_loss": best_validation_loss,
+        "best_validation_step": best_validation_step,
+        "supervised_tokens_seen": supervised_tokens_seen,
+        "examples_seen": examples_seen,
+        "elapsed_seconds": elapsed_seconds,
+        "run_signature": dict(run_signature),
+        "base_checkpoint_sha256": base_checkpoint_sha256,
+        "metrics_count": metrics_count,
+    }
 
 
 def _build_metadata(
@@ -944,16 +1056,6 @@ def _save_checkpoint_atomic(
             metrics=metrics,
             metadata=metadata,
         )
-        temporary_path.replace(path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
-
-
-def _atomic_torch_save(payload: object, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = _temporary_sibling(path)
-    try:
-        torch.save(payload, temporary_path)
         temporary_path.replace(path)
     finally:
         temporary_path.unlink(missing_ok=True)

@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -28,6 +29,135 @@ SPEC.loader.exec_module(train_sft)
 
 
 class TrainSftScriptTests(unittest.TestCase):
+    def test_atomic_recovery_bundle_resumes_prior_generation_at_each_boundary(
+        self,
+    ) -> None:
+        expected_boundaries = (
+            "best_object",
+            "latest",
+            "metrics",
+            "trainer_state",
+            "generation_manifest",
+            "pointer",
+        )
+        self.assertEqual(
+            getattr(train_sft, "RECOVERY_COMMIT_BOUNDARIES", None),
+            expected_boundaries,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            base_path, data_path = _write_tiny_training_fixture(root)
+            baseline_dir = root / "baseline"
+            uninterrupted_dir = root / "uninterrupted"
+            original_train_step = train_sft.train_accumulated_step
+            completed_steps = 0
+
+            def interrupt_after_one_step(*args: object, **kwargs: object) -> float:
+                nonlocal completed_steps
+                if completed_steps == 1:
+                    raise RuntimeError("simulated interruption")
+                completed_steps += 1
+                return original_train_step(*args, **kwargs)
+
+            baseline_argv = _training_argv(
+                base_path=base_path,
+                data_path=data_path,
+                run_dir=baseline_dir,
+                steps=3,
+            )
+            with (
+                patch.object(sys, "argv", baseline_argv),
+                patch.object(
+                    train_sft,
+                    "evaluate_sft_loss",
+                    side_effect=[2.0],
+                ),
+                patch.object(
+                    train_sft,
+                    "train_accumulated_step",
+                    side_effect=interrupt_after_one_step,
+                ),
+                self.assertRaisesRegex(RuntimeError, "simulated interruption"),
+            ):
+                train_sft.main()
+
+            uninterrupted_argv = _training_argv(
+                base_path=base_path,
+                data_path=data_path,
+                run_dir=uninterrupted_dir,
+                steps=3,
+            )
+            with (
+                patch.object(sys, "argv", uninterrupted_argv),
+                patch.object(
+                    train_sft,
+                    "evaluate_sft_loss",
+                    side_effect=[2.0, 1.5, 1.7],
+                ),
+            ):
+                self.assertEqual(train_sft.main(), 0)
+            uninterrupted = load_checkpoint(uninterrupted_dir / "latest.pt")
+
+            for boundary in expected_boundaries:
+                with self.subTest(boundary=boundary):
+                    failed_dir = root / f"failed-{boundary}"
+                    shutil.copytree(baseline_dir, failed_dir)
+                    failed_argv = _training_argv(
+                        base_path=base_path,
+                        data_path=data_path,
+                        run_dir=failed_dir,
+                        steps=3,
+                    ) + ["--resume"]
+
+                    def fail_at_boundary(name: str) -> None:
+                        if name == boundary:
+                            raise RuntimeError(f"injected failure: {boundary}")
+
+                    with (
+                        patch.object(sys, "argv", failed_argv),
+                        patch.object(
+                            train_sft,
+                            "evaluate_sft_loss",
+                            side_effect=[1.5],
+                        ),
+                        patch.object(
+                            train_sft,
+                            "_recovery_commit_boundary",
+                            side_effect=fail_at_boundary,
+                        ),
+                        self.assertRaisesRegex(
+                            RuntimeError,
+                            f"injected failure: {boundary}",
+                        ),
+                    ):
+                        train_sft.main()
+
+                    committed = train_sft._load_committed_recovery_bundle(
+                        failed_dir
+                    )
+                    self.assertEqual(
+                        committed.trainer_state["completed_step"],
+                        1,
+                    )
+
+                    with (
+                        patch.object(sys, "argv", failed_argv),
+                        patch.object(
+                            train_sft,
+                            "evaluate_sft_loss",
+                            side_effect=[1.5, 1.7],
+                        ),
+                    ):
+                        self.assertEqual(train_sft.main(), 0)
+
+                    resumed = load_checkpoint(failed_dir / "latest.pt")
+                    for name, tensor in uninterrupted.model.state_dict().items():
+                        self.assertTrue(
+                            torch.equal(tensor, resumed.model.state_dict()[name]),
+                            msg=f"{boundary}: {name}",
+                        )
+
     def test_rejects_base_checkpoint_collision_with_production_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             run_dir = Path(tmp_dir) / "run"
@@ -37,6 +167,8 @@ class TrainSftScriptTests(unittest.TestCase):
                 run_dir / "final.pt",
                 run_dir / "metrics.jsonl",
                 run_dir / "snapshots" / "base.pt",
+                run_dir / "recovery-current.json",
+                run_dir / "recovery" / "generations" / "generation-1" / "latest.pt",
             ]
 
             for base_path in artifact_paths:
@@ -49,6 +181,7 @@ class TrainSftScriptTests(unittest.TestCase):
                             final_path=run_dir / "final.pt",
                             metrics_path=run_dir / "metrics.jsonl",
                             snapshots_path=run_dir / "snapshots",
+                            pointer_path=run_dir / "recovery-current.json",
                             final_alias_path=None,
                         )
 
@@ -63,6 +196,7 @@ class TrainSftScriptTests(unittest.TestCase):
                     final_path=Path(tmp_dir) / "final.pt",
                     metrics_path=base_path,
                     snapshots_path=Path(tmp_dir) / "snapshots",
+                    pointer_path=Path(tmp_dir) / "recovery-current.json",
                     final_alias_path=Path(tmp_dir) / "legacy.pt",
                 )
 
@@ -107,7 +241,7 @@ class TrainSftScriptTests(unittest.TestCase):
             "AdamW",
             side_effect=[TypeError("fused unsupported"), fallback_optimizer],
         ) as adamw:
-            optimizer = train_sft._build_adamw_optimizer(
+            optimizer, fused_selected = train_sft._build_adamw_optimizer(
                 [parameter],
                 learning_rate=1e-5,
                 weight_decay=0.01,
@@ -116,6 +250,7 @@ class TrainSftScriptTests(unittest.TestCase):
             )
 
         self.assertIs(optimizer, fallback_optimizer)
+        self.assertFalse(fused_selected)
         self.assertEqual(
             adamw.call_args_list,
             [
@@ -123,6 +258,22 @@ class TrainSftScriptTests(unittest.TestCase):
                 call([parameter], lr=1e-5, weight_decay=0.01),
             ],
         )
+
+        fused_optimizer = object()
+        with patch.object(
+            torch.optim,
+            "AdamW",
+            return_value=fused_optimizer,
+        ):
+            optimizer, fused_selected = train_sft._build_adamw_optimizer(
+                [parameter],
+                learning_rate=1e-5,
+                weight_decay=0.01,
+                fused_mode="auto",
+                device=torch.device("cuda:2"),
+            )
+        self.assertIs(optimizer, fused_optimizer)
+        self.assertTrue(fused_selected)
 
         with (
             patch.object(
@@ -147,6 +298,109 @@ class TrainSftScriptTests(unittest.TestCase):
                 weight_decay=0.01,
                 fused_mode="on",
                 device=torch.device("cpu"),
+            )
+
+    def test_backend_signature_records_resolved_runtime(self) -> None:
+        signature = train_sft._build_backend_signature(
+            device=torch.device("cpu"),
+            mixed_precision_dtype=torch.bfloat16,
+            fused_adamw_selected=False,
+        )
+
+        self.assertEqual(signature["device"], {"type": "cpu", "index": None})
+        self.assertEqual(signature["autocast_dtype"], "bfloat16")
+        self.assertFalse(signature["fused_adamw"])
+        self.assertEqual(signature["torch_version"], torch.__version__)
+        self.assertEqual(
+            set(signature["determinism"]),
+            {
+                "algorithms",
+                "warn_only",
+                "float32_matmul_precision",
+                "cudnn_benchmark",
+                "cudnn_deterministic",
+                "cudnn_allow_tf32",
+                "cuda_matmul_allow_tf32",
+            },
+        )
+
+        with patch.object(torch.cuda, "current_device", return_value=3):
+            cuda_signature = train_sft._build_backend_signature(
+                device=torch.device("cuda"),
+                mixed_precision_dtype=None,
+                fused_adamw_selected=True,
+            )
+        self.assertEqual(
+            cuda_signature["device"],
+            {"type": "cuda", "index": 3},
+        )
+        self.assertEqual(cuda_signature["autocast_dtype"], "none")
+        self.assertTrue(cuda_signature["fused_adamw"])
+
+    def test_resume_refuses_resolved_backend_mismatch_without_new_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            base_path, data_path = _write_tiny_training_fixture(root)
+            run_dir = root / "run"
+            original_train_step = train_sft.train_accumulated_step
+            completed_steps = 0
+
+            def interrupt_after_one_step(*args: object, **kwargs: object) -> float:
+                nonlocal completed_steps
+                if completed_steps == 1:
+                    raise RuntimeError("simulated interruption")
+                completed_steps += 1
+                return original_train_step(*args, **kwargs)
+
+            argv = _training_argv(
+                base_path=base_path,
+                data_path=data_path,
+                run_dir=run_dir,
+                steps=3,
+            )
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(
+                    train_sft,
+                    "evaluate_sft_loss",
+                    side_effect=[2.0],
+                ),
+                patch.object(
+                    train_sft,
+                    "train_accumulated_step",
+                    side_effect=interrupt_after_one_step,
+                ),
+                self.assertRaisesRegex(RuntimeError, "simulated interruption"),
+            ):
+                train_sft.main()
+
+            pointer_before = (run_dir / "recovery-current.json").read_bytes()
+            metrics_before = (run_dir / "metrics.jsonl").read_bytes()
+            original_builder = train_sft._build_backend_signature
+
+            def mismatched_backend(**kwargs: object) -> dict[str, object]:
+                signature = original_builder(**kwargs)
+                signature["torch_version"] = "incompatible-test-version"
+                return signature
+
+            with (
+                patch.object(sys, "argv", argv + ["--resume"]),
+                patch.object(
+                    train_sft,
+                    "_build_backend_signature",
+                    side_effect=mismatched_backend,
+                ),
+                self.assertRaisesRegex(SystemExit, "resolved backend"),
+            ):
+                train_sft.main()
+
+            self.assertEqual(
+                (run_dir / "recovery-current.json").read_bytes(),
+                pointer_before,
+            )
+            self.assertEqual(
+                (run_dir / "metrics.jsonl").read_bytes(),
+                metrics_before,
             )
 
     def test_sampled_microbatch_counts_use_actual_supervised_tokens(self) -> None:
@@ -316,21 +570,58 @@ class TrainSftScriptTests(unittest.TestCase):
             ):
                 train_sft.main()
 
+            alias_repair_dir = root / "alias-repair"
+            shutil.copytree(resumed_dir, alias_repair_dir)
+            alias_repair_argv = _training_argv(
+                base_path=base_path,
+                data_path=data_path,
+                run_dir=alias_repair_dir,
+                steps=4,
+            ) + ["--resume"]
+            (alias_repair_dir / "latest.pt").write_bytes(b"corrupt alias")
+            (alias_repair_dir / "best.pt").write_bytes(b"corrupt alias")
+            with (alias_repair_dir / "metrics.jsonl").open("ab") as file:
+                file.write(b'{"partial":')
+            with (
+                patch.object(sys, "argv", alias_repair_argv),
+                patch.object(
+                    train_sft,
+                    "evaluate_sft_loss",
+                    side_effect=[1.6, 1.7],
+                ),
+            ):
+                self.assertEqual(train_sft.main(), 0)
+            repaired_metrics = [
+                json.loads(line)
+                for line in (alias_repair_dir / "metrics.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            self.assertEqual(
+                [metric["step"] for metric in repaired_metrics],
+                [1, 2, 3, 4],
+            )
+
             metrics_before_invalid_resume = (
                 resumed_dir / "metrics.jsonl"
             ).read_bytes()
-            latest_before_corruption = (resumed_dir / "latest.pt").read_bytes()
-            (resumed_dir / "latest.pt").write_bytes(
+            committed_bundle = train_sft._load_committed_recovery_bundle(
+                resumed_dir
+            )
+            latest_before_corruption = (
+                committed_bundle.latest_path.read_bytes()
+            )
+            committed_bundle.latest_path.write_bytes(
                 latest_before_corruption + b"corrupt"
             )
             with patch.object(sys, "argv", interrupted_argv + ["--resume"]):
-                with self.assertRaisesRegex(SystemExit, "corrupt reuse"):
+                with self.assertRaisesRegex(SystemExit, "hash does not match"):
                     train_sft.main()
             self.assertEqual(
                 (resumed_dir / "metrics.jsonl").read_bytes(),
                 metrics_before_invalid_resume,
             )
-            (resumed_dir / "latest.pt").write_bytes(latest_before_corruption)
+            committed_bundle.latest_path.write_bytes(latest_before_corruption)
 
             changed_schedule_argv = list(interrupted_argv)
             changed_schedule_argv[changed_schedule_argv.index("--steps") + 1] = "5"
@@ -343,33 +634,6 @@ class TrainSftScriptTests(unittest.TestCase):
                     train_sft.main()
 
             resume_argv = interrupted_argv + ["--resume"]
-            trainer_state_path = resumed_dir / "trainer-state.pt"
-            trainer_state_bytes = trainer_state_path.read_bytes()
-            committed_metrics_bytes = (
-                resumed_dir / "metrics.jsonl"
-            ).read_bytes()
-            stale_metrics_bytes = (
-                committed_metrics_bytes + b'{"step": 999, "uncommitted": true}\n'
-            )
-            (resumed_dir / "metrics.jsonl").write_bytes(stale_metrics_bytes)
-            corrupt_state = torch.load(trainer_state_path, map_location="cpu")
-            corrupt_state["optimizer_state"] = {
-                "state": {},
-                "param_groups": [],
-            }
-            torch.save(corrupt_state, trainer_state_path)
-            with patch.object(sys, "argv", resume_argv):
-                with self.assertRaisesRegex(ValueError, "parameter group"):
-                    train_sft.main()
-            self.assertEqual(
-                (resumed_dir / "metrics.jsonl").read_bytes(),
-                stale_metrics_bytes,
-            )
-            trainer_state_path.write_bytes(trainer_state_bytes)
-            (resumed_dir / "metrics.jsonl").write_bytes(
-                committed_metrics_bytes
-            )
-
             with (
                 patch.object(sys, "argv", resume_argv),
                 patch.object(
@@ -396,7 +660,9 @@ class TrainSftScriptTests(unittest.TestCase):
                 (resumed_dir / "final.pt").read_bytes(),
                 (resumed_dir / "best.pt").read_bytes(),
             )
-            self.assertTrue((resumed_dir / "trainer-state.pt").is_file())
+            self.assertTrue(
+                (resumed_dir / "recovery-current.json").is_file()
+            )
             self.assertEqual(
                 load_checkpoint(
                     uninterrupted_dir / "best.pt"
@@ -427,7 +693,7 @@ class TrainSftScriptTests(unittest.TestCase):
             (run_dir / "unrelated.txt").unlink()
             (run_dir / "latest.pt").write_bytes(b"corrupt")
             with patch.object(sys, "argv", argv + ["--resume"]):
-                with self.assertRaisesRegex(SystemExit, "trainer state"):
+                with self.assertRaisesRegex(SystemExit, "recovery pointer"):
                     train_sft.main()
 
     def test_log_intervals_report_actual_throughput(self) -> None:
