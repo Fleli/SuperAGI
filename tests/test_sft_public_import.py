@@ -368,6 +368,158 @@ class PublicSftImportTests(unittest.TestCase):
         self.assertEqual([example.source for example in imported.examples], ["first:1"])
         self.assertEqual(imported.stats.rejected_by_reason["near_duplicate"], 1)
 
+    def test_importer_rejects_answer_duplicates_within_one_conversation(self) -> None:
+        repeated_answer = "A thermostat compares the measured temperature with its target setting."
+        tokenizer = BpeTokenizer.from_text(
+            f"<bos><user> First question\n<agi> {repeated_answer}\n"
+            f"<user> Follow-up question\n<agi> {repeated_answer}<eos>\n",
+            vocab_size=300,
+            min_frequency=1,
+        )
+        importer = PublicSftImporter(
+            tokenizer=tokenizer,
+            filter_config=ImportFilterConfig(min_agi_chars=5),
+        )
+
+        imported = importer.import_conversations(
+            [
+                (
+                    "ultrachat:1",
+                    [
+                        {"role": "user", "content": "First question"},
+                        {"role": "agi", "content": repeated_answer},
+                        {"role": "user", "content": "Follow-up question"},
+                        {"role": "agi", "content": repeated_answer},
+                    ],
+                )
+            ]
+        )
+
+        self.assertEqual(imported.examples, ())
+        self.assertEqual(imported.stats.rejected_by_reason["near_duplicate"], 1)
+
+    def test_importer_seeds_answer_deduplication_from_reference_corpus(self) -> None:
+        shared = "A heat pump moves existing heat instead of creating heat directly."
+        tokenizer = BpeTokenizer.from_texts(
+            [
+                f"<bos><user> Reference\n<agi> {shared}<eos>\n",
+                f"<bos><user> Public\n<agi> {shared} efficiently.<eos>\n",
+            ],
+            vocab_size=300,
+            min_frequency=1,
+        )
+        importer = PublicSftImporter(
+            tokenizer=tokenizer,
+            filter_config=ImportFilterConfig(min_agi_chars=5),
+        )
+        reference = (
+            ChatMessage(role="user", content="Reference"),
+            ChatMessage(role="agi", content=shared),
+        )
+
+        imported = importer.import_conversations(
+            [
+                (
+                    "no_robots:1",
+                    [
+                        {"role": "user", "content": "Public"},
+                        {"role": "agi", "content": f"{shared} efficiently."},
+                    ],
+                )
+            ],
+            ngram_reference_conversations=[reference],
+        )
+
+        self.assertEqual(imported.examples, ())
+        self.assertEqual(imported.stats.rejected_by_reason["near_duplicate"], 1)
+
+    def test_importer_rejects_near_duplicate_prompt_answer_pairs(self) -> None:
+        long_prompt = " ".join(f"sharedprompt{index}" for index in range(50))
+        tokenizer = BpeTokenizer.from_texts(
+            [
+                f"<bos><user> {long_prompt}\n<agi> Choose red today.<eos>\n",
+                f"<bos><user> {long_prompt} please\n<agi> Select blue now.<eos>\n",
+            ],
+            vocab_size=500,
+            min_frequency=1,
+        )
+        importer = PublicSftImporter(
+            tokenizer=tokenizer,
+            filter_config=ImportFilterConfig(
+                min_agi_chars=5,
+                max_user_chars=10000,
+            ),
+        )
+
+        imported = importer.import_conversations(
+            [
+                (
+                    "dolly:1",
+                    [
+                        {"role": "user", "content": long_prompt},
+                        {"role": "agi", "content": "Choose red today."},
+                    ],
+                ),
+                (
+                    "dolly:2",
+                    [
+                        {"role": "user", "content": f"{long_prompt} please"},
+                        {"role": "agi", "content": "Select blue now."},
+                    ],
+                ),
+            ]
+        )
+
+        self.assertEqual(
+            [example.source for example in imported.examples],
+            ["dolly:1"],
+        )
+        self.assertEqual(
+            imported.stats.rejected_by_reason["near_duplicate_prompt_answer_pair"],
+            1,
+        )
+
+    def test_importer_seeds_pair_deduplication_from_reference_corpus(self) -> None:
+        long_prompt = " ".join(f"referenceprompt{index}" for index in range(50))
+        tokenizer = BpeTokenizer.from_texts(
+            [
+                f"<bos><user> {long_prompt}\n<agi> Choose red today.<eos>\n",
+                f"<bos><user> {long_prompt} please\n<agi> Select blue now.<eos>\n",
+            ],
+            vocab_size=500,
+            min_frequency=1,
+        )
+        importer = PublicSftImporter(
+            tokenizer=tokenizer,
+            filter_config=ImportFilterConfig(
+                min_agi_chars=5,
+                max_user_chars=10000,
+            ),
+        )
+        reference = (
+            ChatMessage(role="user", content=long_prompt),
+            ChatMessage(role="agi", content="Choose red today."),
+        )
+
+        imported = importer.import_conversations(
+            [
+                (
+                    "dolly:1",
+                    [
+                        {"role": "user", "content": f"{long_prompt} please"},
+                        {"role": "agi", "content": "Select blue now."},
+                    ],
+                )
+            ],
+            ngram_reference_conversations=[reference],
+        )
+
+        self.assertEqual(imported.examples, ())
+        self.assertEqual(
+            imported.stats.rejected_by_reason["near_duplicate_prompt_answer_pair"],
+            1,
+        )
+
     def test_rarity_order_avoids_large_posting_retrieval_for_shared_openings(self) -> None:
         answers = [
             "a generic opening phrase "
@@ -479,6 +631,13 @@ class PublicSftImportTests(unittest.TestCase):
                     {"role": "agi", "content": "Leaked <agi> marker in this answer."},
                 ],
             ),
+            (
+                "artifact:3",
+                [
+                    {"role": "user", "content": "Rewrite this code"},
+                    {"role": "agi", "content": "The snippet contains a leaked <unk> marker."},
+                ],
+            ),
         ]
 
         imported = importer.import_conversations(rows)
@@ -487,7 +646,7 @@ class PublicSftImportTests(unittest.TestCase):
         self.assertEqual(imported.stats.rejected_by_reason["role_sequence"], 1)
         self.assertEqual(imported.stats.rejected_by_reason["false_capability_or_identity"], 4)
         self.assertEqual(imported.stats.rejected_by_reason["generic_refusal"], 1)
-        self.assertEqual(imported.stats.rejected_by_reason["artifact"], 2)
+        self.assertEqual(imported.stats.rejected_by_reason["artifact"], 3)
 
     def test_seeded_source_sample_is_stable_and_not_first_n(self) -> None:
         examples = tuple(

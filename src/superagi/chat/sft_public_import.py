@@ -14,7 +14,7 @@ from typing import Any
 from superagi.chat.formatting import ChatMessage
 from superagi.chat.sft import TokenizedSftExample, tokenize_sft_messages
 from superagi.chat.sft_quality import canonical_text, validate_role_sequence
-from superagi.ingestion.tokenizer import TokenizerLike
+from superagi.ingestion.tokenizer import SPECIAL_TOKENS, TokenizerLike
 
 
 ROLE_MAP = {
@@ -32,7 +32,7 @@ DISALLOWED_PATTERNS = (
 )
 
 _LEAKED_CONTROL_TOKEN_RE = re.compile(
-    r"<(?:pad|bos|eos|user|agi|system)>",
+    "|".join(re.escape(token) for token in SPECIAL_TOKENS),
     re.IGNORECASE,
 )
 _FALSE_CAPABILITY_OR_IDENTITY_PATTERNS = (
@@ -124,6 +124,7 @@ class _PreparedConversation:
     messages: tuple[ChatMessage, ...]
     pre_dedupe_rejection_reason: str | None
     normalized_answers: tuple[str, ...]
+    normalized_prompt_answer_pair: str
 
 
 class _JaccardCandidateIndex:
@@ -221,11 +222,15 @@ class PublicSftImporter:
         stats = ImportStats()
         examples: list[ImportedSftExample] = []
         seen_answers: set[str] = set()
+        reference_messages = tuple(
+            _coerce_messages(raw_messages)
+            for raw_messages in ngram_reference_conversations
+        )
         response_ngram_counts: Counter[str] = Counter()
-        for raw_messages in ngram_reference_conversations:
+        for messages in reference_messages:
             response_ngram_counts.update(
                 _response_ngram_counts(
-                    _coerce_messages(raw_messages),
+                    messages,
                     self.filter_config.cross_example_ngram_size,
                 )
             )
@@ -234,6 +239,21 @@ class PublicSftImporter:
             self.filter_config.near_duplicate_threshold,
             _rarest_first_token_order(prepared_conversations),
         )
+        pair_near_duplicate_index = _JaccardCandidateIndex(
+            self.filter_config.near_duplicate_threshold,
+            _rarest_first_text_token_order(
+                conversation.normalized_prompt_answer_pair
+                for conversation in prepared_conversations
+                if conversation.pre_dedupe_rejection_reason is None
+            ),
+        )
+        for messages in reference_messages:
+            for answer in _normalized_agi_answers(messages):
+                seen_answers.add(answer)
+                near_duplicate_index.add(answer)
+            pair_near_duplicate_index.add(
+                _normalized_prompt_answer_pair(messages)
+            )
         self._near_duplicate_comparisons = 0
         self._near_duplicate_retrieval_work = 0
 
@@ -244,6 +264,12 @@ class PublicSftImporter:
                 stats.reject(rejection_reason)
                 continue
 
+            if _contains_near_duplicate_texts(
+                prepared.normalized_answers,
+                self.filter_config.near_duplicate_threshold,
+            ):
+                stats.reject("near_duplicate")
+                continue
             if any(answer in seen_answers for answer in prepared.normalized_answers):
                 stats.reject("duplicate_answer")
                 continue
@@ -252,6 +278,11 @@ class PublicSftImporter:
                 for answer in prepared.normalized_answers
             ):
                 stats.reject("near_duplicate")
+                continue
+            if pair_near_duplicate_index.has_near_duplicate(
+                prepared.normalized_prompt_answer_pair
+            ):
+                stats.reject("near_duplicate_prompt_answer_pair")
                 continue
 
             rejection_reason, tokenized = self._post_dedupe_filter(
@@ -283,6 +314,9 @@ class PublicSftImporter:
             for answer in prepared.normalized_answers:
                 seen_answers.add(answer)
                 near_duplicate_index.add(answer)
+            pair_near_duplicate_index.add(
+                prepared.normalized_prompt_answer_pair
+            )
             response_ngram_counts.update(candidate_ngram_counts)
             stats.accepted += 1
 
@@ -349,6 +383,11 @@ class PublicSftImporter:
                         _normalized_agi_answers(messages)
                         if rejection_reason is None
                         else ()
+                    ),
+                    normalized_prompt_answer_pair=(
+                        _normalized_prompt_answer_pair(messages)
+                        if rejection_reason is None
+                        else ""
                     ),
                 )
             )
@@ -573,6 +612,25 @@ def _normalized_agi_answers(messages: Sequence[ChatMessage]) -> tuple[str, ...]:
     )
 
 
+def _normalized_prompt_answer_pair(messages: Sequence[ChatMessage]) -> str:
+    return " ".join(
+        f"{message.role} {canonical_text(message.content)}"
+        for message in messages
+        if message.role in {"user", "agi"}
+    )
+
+
+def _contains_near_duplicate_texts(
+    values: Sequence[str],
+    threshold: float,
+) -> bool:
+    for left_index, left in enumerate(values):
+        for right in values[left_index + 1 :]:
+            if token_jaccard(left, right) >= threshold:
+                return True
+    return False
+
+
 def _response_ngram_counts(
     messages: Sequence[ChatMessage],
     ngram_size: int,
@@ -651,12 +709,18 @@ def _jaccard_prefix(
 def _rarest_first_token_order(
     conversations: Sequence[_PreparedConversation],
 ) -> dict[str, int]:
+    return _rarest_first_text_token_order(
+        answer
+        for conversation in conversations
+        if conversation.pre_dedupe_rejection_reason is None
+        for answer in conversation.normalized_answers
+    )
+
+
+def _rarest_first_text_token_order(texts: Iterable[str]) -> dict[str, int]:
     document_frequency: Counter[str] = Counter()
-    for conversation in conversations:
-        if conversation.pre_dedupe_rejection_reason is not None:
-            continue
-        for answer in conversation.normalized_answers:
-            document_frequency.update(frozenset(answer.split()))
+    for text in texts:
+        document_frequency.update(frozenset(text.split()))
     return {
         token: rank
         for rank, (token, _) in enumerate(
