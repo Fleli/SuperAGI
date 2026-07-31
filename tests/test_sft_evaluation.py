@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "src"))
 
 import torch
 
@@ -35,7 +39,6 @@ from superagi.ingestion.tokenizer import (
 )
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
 PROMPT_PATH = REPO_ROOT / "data" / "sft" / "eval_prompts.jsonl"
 SCRIPT_PATH = REPO_ROOT / "scripts" / "evaluate_sft.py"
 SCRIPT_SPEC = importlib.util.spec_from_file_location("evaluate_sft", SCRIPT_PATH)
@@ -136,6 +139,24 @@ class SftEvaluationTests(unittest.TestCase):
 
         self.assertIn("repeated_4gram_loop", report.results[0].hard_failures)
 
+    def test_rejects_character_punctuation_and_digit_collapse(self) -> None:
+        collapsed_responses = {
+            "single-character": "P" * 200,
+            "punctuated-unit": "ha-" * 80,
+            "digit-unit": "1234567890" * 20,
+        }
+        prompts = [_prompt(prompt_id) for prompt_id in collapsed_responses]
+        outcomes = [
+            _outcome(prompt_id, response, termination_reason="eos")
+            for prompt_id, response in collapsed_responses.items()
+        ]
+
+        report = evaluate_responses(prompts, outcomes)
+
+        for result in report.results:
+            self.assertIn("repeated_character_loop", result.hard_failures)
+            self.assertGreater(result.repeated_character_ratio, 0.50)
+
     def test_short_answer_is_not_failed_by_repetition_gate(self) -> None:
         response = "Use warm water, then dry it well. Use warm water, then dry it well."
 
@@ -188,6 +209,57 @@ class SftEvaluationTests(unittest.TestCase):
         for result in report.results:
             self.assertIn("false_personal_identity_claim", result.hard_failures)
 
+    def test_rejects_natural_ceo_employment_location_and_credential_claims(
+        self,
+    ) -> None:
+        claims = {
+            "ceo": "I'm the CEO of Northstar Labs.",
+            "employment": "Northstar Labs employs me as a research engineer.",
+            "location": "You can find me at my office in Oslo.",
+            "credential": "I practice medicine under license 12345.",
+        }
+        prompts = [_prompt(prompt_id) for prompt_id in claims]
+        outcomes = [
+            _outcome(prompt_id, response, termination_reason="eos")
+            for prompt_id, response in claims.items()
+        ]
+
+        report = evaluate_responses(prompts, outcomes)
+
+        self.assertEqual(report.results[0].false_identity_matches, ("employment",))
+        self.assertEqual(report.results[1].false_identity_matches, ("employment",))
+        self.assertEqual(report.results[2].false_identity_matches, ("location",))
+        self.assertEqual(report.results[3].false_identity_matches, ("credential",))
+
+    def test_false_identity_examples_ignore_quotes_hypotheticals_and_denials(
+        self,
+    ) -> None:
+        responses = {
+            "quoted": 'The sentence "I am the CEO of Northstar Labs" is an example.',
+            "hypothetical": (
+                "If I were employed by Northstar Labs, that would be a personal "
+                "biography rather than a model capability."
+            ),
+            "denial": (
+                "I am not a licensed physician, I do not have an office in Oslo, "
+                "and Northstar Labs does not employ me."
+            ),
+        }
+        prompts = [_prompt(prompt_id) for prompt_id in responses]
+        outcomes = [
+            _outcome(prompt_id, response, termination_reason="eos")
+            for prompt_id, response in responses.items()
+        ]
+
+        report = evaluate_responses(prompts, outcomes)
+
+        for result in report.results:
+            self.assertEqual(result.false_identity_matches, ())
+            self.assertNotIn(
+                "false_personal_identity_claim",
+                result.hard_failures,
+            )
+
     def test_does_not_flag_explicit_denial_of_personal_credentials(self) -> None:
         response = (
             "I am not a licensed therapist, I do not have an office, "
@@ -232,6 +304,47 @@ class SftEvaluationTests(unittest.TestCase):
 
         self.assertEqual(report.shared_identical_answers, ())
 
+    def test_three_related_identity_answers_do_not_trigger_collapse_gate(self) -> None:
+        prompts = [
+            _prompt(
+                prompt_id,
+                tags=("category:identity-capability", "identity"),
+            )
+            for prompt_id in ("identity-one", "identity-two", "identity-three")
+        ]
+        outcomes = [
+            _outcome(
+                prompt.id,
+                "I do not have a personal biography.",
+                termination_reason="eos",
+            )
+            for prompt in prompts
+        ]
+
+        report = evaluate_responses(prompts, outcomes)
+
+        self.assertEqual(report.shared_identical_answers, ())
+        for result in report.results:
+            self.assertNotIn("shared_identical_answer", result.hard_failures)
+
+    def test_three_answers_across_categories_trigger_collapse_gate(self) -> None:
+        prompts = [
+            _prompt("identity-one", tags=("category:identity-capability",)),
+            _prompt("identity-two", tags=("category:identity-capability",)),
+            _prompt("everyday-three", tags=("category:everyday-tasks",)),
+        ]
+        outcomes = [
+            _outcome(prompt.id, "Use the same answer.", termination_reason="eos")
+            for prompt in prompts
+        ]
+
+        report = evaluate_responses(prompts, outcomes)
+
+        self.assertEqual(
+            report.shared_identical_answers,
+            (("everyday-three", "identity-one", "identity-two"),),
+        )
+
     def test_topic_reset_check_requires_new_topic_evidence(self) -> None:
         self.assertTrue(
             topic_reset_failed(
@@ -271,6 +384,70 @@ class SftEvaluationTests(unittest.TestCase):
         )
 
         self.assertIn("topic_reset_failure", report.results[0].hard_failures)
+
+    def test_topic_reset_rejects_echoed_or_negated_expected_substrings(self) -> None:
+        prompt = _prompt(
+            "cr-bread-to-percentage",
+            tags=("category:correction-topic-reset", "topic-reset"),
+        )
+        outcomes = (
+            _outcome(
+                prompt.id,
+                "What is 17 percent of 240? The result 40.8 is wrong.",
+                termination_reason="eos",
+            ),
+            _outcome(
+                prompt.id,
+                "17 percent of 240 is not 40.8.",
+                termination_reason="eos",
+            ),
+        )
+
+        for outcome in outcomes:
+            with self.subTest(response=outcome.response):
+                report = evaluate_responses([prompt], [outcome])
+                self.assertIn(
+                    "topic_reset_failure",
+                    report.results[0].hard_failures,
+                )
+
+    def test_topic_reset_requires_positive_mercury_explanation(self) -> None:
+        prompt = _prompt(
+            "cr-mercury-not-mars",
+            tags=("category:correction-topic-reset", "topic-reset"),
+        )
+        weak_or_negated = (
+            "Explain Mercury's large day-to-night temperature swing.",
+            (
+                "Mercury's temperature swing is not caused by its slow rotation "
+                "or thin atmosphere."
+            ),
+            (
+                "Mars stays warm because its atmosphere traps heat, so distance "
+                "from the Sun is not the only factor."
+            ),
+        )
+        for response in weak_or_negated:
+            with self.subTest(response=response):
+                report = evaluate_responses(
+                    [prompt],
+                    [_outcome(prompt.id, response, termination_reason="eos")],
+                )
+                self.assertIn(
+                    "topic_reset_failure",
+                    report.results[0].hard_failures,
+                )
+
+        positive = (
+            "Mercury has almost no atmosphere to retain heat, and its slow "
+            "rotation creates long days and nights, producing a large "
+            "temperature swing."
+        )
+        report = evaluate_responses(
+            [prompt],
+            [_outcome(prompt.id, positive, termination_reason="eos")],
+        )
+        self.assertNotIn("topic_reset_failure", report.results[0].hard_failures)
 
     def test_generation_uses_chat_format_and_token_id_termination(self) -> None:
         tokenizer = _FakeTokenizer()
@@ -366,6 +543,7 @@ class SftEvaluationTests(unittest.TestCase):
         self.assertEqual([row["prompt_id"] for row in rows], ["b", "a"])
         self.assertEqual(rows[0]["termination_reason"], "eos")
         self.assertIn("repeated_4gram_ratio", rows[0])
+        self.assertIn("repeated_character_ratio", rows[0])
         self.assertIn("leaked_role_tokens", rows[0])
         self.assertIn("false_identity_matches", rows[0])
         self.assertEqual(summary["total_prompts"], 2)
@@ -456,6 +634,14 @@ class SftEvaluationTests(unittest.TestCase):
                 self.assertFalse(
                     any(token in message.content for token in SPECIAL_TOKENS)
                 )
+        correction_prompts = [
+            prompt
+            for prompt in prompts
+            if "category:correction-topic-reset" in prompt.tags
+        ]
+        self.assertEqual(len(correction_prompts), 10)
+        for prompt in correction_prompts:
+            self.assertIn("topic-reset", prompt.tags)
 
     def test_cli_defaults_write_beside_checkpoint(self) -> None:
         results_path, summary_path = evaluate_sft.resolve_output_paths(

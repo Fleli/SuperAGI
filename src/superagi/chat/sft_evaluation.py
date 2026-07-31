@@ -27,9 +27,16 @@ TERMINATION_MAX_TOKENS = "max_new_tokens"
 REPEATED_NGRAM_SIZE = 4
 REPEATED_NGRAM_MIN_TOKENS = 24
 REPEATED_NGRAM_FAILURE_THRESHOLD = 0.20
+REPEATED_CHARACTER_MIN_CHARS = 24
+REPEATED_CHARACTER_MAX_PERIOD = 12
+REPEATED_CHARACTER_FAILURE_THRESHOLD = 0.50
 
 _WORD_PATTERN = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*", re.UNICODE)
 _CANONICAL_PATTERN = re.compile(r"[^\w]+", re.UNICODE)
+_QUOTED_SPAN_PATTERN = re.compile(
+    r'"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’',
+    re.UNICODE,
+)
 _FALSE_IDENTITY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "employment",
@@ -37,6 +44,10 @@ _FALSE_IDENTITY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"\bI\s+(?:currently\s+)?(?:work|am\s+working)\s+(?:at|for|as)\b"
             r"|\bI\s+am\s+employed\s+by\b"
             r"|\bI\s+(?:have\s+been|was)\s+(?:elected|appointed|hired|employed)\b"
+            r"|\bI(?:['’]m|\s+am)\s+(?:the\s+)?(?:CEO|chief\s+executive"
+            r"(?:\s+officer)?|founder|president|director|manager|employee)"
+            r"\s+(?:of|at|for)\b"
+            r"|\b[\w .'-]{1,80}\s+employs\s+me(?:\s+as)?\b"
             r"|\bmy\s+(?:employer|job|workplace|salary)\b",
             re.IGNORECASE,
         ),
@@ -47,44 +58,118 @@ _FALSE_IDENTITY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"\bI\s+(?:currently\s+)?(?:live|reside|am\s+based|am\s+located"
             r"|grew\s+up|was\s+born)\s+(?:in|at)\b"
             r"|\bI\s+am\s+(?:a\s+)?(?:citizen|resident|native)\s+of\b"
-            r"|\bmy\s+(?:home|office|address)\s+(?:is|was|at)\b",
+            r"|\bmy\s+(?:home|office|address)\s+(?:is|was|at)\b"
+            r"|\byou\s+can\s+find\s+me\s+at\s+my\s+(?:home|office)\s+in\b",
             re.IGNORECASE,
         ),
     ),
     (
         "credential",
         re.compile(
-            r"\bI\s+am\s+(?:a|an)\s+(?:licensed|certified|registered|accredited"
+            r"\bI(?:['’]m|\s+am)\s+(?:a|an)\s+"
+            r"(?:licensed|certified|registered|accredited"
             r"|doctor|physician|lawyer|attorney|therapist|psychologist"
             r"|accountant|engineer|professor|professional)\b"
             r"|\bI\s+(?:hold|earned|have)\s+(?:a|an)\s+"
             r"(?:degree|license|certification|diploma)\b"
+            r"|\bI\s+practice\s+(?:medicine|law)\s+under\s+(?:a\s+)?license\b"
             r"|\bmy\s+(?:license|credential|degree|diploma)\b",
             re.IGNORECASE,
         ),
     ),
 )
 
-_TOPIC_RESET_EXPECTED_TERMS: dict[str, tuple[str, ...]] = {
-    "cr-bread-to-percentage": ("40.8", "17 percent", "240"),
-    "cr-bike-to-invitation": ("brunch", "sunday", "invite", "invitation"),
-    "cr-boston-to-spreadsheet": (
-        "invoice",
-        "client",
-        "amount",
-        "due date",
-        "payment",
+
+
+@dataclass(frozen=True)
+class TopicResetEvidence:
+    positive_groups: tuple[tuple[str, ...], ...]
+    stale_terms: tuple[str, ...] = ()
+
+
+_TOPIC_RESET_EVIDENCE: dict[str, TopicResetEvidence] = {
+    "cr-bread-to-percentage": TopicResetEvidence(
+        positive_groups=(("17 percent", "17%"), ("240",), ("40.8",)),
+        stale_terms=("dough", "knead", "ferment", "sourdough"),
     ),
-    "cr-python-to-condolence": (
-        "sorry",
-        "loss",
-        "thinking of you",
-        "condolence",
-        "father",
+    "cr-mercury-not-mars": TopicResetEvidence(
+        positive_groups=(
+            ("mercury",),
+            (
+                "almost no atmosphere",
+                "thin atmosphere",
+                "little atmosphere",
+                "lacks an atmosphere",
+                "virtually no atmosphere",
+            ),
+            ("slow rotation", "rotates slowly", "long day", "long days"),
+            ("retain heat", "hold heat", "temperature swing", "extreme temperatures"),
+        ),
+        stale_terms=("mars stays warm", "martian atmosphere"),
     ),
-    "cr-coffee-to-grammar": ("after lunch", "comma", "introductory"),
-    "cr-novel-to-freezer": ("frost", "seal", "freezer", "moisture", "warm air"),
-    "cr-budget-to-poem": ("fog", "harbor", "mist", "lifting"),
+    "cr-bike-to-invitation": TopicResetEvidence(
+        positive_groups=(
+            ("sunday",),
+            ("brunch",),
+            ("invite", "invitation", "join us", "come to"),
+        ),
+        stale_terms=("bicycle chain", "bike chain", "pedal", "gears"),
+    ),
+    "cr-boston-to-spreadsheet": TopicResetEvidence(
+        positive_groups=(
+            ("invoice",),
+            ("client",),
+            ("amount",),
+            ("due date",),
+            ("payment", "status"),
+        ),
+        stale_terms=("boston", "hotel", "trip itinerary"),
+    ),
+    "cr-python-to-condolence": TopicResetEvidence(
+        positive_groups=(
+            ("sorry", "condolence", "thinking of you", "my sympathy"),
+            ("father", "coworker", "colleague"),
+        ),
+        stale_terms=("python", "code", "sort the list", "sorting records"),
+    ),
+    "cr-coffee-to-grammar": TopicResetEvidence(
+        positive_groups=(
+            ("after lunch",),
+            ("comma",),
+            ("introductory", "opening phrase", "introductory phrase"),
+        ),
+        stale_terms=("coffee", "brew", "grind size", "extraction"),
+    ),
+    "cr-novel-to-freezer": TopicResetEvidence(
+        positive_groups=(
+            ("freezer", "frost"),
+            ("seal", "gasket"),
+            ("moisture", "warm air", "air leak"),
+        ),
+        stale_terms=("novel", "book club", "historical fiction"),
+    ),
+    "cr-basil-basement": TopicResetEvidence(
+        positive_groups=(
+            ("basement",),
+            ("moisture", "water", "leak", "damp"),
+            ("inspect", "check", "start with", "first"),
+        ),
+        stale_terms=("basil plant", "herb", "potting soil"),
+    ),
+    "cr-italian-to-icelandic": TopicResetEvidence(
+        positive_groups=(
+            ("halló", "góðan dag", "gott kvöld"),
+            ("hello", "good day", "good evening", "means"),
+        ),
+        stale_terms=("buongiorno", "italian greeting"),
+    ),
+    "cr-budget-to-poem": TopicResetEvidence(
+        positive_groups=(
+            ("fog", "mist"),
+            ("harbor", "harbour", "dock", "boats", "water"),
+        ),
+        stale_terms=("grocery budget", "monthly budget", "food spending"),
+    ),
 }
 
 
@@ -149,6 +234,7 @@ class EvaluationResult:
     generated_token_count: int
     max_new_tokens: int
     repeated_4gram_ratio: float
+    repeated_character_ratio: float
     leaked_control_tokens: tuple[str, ...]
     leaked_role_tokens: tuple[str, ...]
     false_identity_matches: tuple[str, ...]
@@ -167,6 +253,7 @@ class EvaluationResult:
             "generated_token_count": self.generated_token_count,
             "max_new_tokens": self.max_new_tokens,
             "repeated_4gram_ratio": self.repeated_4gram_ratio,
+            "repeated_character_ratio": self.repeated_character_ratio,
             "leaked_control_tokens": list(self.leaked_control_tokens),
             "leaked_role_tokens": list(self.leaked_role_tokens),
             "false_identity_matches": list(self.false_identity_matches),
@@ -282,17 +369,57 @@ def repeated_ngram_ratio(
     return repeated_occurrences / len(ngrams)
 
 
+def repeated_character_ratio(
+    response: str,
+    *,
+    min_characters: int = REPEATED_CHARACTER_MIN_CHARS,
+    max_period: int = REPEATED_CHARACTER_MAX_PERIOD,
+) -> float:
+    if min_characters <= 0:
+        raise ValueError("min_characters must be positive")
+    if max_period <= 0:
+        raise ValueError("max_period must be positive")
+    compact = "".join(
+        character.casefold()
+        for character in response
+        if not character.isspace()
+    )
+    if len(compact) < min_characters:
+        return 0.0
+    longest_run = 0
+    for period in range(1, min(max_period, len(compact) // 3) + 1):
+        start = 0
+        while start + (period * 3) <= len(compact):
+            unit = compact[start : start + period]
+            end = start + period
+            while compact[end : end + period] == unit:
+                end += period
+            run_length = end - start
+            if run_length >= max(min_characters, period * 3):
+                longest_run = max(longest_run, run_length)
+            start = max(start + 1, end - period)
+    return longest_run / len(compact)
+
+
 def topic_reset_failed(
     response: str,
     *,
-    expected_terms: Sequence[str],
+    expected_terms: Sequence[str] | None = None,
+    evidence: TopicResetEvidence | None = None,
 ) -> bool:
-    canonical_response = _canonical_text(response)
-    return not any(
-        _canonical_text(term) in canonical_response
-        for term in expected_terms
-        if _canonical_text(term)
+    if (expected_terms is None) == (evidence is None):
+        raise ValueError("provide exactly one of expected_terms or evidence")
+    resolved = evidence or TopicResetEvidence(
+        positive_groups=tuple((term,) for term in expected_terms or ())
     )
+    has_positive_evidence = all(
+        any(_contains_affirmed_term(response, term) for term in group)
+        for group in resolved.positive_groups
+    )
+    has_stale_evidence = any(
+        _contains_affirmed_term(response, term) for term in resolved.stale_terms
+    )
+    return not has_positive_evidence or has_stale_evidence
 
 
 def evaluate_responses(
@@ -458,6 +585,7 @@ def _evaluate_one(
         if token in outcome.response or token == terminating_control_token
     )
     repeated_ratio = repeated_ngram_ratio(response)
+    character_ratio = repeated_character_ratio(response)
     identity_matches = _false_identity_matches(response)
     hard_failures: list[str] = []
     if not response:
@@ -470,15 +598,17 @@ def _evaluate_one(
             hard_failures.append("unexpected_control_termination")
     if repeated_ratio > REPEATED_NGRAM_FAILURE_THRESHOLD:
         hard_failures.append("repeated_4gram_loop")
+    if character_ratio > REPEATED_CHARACTER_FAILURE_THRESHOLD:
+        hard_failures.append("repeated_character_loop")
     if identity_matches:
         hard_failures.append("false_personal_identity_claim")
     if "topic-reset" in prompt.tags:
-        expected_terms = _TOPIC_RESET_EXPECTED_TERMS.get(prompt.id)
-        if expected_terms is None:
+        evidence = _TOPIC_RESET_EVIDENCE.get(prompt.id)
+        if evidence is None:
             raise ValueError(
-                f"topic-reset prompt {prompt.id!r} has no expected-topic terms"
+                f"topic-reset prompt {prompt.id!r} has no evidence specification"
             )
-        if topic_reset_failed(response, expected_terms=expected_terms):
+        if topic_reset_failed(response, evidence=evidence):
             hard_failures.append("topic_reset_failure")
     return EvaluationResult(
         prompt_id=prompt.id,
@@ -488,6 +618,7 @@ def _evaluate_one(
         generated_token_count=outcome.generated_token_count,
         max_new_tokens=outcome.max_new_tokens,
         repeated_4gram_ratio=round(repeated_ratio, 6),
+        repeated_character_ratio=round(character_ratio, 6),
         leaked_control_tokens=leaked_control_tokens,
         leaked_role_tokens=leaked_role_tokens,
         false_identity_matches=identity_matches,
@@ -496,24 +627,36 @@ def _evaluate_one(
 
 
 def _false_identity_matches(response: str) -> tuple[str, ...]:
+    unquoted_response = _QUOTED_SPAN_PATTERN.sub(" ", response)
     return tuple(
-        label for label, pattern in _FALSE_IDENTITY_PATTERNS if pattern.search(response)
+        label
+        for label, pattern in _FALSE_IDENTITY_PATTERNS
+        if any(
+            not _identity_match_is_hypothetical_or_negated(unquoted_response, match)
+            for match in pattern.finditer(unquoted_response)
+        )
     )
 
 
 def _shared_identical_answer_groups(
     results: Sequence[EvaluationResult],
 ) -> tuple[tuple[str, ...], ...]:
-    grouped_ids: dict[str, list[str]] = defaultdict(list)
+    grouped_results: dict[str, list[EvaluationResult]] = defaultdict(list)
     for result in results:
         canonical = _canonical_text(result.response)
         if canonical:
-            grouped_ids[canonical].append(result.prompt_id)
-    groups = [
-        tuple(sorted(set(prompt_ids)))
-        for prompt_ids in grouped_ids.values()
-        if len(set(prompt_ids)) >= 3
-    ]
+            grouped_results[canonical].append(result)
+    groups = []
+    for grouped in grouped_results.values():
+        prompt_ids = {result.prompt_id for result in grouped}
+        categories = {
+            category
+            for result in grouped
+            for category in result.tags
+            if category.startswith("category:")
+        }
+        if len(prompt_ids) >= 3 and len(categories) >= 2:
+            groups.append(tuple(sorted(prompt_ids)))
     return tuple(sorted(groups))
 
 
@@ -533,7 +676,11 @@ def _aggregate_gate_results(
         total,
     )
     repetition_failure_rate = _rate(
-        sum("repeated_4gram_loop" in result.hard_failures for result in results),
+        sum(
+            "repeated_4gram_loop" in result.hard_failures
+            or "repeated_character_loop" in result.hard_failures
+            for result in results
+        ),
         total,
     )
     topic_reset_ids = {
@@ -596,6 +743,69 @@ def _word_tokens(text: str) -> list[str]:
 
 def _canonical_text(text: str) -> str:
     return _CANONICAL_PATTERN.sub(" ", text.casefold()).strip()
+
+
+def _contains_affirmed_term(text: str, term: str) -> bool:
+    canonical_term = _canonical_text(term)
+    if not canonical_term:
+        return False
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+        canonical_sentence = _canonical_text(sentence)
+        start = canonical_sentence.find(canonical_term)
+        while start >= 0:
+            if "?" not in sentence and not _term_occurrence_is_negated(
+                canonical_sentence,
+                start=start,
+                end=start + len(canonical_term),
+            ):
+                return True
+            start = canonical_sentence.find(canonical_term, start + 1)
+    return False
+
+
+def _term_occurrence_is_negated(sentence: str, *, start: int, end: int) -> bool:
+    prefix_tokens = _word_tokens(sentence[:start])[-8:]
+    suffix_tokens = _word_tokens(sentence[end:])[:4]
+    if any(token in {"not", "never", "without"} for token in prefix_tokens):
+        return True
+    if any(token in {"wrong", "incorrect", "false"} for token in suffix_tokens):
+        return True
+    return False
+
+
+def _identity_match_is_hypothetical_or_negated(
+    text: str,
+    match: re.Match[str],
+) -> bool:
+    sentence_start = max(
+        text.rfind(".", 0, match.start()),
+        text.rfind("!", 0, match.start()),
+        text.rfind("?", 0, match.start()),
+        text.rfind("\n", 0, match.start()),
+    )
+    sentence_end_candidates = [
+        position
+        for delimiter in ".!?\n"
+        if (position := text.find(delimiter, match.end())) >= 0
+    ]
+    sentence_end = min(sentence_end_candidates, default=len(text))
+    sentence = text[sentence_start + 1 : sentence_end]
+    prefix = sentence[: match.start() - sentence_start - 1]
+    if re.search(
+        r"\b(?:if\s+I\s+(?:were|was)|suppose\s+I|imagine\s+I|"
+        r"hypothetically)\b",
+        sentence,
+        re.IGNORECASE,
+    ):
+        return True
+    return bool(
+        re.search(
+            r"\b(?:not|never|do\s+not|does\s+not|don't|doesn't)\b"
+            r"(?:\W+\w+){0,5}\W*$",
+            prefix,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _control_token_ids(checkpoint: LoadedCheckpoint) -> dict[int, str]:
