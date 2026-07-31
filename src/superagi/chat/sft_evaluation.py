@@ -80,60 +80,54 @@ _ENDORSEMENT_PHRASES = (
     ("i", "attest"),
     ("i", "certify"),
 )
+_TOPIC_RESET_VALIDATORS = frozenset(
+    {
+        "accepted_translation",
+        "causal_explanation",
+        "concept_response",
+        "grammar_correction",
+        "invitation",
+        "numeric_result",
+        "ordered_actions",
+        "poem",
+        "structured_fields",
+    }
+)
+_TASK_ACTION_TERMS = frozenset(
+    {
+        "answer",
+        "calculate",
+        "compose",
+        "draft",
+        "explain",
+        "give",
+        "help",
+        "list",
+        "provide",
+        "solve",
+        "write",
+    }
+)
 
 
 
 @dataclass(frozen=True)
-class TopicResetEvidence:
-    positive_groups: tuple[tuple[str, ...], ...]
-    minimum_positive_groups: int
-    forbidden_groups: tuple[tuple[str, ...], ...] = ()
-    result_groups: tuple[tuple[str, ...], ...] = ()
-    minimum_result_groups: int = 0
-    requested_actions: tuple[str, ...] = ()
-    allow_interrogative_evidence: bool = False
-    minimum_response_lines: int = 0
+class TopicResetContract:
+    validator: str
+    payload: Mapping[str, Any]
 
     def __post_init__(self) -> None:
-        if not self.positive_groups:
-            raise ValueError("topic-reset evidence must define positive groups")
-        if any(
-            not group or any(not term.strip() for term in group)
-            for group in self.positive_groups
-        ):
+        if self.validator not in _TOPIC_RESET_VALIDATORS:
             raise ValueError(
-                "topic-reset positive groups must contain non-empty terms"
+                f"unsupported topic-reset validator {self.validator!r}"
             )
-        if not 1 <= self.minimum_positive_groups <= len(self.positive_groups):
-            raise ValueError(
-                "topic-reset minimum_positive_groups must be between 1 and "
-                "the positive group count"
-            )
-        if any(
-            not group or any(not term.strip() for term in group)
-            for group in self.forbidden_groups
-        ):
-            raise ValueError(
-                "topic-reset forbidden groups must contain non-empty terms"
-            )
-        if any(
-            not group or any(not term.strip() for term in group)
-            for group in self.result_groups
-        ):
-            raise ValueError(
-                "topic-reset result groups must contain non-empty terms"
-            )
-        if not 0 <= self.minimum_result_groups <= len(self.result_groups):
-            raise ValueError(
-                "topic-reset minimum_result_groups must be between 0 and "
-                "the result group count"
-            )
-        if any(not action.strip() for action in self.requested_actions):
-            raise ValueError(
-                "topic-reset requested actions must contain non-empty terms"
-            )
-        if self.minimum_response_lines < 0:
-            raise ValueError("topic-reset minimum_response_lines cannot be negative")
+        if not isinstance(self.payload, Mapping) or not self.payload:
+            raise ValueError("topic-reset contract payload must be non-empty")
+        _validate_topic_reset_payload(
+            self.validator,
+            self.payload,
+            prompt_id="<direct>",
+        )
 
     @classmethod
     def from_mapping(
@@ -141,69 +135,30 @@ class TopicResetEvidence:
         value: Any,
         *,
         prompt_id: str,
-    ) -> "TopicResetEvidence":
+    ) -> "TopicResetContract":
         if not isinstance(value, dict):
             raise ValueError(
-                f"evaluation prompt {prompt_id!r} topic_reset_evidence "
+                f"evaluation prompt {prompt_id!r} topic_reset_contract "
                 "must be an object"
             )
-        positive_groups = _parse_evidence_groups(
-            value.get("positive_groups"),
-            prompt_id=prompt_id,
-            field="positive_groups",
-            required=True,
-        )
-        minimum = value.get("minimum_positive_groups")
-        if not isinstance(minimum, int):
+        validator = value.get("type")
+        if not isinstance(validator, str) or validator not in _TOPIC_RESET_VALIDATORS:
             raise ValueError(
-                f"evaluation prompt {prompt_id!r} topic_reset_evidence "
-                "must define integer minimum_positive_groups"
+                f"evaluation prompt {prompt_id!r} topic_reset_contract "
+                "must define a supported type"
             )
-        forbidden_groups = _parse_evidence_groups(
-            value.get("forbidden_groups", []),
-            prompt_id=prompt_id,
-            field="forbidden_groups",
-            required=False,
-        )
-        result_groups = _parse_evidence_groups(
-            value.get("result_groups", []),
-            prompt_id=prompt_id,
-            field="result_groups",
-            required=False,
-        )
-        minimum_result_groups = value.get("minimum_result_groups", 0)
-        if not isinstance(minimum_result_groups, int):
+        payload = value.get("payload")
+        if not isinstance(payload, dict) or not payload:
             raise ValueError(
-                f"evaluation prompt {prompt_id!r} topic_reset_evidence "
-                "minimum_result_groups must be an integer"
+                f"evaluation prompt {prompt_id!r} topic_reset_contract "
+                "must define a non-empty payload"
             )
-        requested_actions = _parse_string_list(
-            value.get("requested_actions", []),
+        _validate_topic_reset_payload(
+            validator,
+            payload,
             prompt_id=prompt_id,
-            field="requested_actions",
         )
-        allow_interrogative = value.get("allow_interrogative_evidence", False)
-        if not isinstance(allow_interrogative, bool):
-            raise ValueError(
-                f"evaluation prompt {prompt_id!r} topic_reset_evidence "
-                "allow_interrogative_evidence must be a boolean"
-            )
-        minimum_response_lines = value.get("minimum_response_lines", 0)
-        if not isinstance(minimum_response_lines, int):
-            raise ValueError(
-                f"evaluation prompt {prompt_id!r} topic_reset_evidence "
-                "minimum_response_lines must be an integer"
-            )
-        return cls(
-            positive_groups=positive_groups,
-            minimum_positive_groups=minimum,
-            forbidden_groups=forbidden_groups,
-            result_groups=result_groups,
-            minimum_result_groups=minimum_result_groups,
-            requested_actions=requested_actions,
-            allow_interrogative_evidence=allow_interrogative,
-            minimum_response_lines=minimum_response_lines,
-        )
+        return cls(validator=validator, payload=dict(payload))
 
 
 @dataclass(frozen=True)
@@ -211,9 +166,9 @@ class EvaluationPrompt:
     id: str
     tags: tuple[str, ...]
     messages: tuple[ChatMessage, ...]
+    collapse_group: str
     max_new_tokens: int
-    collapse_group: str | None = None
-    topic_reset_evidence: TopicResetEvidence | None = None
+    topic_reset_contract: TopicResetContract | None = None
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "EvaluationPrompt":
@@ -249,15 +204,15 @@ class EvaluationPrompt:
                 f"evaluation prompt {prompt_id!r} must define non-empty "
                 "collapse_group"
             )
-        evidence_value = value.get("topic_reset_evidence")
-        evidence = (
-            TopicResetEvidence.from_mapping(evidence_value, prompt_id=prompt_id)
-            if evidence_value is not None
+        contract_value = value.get("topic_reset_contract")
+        contract = (
+            TopicResetContract.from_mapping(contract_value, prompt_id=prompt_id)
+            if contract_value is not None
             else None
         )
-        if "topic-reset" in tags and evidence is None:
+        if "topic-reset" in tags and contract is None:
             raise ValueError(
-                f"topic-reset prompt {prompt_id!r} must define topic_reset_evidence"
+                f"topic-reset prompt {prompt_id!r} must define topic_reset_contract"
             )
         return cls(
             id=prompt_id.strip(),
@@ -265,7 +220,7 @@ class EvaluationPrompt:
             messages=parsed_messages,
             max_new_tokens=max_new_tokens,
             collapse_group=collapse_group.strip(),
-            topic_reset_evidence=evidence,
+            topic_reset_contract=contract,
         )
 
 
@@ -282,7 +237,7 @@ class GenerationOutcome:
 class EvaluationResult:
     prompt_id: str
     tags: tuple[str, ...]
-    collapse_group: str | None
+    collapse_group: str
     response: str
     termination_reason: str
     generated_token_count: int
@@ -459,61 +414,23 @@ def repeated_character_ratio(
 def topic_reset_failed(
     response: str,
     *,
-    expected_terms: Sequence[str] | None = None,
-    evidence: TopicResetEvidence | None = None,
+    contract: TopicResetContract,
     request_text: str | None = None,
 ) -> bool:
-    if (expected_terms is None) == (evidence is None):
-        raise ValueError("provide exactly one of expected_terms or evidence")
-    resolved = evidence or TopicResetEvidence(
-        positive_groups=tuple((term,) for term in expected_terms or ()),
-        minimum_positive_groups=len(expected_terms or ()),
-    )
-    supported_group_count = sum(
-        any(
-            _contains_affirmed_term(
-                response,
-                term,
-                allow_interrogative=resolved.allow_interrogative_evidence,
-            )
-            for term in group
-        )
-        for group in resolved.positive_groups
-    )
-    result_group_count = sum(
-        any(_contains_result_term(response, term) for term in group)
-        for group in resolved.result_groups
-    )
-    has_forbidden_evidence = any(
-        _contains_canonical_term(response, term)
-        for group in resolved.forbidden_groups
-        for term in group
-    )
-    response_line_count = sum(
-        bool(line.strip()) for line in response.splitlines()
-    )
-    has_scoped_refusal = _contains_scoped_refusal(
+    if _contains_task_refusal(response):
+        return True
+    stale_terms = _string_sequence(contract.payload.get("stale_terms", ()))
+    if any(_contains_canonical_term(response, term) for term in stale_terms):
+        return True
+    if request_text is not None and _response_echoes_request(
         response,
-        resolved.requested_actions,
-    )
-    echoes_request = (
-        request_text is not None
-        and _response_echoes_request(
-            response,
-            request_text,
-            has_result_evidence=(
-                result_group_count >= resolved.minimum_result_groups
-                and resolved.minimum_result_groups > 0
-            ),
-        )
-    )
-    return (
-        supported_group_count < resolved.minimum_positive_groups
-        or result_group_count < resolved.minimum_result_groups
-        or has_forbidden_evidence
-        or response_line_count < resolved.minimum_response_lines
-        or has_scoped_refusal
-        or echoes_request
+        request_text,
+    ):
+        return True
+    return not _validate_topic_reset_response(
+        response,
+        validator=contract.validator,
+        payload=contract.payload,
     )
 
 
@@ -698,14 +615,14 @@ def _evaluate_one(
     if identity_matches:
         hard_failures.append("false_personal_identity_claim")
     if "topic-reset" in prompt.tags:
-        evidence = prompt.topic_reset_evidence
-        if evidence is None:
+        contract = prompt.topic_reset_contract
+        if contract is None:
             raise ValueError(
-                f"topic-reset prompt {prompt.id!r} has no evidence specification"
+                f"topic-reset prompt {prompt.id!r} has no validator contract"
             )
         if topic_reset_failed(
             response,
-            evidence=evidence,
+            contract=contract,
             request_text=prompt.messages[-1].content,
         ):
             hard_failures.append("topic_reset_failure")
@@ -744,10 +661,7 @@ def _shared_identical_answer_groups(
     groups = []
     for grouped in grouped_results.values():
         prompt_ids = {result.prompt_id for result in grouped}
-        collapse_groups = {
-            _result_collapse_group(result)
-            for result in grouped
-        }
+        collapse_groups = {result.collapse_group for result in grouped}
         if len(prompt_ids) >= 3 and len(collapse_groups) >= 3:
             groups.append(tuple(sorted(prompt_ids)))
     return tuple(sorted(groups))
@@ -838,68 +752,271 @@ def _canonical_text(text: str) -> str:
     return _CANONICAL_PATTERN.sub(" ", text.casefold()).strip()
 
 
-def _contains_affirmed_term(
-    text: str,
-    term: str,
-    *,
-    allow_interrogative: bool = False,
-) -> bool:
-    canonical_term = _canonical_text(term)
-    if not canonical_term:
-        return False
-    normalized_text = _normalize_contractions(text)
-    for clause in re.split(r"(?<=[.!?;:])\s+|\n+", normalized_text):
-        canonical_clause = _canonical_text(clause)
-        start = canonical_clause.find(canonical_term)
-        while start >= 0:
-            if (
-                (allow_interrogative or "?" not in clause)
-                and not _term_occurrence_is_unsupported(
-                canonical_clause,
-                start=start,
-                end=start + len(canonical_term),
-                )
-            ):
-                return True
-            start = canonical_clause.find(canonical_term, start + 1)
-    return False
-
-
-def _contains_result_term(text: str, term: str) -> bool:
-    return term.casefold() in text.casefold()
-
-
 def _contains_canonical_term(text: str, term: str) -> bool:
     canonical_term = _canonical_text(term)
     return bool(canonical_term and canonical_term in _canonical_text(text))
 
 
-def _term_occurrence_is_unsupported(clause: str, *, start: int, end: int) -> bool:
-    prefix_tokens = _word_tokens(clause[:start])[-12:]
-    suffix_tokens = _word_tokens(clause[end:])[:5]
-    if any(token in {"not", "never", "without"} for token in prefix_tokens):
-        return True
-    if _contains_token_phrase(prefix_tokens, ("no", "evidence")):
-        return True
-    if _contains_token_phrase(prefix_tokens, ("no", "proof")):
-        return True
-    if _contains_token_phrase(prefix_tokens, ("unable", "to")):
-        return True
-    if any(token in {"wrong", "incorrect", "false"} for token in suffix_tokens):
-        return True
+def _validate_topic_reset_response(
+    response: str,
+    *,
+    validator: str,
+    payload: Mapping[str, Any],
+) -> bool:
+    validators = {
+        "accepted_translation": _validate_translation_response,
+        "causal_explanation": _validate_causal_response,
+        "concept_response": _validate_concept_response,
+        "grammar_correction": _validate_grammar_response,
+        "invitation": _validate_invitation_response,
+        "numeric_result": _validate_numeric_response,
+        "ordered_actions": _validate_ordered_actions_response,
+        "poem": _validate_poem_response,
+        "structured_fields": _validate_structured_fields_response,
+    }
+    return validators[validator](response, payload)
+
+
+def _validate_numeric_response(
+    response: str,
+    payload: Mapping[str, Any],
+) -> bool:
+    return any(
+        _asserted_literal(response, result)
+        for result in _string_sequence(payload["accepted_results"])
+    )
+
+
+def _validate_translation_response(
+    response: str,
+    payload: Mapping[str, Any],
+) -> bool:
+    canonical = _canonical_text(response)
+    return any(
+        _canonical_text(source) in canonical
+        and _canonical_text(meaning) in canonical
+        for source, meaning in _pair_sequence(payload["accepted_pairs"])
+    )
+
+
+def _validate_invitation_response(
+    response: str,
+    payload: Mapping[str, Any],
+) -> bool:
+    return (
+        _contains_any_term(response, payload["event_terms"])
+        and _contains_any_term(response, payload["date_terms"])
+        and _contains_any_term(response, payload["intent_terms"])
+        and not _contains_meta_response(response)
+    )
+
+
+def _validate_structured_fields_response(
+    response: str,
+    payload: Mapping[str, Any],
+) -> bool:
+    fields = _group_sequence(payload["fields"])
+    if not all(_contains_any_term(response, field) for field in fields):
+        return False
+    separators = (
+        response.count("|")
+        + response.count(",")
+        + response.count(";")
+        + response.count("\n")
+    )
+    return separators >= len(fields) - 1 and not _contains_meta_response(response)
+
+
+def _validate_concept_response(
+    response: str,
+    payload: Mapping[str, Any],
+) -> bool:
+    groups = _group_sequence(payload["concept_groups"])
+    minimum = int(payload.get("minimum_groups", len(groups)))
+    if sum(_contains_any_term(response, group) for group in groups) < minimum:
+        return False
+    sentence_count = _sentence_count(response)
+    minimum_sentences = int(payload.get("minimum_sentences", 1))
+    maximum_sentences = int(payload.get("maximum_sentences", 10_000))
+    return (
+        minimum_sentences <= sentence_count <= maximum_sentences
+        and not _contains_meta_response(response)
+    )
+
+
+def _validate_grammar_response(
+    response: str,
+    payload: Mapping[str, Any],
+) -> bool:
+    corrected = any(
+        sentence.casefold() in response.casefold()
+        for sentence in _string_sequence(payload["accepted_sentences"])
+    )
+    explained = _contains_any_term(response, payload["explanation_terms"])
+    return corrected and explained and not _contains_meta_response(response)
+
+
+def _validate_causal_response(
+    response: str,
+    payload: Mapping[str, Any],
+) -> bool:
+    if not _contains_any_term(response, payload["subject_terms"]):
+        return False
+    supported = sum(
+        _supports_causal_relation(response, relation)
+        for relation in _mapping_sequence(payload["relations"])
+    )
+    return supported >= int(payload["minimum_relations"])
+
+
+def _validate_ordered_actions_response(
+    response: str,
+    payload: Mapping[str, Any],
+) -> bool:
+    groups = _group_sequence(payload["action_groups"])
+    supported = sum(_contains_any_term(response, group) for group in groups)
+    return (
+        supported >= int(payload["minimum_actions"])
+        and not _contains_meta_response(response)
+    )
+
+
+def _validate_poem_response(
+    response: str,
+    payload: Mapping[str, Any],
+) -> bool:
+    lines = [line for line in response.splitlines() if line.strip()]
+    groups = _group_sequence(payload["concept_groups"])
+    return (
+        len(lines) >= int(payload["minimum_lines"])
+        and all(_contains_any_term(response, group) for group in groups)
+        and not _contains_meta_response(response)
+    )
+
+
+def _supports_causal_relation(
+    response: str,
+    relation: Mapping[str, Any],
+) -> bool:
+    for clause in _causal_clauses(response):
+        if (
+            _contains_any_term(clause, relation["cause_terms"])
+            and _contains_any_term(clause, relation["effect_terms"])
+            and not _has_negated_causal_relation(clause)
+        ):
+            return True
     return False
 
 
+def _causal_clauses(response: str) -> list[str]:
+    return [
+        clause.strip()
+        for clause in re.split(r"(?<=[.!?;])\s+|\n+", response)
+        if clause.strip()
+    ]
+
+
+def _has_negated_causal_relation(clause: str) -> bool:
+    tokens = _word_tokens(_normalize_contractions(clause))
+    negated_relations = (
+        ("does", "not", "cause"),
+        ("do", "not", "cause"),
+        ("did", "not", "cause"),
+        ("is", "not", "caused"),
+        ("are", "not", "caused"),
+        ("not", "due", "to"),
+        ("not", "because"),
+        ("does", "not", "lead"),
+        ("does", "not", "create"),
+        ("does", "not", "produce"),
+        ("does", "not", "enter"),
+        ("is", "not", "responsible"),
+        ("no", "connection"),
+        ("no", "causal", "link"),
+    )
+    return (
+        "unrelated" in tokens
+        or any(
+            _contains_token_phrase(tokens, phrase)
+            for phrase in negated_relations
+        )
+    )
+
+
+def _asserted_literal(response: str, literal: str) -> bool:
+    pattern = re.compile(
+        rf"(?<!\d){re.escape(literal)}(?!\d)",
+        re.IGNORECASE,
+    )
+    normalized = _normalize_contractions(response)
+    for clause in _causal_clauses(normalized):
+        for match in pattern.finditer(clause):
+            prefix = _word_tokens(clause[: match.start()])[-3:]
+            suffix = _word_tokens(clause[match.end() :])[:5]
+            if any(token in {"not", "never", "no"} for token in prefix):
+                continue
+            if any(
+                token in {"wrong", "incorrect", "false"}
+                for token in suffix
+            ):
+                continue
+            return True
+    return False
+
+
+def _contains_any_term(text: str, terms: Any) -> bool:
+    return any(
+        _contains_canonical_term(text, term)
+        for term in _string_sequence(terms)
+    )
+
+
+def _contains_meta_response(response: str) -> bool:
+    canonical = _canonical_text(response)
+    return any(
+        marker in canonical
+        for marker in (
+            "the prompt",
+            "the request",
+            "you asked",
+            "you requested",
+            "i was asked",
+            "this is an invitation about",
+        )
+    )
+
+
+def _sentence_count(response: str) -> int:
+    return len(
+        [
+            sentence
+            for sentence in re.split(r"(?<=[.!?])(?:\s+|$)|\n+", response)
+            if sentence.strip()
+        ]
+    )
+
+
 def _identity_claim_clauses(text: str) -> list[str]:
-    normalized = _normalize_contractions(text)
     clauses: list[str] = []
     cursor = 0
-    for start, end, quoted_text in _quoted_spans(normalized):
-        clauses.extend(_split_identity_clauses(normalized[cursor:start]))
-        if _quote_is_endorsed(normalized[:start]):
-            clauses.extend(_split_identity_clauses(quoted_text))
+    for start, end, quoted_text in _quoted_spans(text):
+        clauses.extend(
+            _split_identity_clauses(
+                _normalize_contractions(text[cursor:start])
+            )
+        )
+        if _quote_is_endorsed(text[:start], text[end:]):
+            clauses.extend(
+                _split_identity_clauses(
+                    _normalize_contractions(quoted_text)
+                )
+            )
         cursor = end
-    clauses.extend(_split_identity_clauses(normalized[cursor:]))
+    clauses.extend(
+        _split_identity_clauses(
+            _normalize_contractions(text[cursor:])
+        )
+    )
     return clauses
 
 
@@ -949,9 +1066,25 @@ def _split_identity_clauses(text: str) -> list[str]:
     ]
 
 
-def _quote_is_endorsed(prefix: str) -> bool:
-    tokens = _word_tokens(prefix)[-8:]
-    return any(_contains_token_phrase(tokens, phrase) for phrase in _ENDORSEMENT_PHRASES)
+def _quote_is_endorsed(prefix: str, suffix: str) -> bool:
+    prefix_tokens = _word_tokens(_normalize_contractions(prefix))[-12:]
+    suffix_tokens = _word_tokens(_normalize_contractions(suffix))[:8]
+    denial_phrases = (
+        ("is", "false"),
+        ("is", "not", "true"),
+        ("is", "fictional"),
+        ("is", "hypothetical"),
+    )
+    if any(
+        _contains_token_phrase(prefix_tokens, phrase)
+        or _contains_token_phrase(suffix_tokens, phrase)
+        for phrase in denial_phrases
+    ):
+        return False
+    return any(
+        _contains_token_phrase(prefix_tokens, phrase)
+        for phrase in _ENDORSEMENT_PHRASES
+    )
 
 
 def _identity_claims_in_clause(clause: str) -> set[str]:
@@ -1009,8 +1142,20 @@ def _identity_claims_in_clause(clause: str) -> set[str]:
             and any(token in {"serve", "served"} for token in role_prefix)
             and "as" in role_prefix
         )
+        has_possessive_role_claim = (
+            _contains_token_phrase(role_prefix, ("my", "role", "is"))
+            or (
+                bool(tokens)
+                and tokens[0] == "as"
+                and role_index <= 4
+            )
+        )
         if (
-            (_has_first_person_copula(tokens, role_index) or has_service_claim)
+            (
+                _has_first_person_copula(tokens, role_index)
+                or has_service_claim
+                or has_possessive_role_claim
+            )
             and not _candidate_is_denied(tokens, role_index)
         ):
             claims.add("role")
@@ -1220,90 +1365,138 @@ def _normalize_contractions(text: str) -> str:
     return normalized
 
 
-def _result_collapse_group(result: EvaluationResult) -> str:
-    if result.collapse_group:
-        return result.collapse_group
-    return next(
-        (
-            tag
-            for tag in result.tags
-            if tag.startswith("category:")
-        ),
-        result.prompt_id,
-    )
-
-
-def _parse_evidence_groups(
-    value: Any,
+def _validate_topic_reset_payload(
+    validator: str,
+    payload: Mapping[str, Any],
     *,
     prompt_id: str,
-    field: str,
-    required: bool,
-) -> tuple[tuple[str, ...], ...]:
-    if not isinstance(value, list) or (required and not value):
-        qualifier = "a non-empty list" if required else "a list"
+) -> None:
+    required_fields = {"stale_terms"} | {
+        "accepted_translation": {"accepted_pairs"},
+        "causal_explanation": {
+            "subject_terms",
+            "relations",
+            "minimum_relations",
+        },
+        "concept_response": {"concept_groups"},
+        "grammar_correction": {"accepted_sentences", "explanation_terms"},
+        "invitation": {"event_terms", "date_terms", "intent_terms"},
+        "numeric_result": {"accepted_results"},
+        "ordered_actions": {"action_groups", "minimum_actions"},
+        "poem": {"concept_groups", "minimum_lines"},
+        "structured_fields": {"fields"},
+    }[validator]
+    missing = sorted(required_fields - payload.keys())
+    if missing:
         raise ValueError(
-            f"evaluation prompt {prompt_id!r} topic_reset_evidence "
-            f"{field} must be {qualifier}"
+            f"evaluation prompt {prompt_id!r} topic_reset_contract "
+            f"{validator} payload is missing {missing}"
         )
-    groups: list[tuple[str, ...]] = []
-    for group in value:
+
+    _string_sequence(payload["stale_terms"])
+    if validator == "accepted_translation":
+        _pair_sequence(payload["accepted_pairs"])
+    elif validator == "causal_explanation":
+        _string_sequence(payload["subject_terms"])
+        relations = _mapping_sequence(payload["relations"])
+        for relation in relations:
+            _string_sequence(relation.get("cause_terms"))
+            _string_sequence(relation.get("effect_terms"))
+        minimum = payload["minimum_relations"]
         if (
-            not isinstance(group, list)
-            or not group
-            or any(not isinstance(term, str) or not term.strip() for term in group)
+            not isinstance(minimum, int)
+            or not 1 <= minimum <= len(relations)
         ):
-            raise ValueError(
-                f"evaluation prompt {prompt_id!r} topic_reset_evidence "
-                f"{field} must contain non-empty string lists"
-            )
-        groups.append(tuple(term.strip() for term in group))
-    return tuple(groups)
+            raise ValueError("minimum_relations is outside relation count")
+    elif validator == "concept_response":
+        groups = _group_sequence(payload["concept_groups"])
+        minimum = payload.get("minimum_groups", len(groups))
+        if not isinstance(minimum, int) or not 1 <= minimum <= len(groups):
+            raise ValueError("minimum_groups is outside concept group count")
+        _validate_optional_count(payload, "minimum_sentences", minimum=1)
+        _validate_optional_count(payload, "maximum_sentences", minimum=1)
+    elif validator == "grammar_correction":
+        _string_sequence(payload["accepted_sentences"])
+        _string_sequence(payload["explanation_terms"])
+    elif validator == "invitation":
+        _string_sequence(payload["event_terms"])
+        _string_sequence(payload["date_terms"])
+        _string_sequence(payload["intent_terms"])
+    elif validator == "numeric_result":
+        _string_sequence(payload["accepted_results"])
+    elif validator == "ordered_actions":
+        groups = _group_sequence(payload["action_groups"])
+        minimum = payload["minimum_actions"]
+        if not isinstance(minimum, int) or not 1 <= minimum <= len(groups):
+            raise ValueError("minimum_actions is outside action group count")
+    elif validator == "poem":
+        _group_sequence(payload["concept_groups"])
+        minimum_lines = payload["minimum_lines"]
+        if not isinstance(minimum_lines, int) or minimum_lines < 1:
+            raise ValueError("minimum_lines must be a positive integer")
+    elif validator == "structured_fields":
+        _group_sequence(payload["fields"])
 
 
-def _parse_string_list(
-    value: Any,
-    *,
-    prompt_id: str,
+def _validate_optional_count(
+    payload: Mapping[str, Any],
     field: str,
-) -> tuple[str, ...]:
+    *,
+    minimum: int,
+) -> None:
+    value = payload.get(field)
+    if value is not None and (not isinstance(value, int) or value < minimum):
+        raise ValueError(f"{field} must be an integer >= {minimum}")
+
+
+def _string_sequence(value: Any) -> tuple[str, ...]:
     if (
-        not isinstance(value, list)
+        not isinstance(value, (list, tuple))
+        or not value
         or any(not isinstance(item, str) or not item.strip() for item in value)
     ):
-        raise ValueError(
-            f"evaluation prompt {prompt_id!r} topic_reset_evidence "
-            f"{field} must be a list of non-empty strings"
-        )
+        raise ValueError("expected a non-empty sequence of strings")
     return tuple(item.strip() for item in value)
 
 
-def _contains_scoped_refusal(
-    response: str,
-    requested_actions: Sequence[str],
-) -> bool:
-    if not requested_actions:
-        return False
+def _group_sequence(value: Any) -> tuple[tuple[str, ...], ...]:
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ValueError("expected a non-empty sequence of term groups")
+    return tuple(_string_sequence(group) for group in value)
+
+
+def _pair_sequence(value: Any) -> tuple[tuple[str, str], ...]:
+    groups = _group_sequence(value)
+    if any(len(group) != 2 for group in groups):
+        raise ValueError("translation pairs must contain exactly two strings")
+    return tuple((group[0], group[1]) for group in groups)
+
+
+def _mapping_sequence(value: Any) -> tuple[Mapping[str, Any], ...]:
+    if (
+        not isinstance(value, (list, tuple))
+        or not value
+        or any(not isinstance(item, Mapping) for item in value)
+    ):
+        raise ValueError("expected a non-empty sequence of mappings")
+    return tuple(value)
+
+
+def _contains_task_refusal(response: str) -> bool:
     tokens = _word_tokens(_normalize_contractions(response))
     refusal_phrases = (
         ("can", "not"),
         ("will", "not"),
         ("unable", "to"),
+        ("decline", "to"),
         ("refuse", "to"),
-        ("refuse",),
     )
-    action_phrases = [tuple(_word_tokens(action)) for action in requested_actions]
     for index in range(len(tokens)):
         for refusal in refusal_phrases:
             if tuple(tokens[index : index + len(refusal)]) != refusal:
                 continue
-            refusal_tail = tokens[
-                index + len(refusal) : index + len(refusal) + 10
-            ]
-            if any(
-                action and _contains_token_phrase(refusal_tail, action)
-                for action in action_phrases
-            ):
+            refusal_tail = tokens[index + len(refusal) : index + len(refusal) + 8]
+            if any(action in _TASK_ACTION_TERMS for action in refusal_tail):
                 return True
     return False
 
@@ -1311,8 +1504,6 @@ def _contains_scoped_refusal(
 def _response_echoes_request(
     response: str,
     request_text: str,
-    *,
-    has_result_evidence: bool,
 ) -> bool:
     canonical_response = _canonical_text(response)
     canonical_request = _canonical_text(request_text)
@@ -1337,13 +1528,6 @@ def _response_echoes_request(
     if (
         any(phrase in response.casefold() for phrase in meta_phrases)
         and len(overlap) >= 2
-    ):
-        return True
-    if (
-        response.rstrip().endswith("?")
-        and not has_result_evidence
-        and len(overlap) >= 3
-        and len(overlap) / max(1, len(request_tokens)) >= 0.35
     ):
         return True
     return False

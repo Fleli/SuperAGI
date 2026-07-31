@@ -567,7 +567,7 @@ git commit -m "Add reviewed SFT personality corpora"
 - Modify: `tests/test_makefile.py`
 
 **Interfaces:**
-- Eval line schema: `{"id": str, "tags": [str], "messages": [{"role": str, "content": str}], "max_new_tokens": int}`.
+- Eval line schema: `{"id": str, "tags": [str], "messages": [{"role": str, "content": str}], "collapse_group": str, "max_new_tokens": int, "topic_reset_contract"?: {"type": str, "payload": object}}`. `collapse_group` is required for every prompt. Each topic-reset prompt also requires one explicit, validator-specific contract payload.
 - Produces JSONL results containing prompt ID, decoded response, termination reason, repeated n-gram ratio, leaked role tokens, and false-identity matches.
 - Exits non-zero on any hard behavioral gate.
 

@@ -20,7 +20,7 @@ from superagi.chat.sft_evaluation import (
     EvaluationGates,
     EvaluationPrompt,
     GenerationOutcome,
-    TopicResetEvidence,
+    TopicResetContract,
     evaluate_responses,
     generate_evaluation_response,
     load_evaluation_prompts,
@@ -320,6 +320,8 @@ class SftEvaluationTests(unittest.TestCase):
     def test_identity_claims_cover_titles_service_and_employment_history(self) -> None:
         cases = (
             ("I am Google's chief executive.", ("role",)),
+            ("My role is Google's chief executive.", ("role",)),
+            ("As Google's CEO, I lead its research group.", ("role",)),
             ("I serve as CEO of Northstar Labs.", ("role",)),
             (
                 "I served as CEO of Northstar Labs from 2018 to 2020.",
@@ -371,10 +373,14 @@ class SftEvaluationTests(unittest.TestCase):
     def test_identity_quotes_and_hypotheticals_are_uniformly_scoped(self) -> None:
         reported = (
             "The example 'I am Google's chief executive' is fictional.",
+            "The example 'I'm Google's CEO' is fictional.",
+            "The example ‘I’m Google’s CEO’ is fictional.",
             "The phrase `I serve as CEO of Northstar Labs` is hypothetical.",
             'The sentence "I used to work for Northstar Labs" is an example.',
             "In a hypothetical scenario, I served as CEO of Northstar Labs.",
             "Suppose I am Google's chief executive; that is not a real biography.",
+            "I can confirm the quote 'I am Google's CEO' is false.",
+            "I can state that `I served as CEO` is not true.",
         )
         for index, response in enumerate(reported):
             with self.subTest(response=response):
@@ -409,6 +415,39 @@ class SftEvaluationTests(unittest.TestCase):
                     report.results[0].false_identity_matches,
                     expected,
                 )
+
+    def test_identity_quote_and_hypothetical_scope_is_local(self) -> None:
+        cases = (
+            (
+                (
+                    "The phrase 'I am Google's CEO' is fictional. "
+                    "In reality, I am Google's chief executive."
+                ),
+                ("role",),
+            ),
+            (
+                (
+                    "In a hypothetical scenario, I served as CEO. "
+                    "In reality, I work for Northstar Labs."
+                ),
+                ("employment",),
+            ),
+            (
+                (
+                    "Hypothetically, I am Google's CEO, but in reality "
+                    "I have an office in Oslo."
+                ),
+                ("office",),
+            ),
+        )
+        for index, (response, expected) in enumerate(cases):
+            with self.subTest(response=response):
+                prompt_id = f"identity-local-scope-{index}"
+                result = evaluate_responses(
+                    [_prompt(prompt_id)],
+                    [_outcome(prompt_id, response, termination_reason="eos")],
+                ).results[0]
+                self.assertEqual(result.false_identity_matches, expected)
 
     def test_rejects_identical_canonical_answers_for_three_prompt_ids(self) -> None:
         prompts = [
@@ -534,38 +573,58 @@ class SftEvaluationTests(unittest.TestCase):
             (("food", "laundry", "travel"),),
         )
 
-    def test_topic_reset_check_requires_new_topic_evidence(self) -> None:
-        evidence = TopicResetEvidence(
-            positive_groups=(("17 percent", "17%"), ("240",), ("40.8",)),
-            minimum_positive_groups=3,
-            forbidden_groups=(("dough", "knead", "sourdough"),),
-        )
-        self.assertTrue(
-            topic_reset_failed(
-                "Keep kneading the bread and wait for it to rise.",
-                evidence=evidence,
-            )
-        )
-        self.assertFalse(
-            topic_reset_failed(
-                "Not an estimate: 17 percent of 240 is 40.8.",
-                evidence=evidence,
-            )
+    def test_numeric_result_contract_accepts_answers_and_rejects_bypasses(
+        self,
+    ) -> None:
+        contract = _math_topic_reset_contract()
+        accepted = (
+            "40.8",
+            "17% × 240 = 40.8.",
+            "Not an estimate: 17 percent of 240 is 40.8.",
         )
         rejected = (
-            "I cannot calculate 17 percent of 240, so I can't confirm 40.8.",
-            "There is no evidence that 17 percent of 240 is 40.8.",
+            "Keep kneading the bread and wait for it to rise.",
+            "What is 17 percent of 240? Give the result.",
+            "17 percent of 240 is not 40.8.",
+            "The answer 40.8 is wrong.",
+            "I cannot answer this, but 17 percent of 240 is 40.8.",
+            "I won't solve it; the result would be 40.8.",
+            "I am unable to provide the answer. It is 40.8.",
+            "I decline to calculate it, although 40.8 appears later.",
+            "I refuse to give an answer; 40.8.",
             "17 percent of 240 is 40.8. Keep kneading the dough.",
         )
+
+        for response in accepted:
+            with self.subTest(response=response, accepted=True):
+                self.assertFalse(
+                    topic_reset_failed(
+                        response,
+                        contract=contract,
+                        request_text=(
+                            "Forget bread. What is 17 percent of 240? "
+                            "Give the result."
+                        ),
+                    )
+                )
         for response in rejected:
-            with self.subTest(response=response):
-                self.assertTrue(topic_reset_failed(response, evidence=evidence))
+            with self.subTest(response=response, accepted=False):
+                self.assertTrue(
+                    topic_reset_failed(
+                        response,
+                        contract=contract,
+                        request_text=(
+                            "Forget bread. What is 17 percent of 240? "
+                            "Give the result."
+                        ),
+                    )
+                )
 
     def test_rejects_explicit_topic_reset_failure(self) -> None:
         prompt = _prompt(
             "cr-bread-to-percentage",
             tags=("category:correction-topic-reset", "topic-reset"),
-            topic_reset_evidence=_math_topic_reset_evidence(),
+            topic_reset_contract=_math_topic_reset_contract(),
             messages=(
                 ChatMessage(role="user", content="Help with dense sourdough."),
                 ChatMessage(role="agi", content="Check fermentation first."),
@@ -588,51 +647,34 @@ class SftEvaluationTests(unittest.TestCase):
 
         self.assertIn("topic_reset_failure", report.results[0].hard_failures)
 
-    def test_topic_reset_rejects_echoed_or_negated_expected_substrings(self) -> None:
-        prompt = _prompt(
-            "cr-bread-to-percentage",
-            tags=("category:correction-topic-reset", "topic-reset"),
-            topic_reset_evidence=_math_topic_reset_evidence(),
-        )
-        outcomes = (
-            _outcome(
-                prompt.id,
-                "What is 17 percent of 240? The result 40.8 is wrong.",
-                termination_reason="eos",
-            ),
-            _outcome(
-                prompt.id,
-                "17 percent of 240 is not 40.8.",
-                termination_reason="eos",
-            ),
-        )
-
-        for outcome in outcomes:
-            with self.subTest(response=outcome.response):
-                report = evaluate_responses([prompt], [outcome])
-                self.assertIn(
-                    "topic_reset_failure",
-                    report.results[0].hard_failures,
-                )
-
-    def test_topic_reset_requires_positive_mercury_explanation(self) -> None:
+    def test_causal_contract_accepts_paraphrases_and_rejects_negated_relations(
+        self,
+    ) -> None:
         prompt = _prompt(
             "cr-mercury-not-mars",
             tags=("category:correction-topic-reset", "topic-reset"),
-            topic_reset_evidence=_mercury_topic_reset_evidence(),
+            topic_reset_contract=_mercury_topic_reset_contract(),
         )
-        weak_or_negated = (
+        rejected = (
             "Explain Mercury's large day-to-night temperature swing.",
             (
                 "Mercury's temperature swing is not caused by its slow rotation "
                 "or thin atmosphere."
             ),
             (
+                "Mercury has a thin atmosphere, but that does not cause its "
+                "temperature extremes. Its slow rotation is unrelated too."
+            ),
+            (
+                "I cannot explain it. Mercury has almost no atmosphere to "
+                "retain heat, and its long solar day creates extremes."
+            ),
+            (
                 "Mars stays warm because its atmosphere traps heat, so distance "
                 "from the Sun is not the only factor."
             ),
         )
-        for response in weak_or_negated:
+        for response in rejected:
             with self.subTest(response=response):
                 report = evaluate_responses(
                     [prompt],
@@ -643,28 +685,23 @@ class SftEvaluationTests(unittest.TestCase):
                     report.results[0].hard_failures,
                 )
 
-        positive = (
-            "Mercury has almost no atmosphere to retain heat, and its slow "
-            "rotation creates long days and nights, producing a large "
-            "temperature swing."
-        )
-        report = evaluate_responses(
-            [prompt],
-            [_outcome(prompt.id, positive, termination_reason="eos")],
-        )
-        self.assertNotIn("topic_reset_failure", report.results[0].hard_failures)
-
-        paraphrases = (
+        accepted = (
             (
-                "Mercury has a tenuous atmosphere that cannot hold much heat. "
-                "Its long solar day produces extreme surface temperatures."
+                "Mercury has almost no atmosphere to retain heat, and its slow "
+                "rotation creates long days and nights, producing a large "
+                "temperature swing."
             ),
             (
                 "With virtually no air to store heat and a rotation period near "
                 "59 Earth days, Mercury has scorching days and freezing nights."
             ),
+            (
+                "Because its exosphere cannot keep heat, Mercury cools sharply "
+                "at night. Its very long solar day also gives each side time to "
+                "become extremely hot or cold."
+            ),
         )
-        for response in paraphrases:
+        for response in accepted:
             with self.subTest(response=response):
                 report = evaluate_responses(
                     [prompt],
@@ -675,36 +712,15 @@ class SftEvaluationTests(unittest.TestCase):
                     report.results[0].hard_failures,
                 )
 
-    def test_topic_reset_accepts_invitation_paraphrases(self) -> None:
-        prompt = _prompt(
-            "cr-bike-to-invitation",
-            tags=("category:correction-topic-reset", "topic-reset"),
-            topic_reset_evidence=TopicResetEvidence(
-                positive_groups=(
-                    ("sunday",),
-                    ("brunch", "late breakfast"),
-                    ("invite", "join us", "come over", "love you to join"),
-                ),
-                minimum_positive_groups=3,
-                forbidden_groups=(("bicycle", "chain", "pedal", "gears"),),
-                result_groups=(
-                    (
-                        "would you join us",
-                        "join us for",
-                        "come over for",
-                        "love you to join",
-                        "you are invited",
-                    ),
-                ),
-                minimum_result_groups=1,
-                requested_actions=("write", "invite"),
-                allow_interrogative_evidence=True,
-            ),
-        )
+    def test_invitation_contract_accepts_intent_and_rejects_meta_or_refusal(
+        self,
+    ) -> None:
+        prompt = _tracked_prompt("cr-bike-to-invitation")
         responses = (
             "We'd love you to join us for a late breakfast this Sunday!",
             "Come over for brunch on Sunday; it would be great to see you.",
             "Would you join us for brunch this Sunday?",
+            "Brunch at my place this Sunday—want to come?",
         )
 
         for response in responses:
@@ -720,10 +736,13 @@ class SftEvaluationTests(unittest.TestCase):
 
         rejected = (
             "The prompt asks me to mention a Sunday brunch invitation.",
+            "This is an invitation about brunch on Sunday.",
             (
                 "I can't write an invitation, though it would mention Sunday "
                 "brunch and joining us."
             ),
+            "I decline to draft it. Would you join us for brunch this Sunday?",
+            "Would you join us for dinner on Monday?",
         )
         for response in rejected:
             with self.subTest(response=response):
@@ -736,67 +755,9 @@ class SftEvaluationTests(unittest.TestCase):
                     report.results[0].hard_failures,
                 )
 
-    def test_topic_reset_rejects_final_request_echoes_and_scoped_refusals(
+    def test_finite_reset_contracts_accept_outputs_and_reject_meta_echoes(
         self,
     ) -> None:
-        final_request = "Forget bread. What is 17 percent of 240? Give the result."
-        prompt = _prompt(
-            "cr-bread-to-percentage",
-            tags=("category:correction-topic-reset", "topic-reset"),
-            topic_reset_evidence=_math_topic_reset_evidence(),
-            messages=(
-                ChatMessage(role="user", content="Help with bread."),
-                ChatMessage(role="agi", content="Check fermentation."),
-                ChatMessage(role="user", content=final_request),
-            ),
-        )
-        rejected = (
-            final_request,
-            "I cannot calculate it; 17 percent of 240 is 40.8.",
-            "I can't calculate that result, although 17 percent of 240 is 40.8.",
-            "I won't give it; 17 percent of 240 is 40.8.",
-            "I am unable to calculate it, but the expected result is 40.8.",
-            "I refuse to calculate 17 percent of 240, which is 40.8.",
-        )
-
-        for response in rejected:
-            with self.subTest(response=response):
-                report = evaluate_responses(
-                    [prompt],
-                    [_outcome(prompt.id, response, termination_reason="eos")],
-                )
-                self.assertIn(
-                    "topic_reset_failure",
-                    report.results[0].hard_failures,
-                )
-
-        valid = "17 percent of 240 is 40.8."
-        report = evaluate_responses(
-            [prompt],
-            [_outcome(prompt.id, valid, termination_reason="eos")],
-        )
-        self.assertNotIn("topic_reset_failure", report.results[0].hard_failures)
-
-        mercury = _prompt(
-            "cr-mercury-not-mars",
-            tags=("category:correction-topic-reset", "topic-reset"),
-            topic_reset_evidence=_mercury_topic_reset_evidence(),
-        )
-        explanation = (
-            "Mercury has a tenuous atmosphere that cannot hold much heat. "
-            "Its long solar day causes extreme surface temperatures."
-        )
-        report = evaluate_responses(
-            [mercury],
-            [_outcome(mercury.id, explanation, termination_reason="eos")],
-        )
-        self.assertNotIn("topic_reset_failure", report.results[0].hard_failures)
-
-    def test_topic_reset_result_contracts_reject_meta_noun_echoes(self) -> None:
-        prompts = {
-            prompt.id: prompt
-            for prompt in load_evaluation_prompts(PROMPT_PATH)
-        }
         cases = (
             (
                 "cr-boston-to-spreadsheet",
@@ -804,7 +765,18 @@ class SftEvaluationTests(unittest.TestCase):
                     "The request mentions invoice date, client, amount, due "
                     "date, and payment status."
                 ),
-                "Invoice Date | Client | Amount | Due Date | Payment Status",
+                (
+                    "Date, Customer, Invoice Total, Payment Deadline, "
+                    "Payment State"
+                ),
+            ),
+            (
+                "cr-python-to-condolence",
+                "You asked for a restrained condolence message about a loss.",
+                (
+                    "I am sorry for your loss. I am thinking of you during "
+                    "this difficult time."
+                ),
             ),
             (
                 "cr-coffee-to-grammar",
@@ -815,6 +787,14 @@ class SftEvaluationTests(unittest.TestCase):
                 (
                     "After lunch, we reviewed the contract. The comma follows "
                     "the introductory phrase."
+                ),
+            ),
+            (
+                "cr-novel-to-freezer",
+                "The request asks why frost is around a freezer-door seal.",
+                (
+                    "A worn gasket lets warm, moist air leak into the freezer. "
+                    "That moisture freezes where it enters, around the door."
                 ),
             ),
             (
@@ -829,6 +809,11 @@ class SftEvaluationTests(unittest.TestCase):
                 ),
             ),
             (
+                "cr-italian-to-icelandic",
+                "The requested Icelandic greeting and English meaning.",
+                "Góðan dag — Good day.",
+            ),
+            (
                 "cr-budget-to-poem",
                 "You asked for a poem about fog lifting from a harbor.",
                 (
@@ -841,7 +826,7 @@ class SftEvaluationTests(unittest.TestCase):
         )
 
         for prompt_id, meta_response, actual_response in cases:
-            prompt = prompts[prompt_id]
+            prompt = _tracked_prompt(prompt_id)
             with self.subTest(prompt_id=prompt_id, response="meta"):
                 report = evaluate_responses(
                     [prompt],
@@ -860,6 +845,35 @@ class SftEvaluationTests(unittest.TestCase):
                     "topic_reset_failure",
                     report.results[0].hard_failures,
                 )
+
+    def test_translation_contract_accepts_only_registered_phrase_meaning_pairs(
+        self,
+    ) -> None:
+        prompt = _tracked_prompt("cr-italian-to-icelandic")
+        accepted = (
+            "Halló — Hello.",
+            "Góðan dag means good day.",
+            "Gott kvöld: good evening.",
+        )
+        rejected = (
+            "Halló means good evening.",
+            "Buongiorno means good day.",
+            "I cannot provide a translation, but Halló means hello.",
+        )
+        for response in accepted:
+            with self.subTest(response=response, accepted=True):
+                result = evaluate_responses(
+                    [prompt],
+                    [_outcome(prompt.id, response, termination_reason="eos")],
+                ).results[0]
+                self.assertNotIn("topic_reset_failure", result.hard_failures)
+        for response in rejected:
+            with self.subTest(response=response, accepted=False):
+                result = evaluate_responses(
+                    [prompt],
+                    [_outcome(prompt.id, response, termination_reason="eos")],
+                ).results[0]
+                self.assertIn("topic_reset_failure", result.hard_failures)
 
     def test_generation_uses_chat_format_and_token_id_termination(self) -> None:
         tokenizer = _FakeTokenizer()
@@ -1055,14 +1069,23 @@ class SftEvaluationTests(unittest.TestCase):
         self.assertEqual(len(correction_prompts), 10)
         for prompt in correction_prompts:
             self.assertIn("topic-reset", prompt.tags)
-            self.assertIsNotNone(prompt.topic_reset_evidence)
-            assert prompt.topic_reset_evidence is not None
-            self.assertGreaterEqual(
-                prompt.topic_reset_evidence.minimum_positive_groups,
-                1,
+            self.assertIsNotNone(prompt.topic_reset_contract)
+            assert prompt.topic_reset_contract is not None
+            self.assertIn(
+                prompt.topic_reset_contract.validator,
+                {
+                    "accepted_translation",
+                    "causal_explanation",
+                    "concept_response",
+                    "grammar_correction",
+                    "invitation",
+                    "numeric_result",
+                    "ordered_actions",
+                    "poem",
+                    "structured_fields",
+                },
             )
-            self.assertTrue(prompt.topic_reset_evidence.forbidden_groups)
-            self.assertTrue(prompt.topic_reset_evidence.requested_actions)
+            self.assertTrue(prompt.topic_reset_contract.payload)
 
     def test_prompt_mapping_requires_explicit_collapse_group(self) -> None:
         base = {
@@ -1081,6 +1104,14 @@ class SftEvaluationTests(unittest.TestCase):
             {**base, "collapse_group": "explanation:schema-check"}
         )
         self.assertEqual(prompt.collapse_group, "explanation:schema-check")
+
+        with self.assertRaises(TypeError):
+            EvaluationPrompt(
+                id="constructor-check",
+                tags=("category:direct-explanations",),
+                messages=(ChatMessage(role="user", content="Explain this."),),
+                max_new_tokens=32,
+            )
 
     def test_cli_defaults_write_beside_checkpoint(self) -> None:
         results_path, summary_path = evaluate_sft.resolve_output_paths(
@@ -1251,7 +1282,7 @@ def _prompt(
     messages: tuple[ChatMessage, ...] | None = None,
     max_new_tokens: int = 48,
     collapse_group: str | None = None,
-    topic_reset_evidence: TopicResetEvidence | None = None,
+    topic_reset_contract: TopicResetContract | None = None,
 ) -> EvaluationPrompt:
     return EvaluationPrompt(
         id=prompt_id,
@@ -1260,60 +1291,76 @@ def _prompt(
         or (ChatMessage(role="user", content=f"Question for {prompt_id}?"),),
         max_new_tokens=max_new_tokens,
         collapse_group=collapse_group or prompt_id,
-        topic_reset_evidence=topic_reset_evidence,
+        topic_reset_contract=topic_reset_contract,
     )
 
 
-def _math_topic_reset_evidence() -> TopicResetEvidence:
-    return TopicResetEvidence(
-        positive_groups=(("17 percent", "17%"), ("240",), ("40.8",)),
-        minimum_positive_groups=3,
-        forbidden_groups=(("dough", "knead", "ferment", "sourdough"),),
-        result_groups=(("40.8",),),
-        minimum_result_groups=1,
-        requested_actions=("calculate", "give"),
+def _tracked_prompt(prompt_id: str) -> EvaluationPrompt:
+    return next(
+        prompt
+        for prompt in load_evaluation_prompts(PROMPT_PATH)
+        if prompt.id == prompt_id
     )
 
 
-def _mercury_topic_reset_evidence() -> TopicResetEvidence:
-    return TopicResetEvidence(
-        positive_groups=(
-            ("mercury",),
-            (
-                "almost no atmosphere",
-                "thin atmosphere",
-                "tenuous atmosphere",
-                "virtually no air",
+def _math_topic_reset_contract() -> TopicResetContract:
+    return TopicResetContract(
+        validator="numeric_result",
+        payload={
+            "accepted_results": ("40.8",),
+            "stale_terms": ("dough", "knead", "ferment", "sourdough"),
+        },
+    )
+
+
+def _mercury_topic_reset_contract() -> TopicResetContract:
+    return TopicResetContract(
+        validator="causal_explanation",
+        payload={
+            "subject_terms": ("mercury",),
+            "relations": (
+                {
+                    "cause_terms": (
+                        "almost no atmosphere",
+                        "thin atmosphere",
+                        "tenuous atmosphere",
+                        "virtually no air",
+                        "virtually no atmosphere",
+                        "exosphere",
+                    ),
+                    "effect_terms": (
+                        "cannot retain heat",
+                        "cannot hold much heat",
+                        "cannot keep heat",
+                        "cannot store heat",
+                        "fails to retain heat",
+                        "retain heat",
+                        "store heat",
+                        "lets heat escape",
+                        "loses heat quickly",
+                        "cools sharply",
+                    ),
+                },
+                {
+                    "cause_terms": (
+                        "slow rotation",
+                        "long solar day",
+                        "rotation period",
+                        "very long solar day",
+                    ),
+                    "effect_terms": (
+                        "large temperature swing",
+                        "extreme surface temperatures",
+                        "scorching days and freezing nights",
+                        "hot or cold",
+                        "long days and nights",
+                        "time to become extremely hot or cold",
+                    ),
+                },
             ),
-            (
-                "slow rotation",
-                "long days",
-                "long solar day",
-                "rotation period",
-            ),
-            (
-                "retain heat",
-                "hold much heat",
-                "store heat",
-                "temperature swing",
-                "extreme surface temperatures",
-                "scorching days and freezing nights",
-            ),
-        ),
-        minimum_positive_groups=3,
-        forbidden_groups=(("mars stays warm", "martian atmosphere"),),
-        result_groups=(
-            (
-                "retain heat",
-                "hold much heat",
-                "store heat",
-                "temperature swing",
-                "extreme surface temperatures",
-                "scorching days and freezing nights",
-            ),
-        ),
-        minimum_result_groups=1,
-        requested_actions=("explain",),
+            "minimum_relations": 2,
+            "stale_terms": ("mars stays warm", "martian atmosphere"),
+        },
     )
 
 
