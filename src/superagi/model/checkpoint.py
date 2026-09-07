@@ -261,6 +261,10 @@ def _migrate_model_state_dict(model_state: Any) -> dict[str, torch.Tensor]:
         raise ValueError("checkpoint field 'model_state' must be a mapping")
 
     migrated_state = dict(model_state)
+    for key in list(migrated_state):
+        if isinstance(key, str) and key.endswith(".attention.causal_mask"):
+            migrated_state.pop(key)
+
     qkv_suffix = ".attention.qkv_proj.weight"
     qkv_weight_keys = [
         key for key in migrated_state if isinstance(key, str) and key.endswith(qkv_suffix)

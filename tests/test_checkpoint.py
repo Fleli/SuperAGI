@@ -379,6 +379,33 @@ class CheckpointTests(unittest.TestCase):
             )
         )
 
+    def test_load_checkpoint_ignores_legacy_causal_mask_buffers(self) -> None:
+        tokenizer = self._tiny_tokenizer()
+        model = self._tiny_model(vocab_size=tokenizer.vocab_size)
+        legacy_state = dict(model.state_dict())
+        legacy_state["blocks.0.attention.causal_mask"] = torch.tril(
+            torch.ones(model.config.context_length, model.config.context_length)
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            checkpoint_path = Path(tmp_dir) / "legacy-causal-mask.pt"
+            torch.save(
+                {
+                    "model_config": asdict(model.config),
+                    "model_state": legacy_state,
+                    "vocab": tokenizer.to_payload(),
+                },
+                checkpoint_path,
+            )
+
+            loaded = load_checkpoint(checkpoint_path)
+
+        self.assertEqual(loaded.config, model.config)
+        self.assertNotIn(
+            "blocks.0.attention.causal_mask",
+            loaded.model.state_dict(),
+        )
+
     def test_retain_checkpoint_snapshot_keeps_most_recent_steps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
